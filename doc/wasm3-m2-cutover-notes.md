@@ -49,12 +49,25 @@ them yet.
   `PreludeTypes`, `RecGroups`, `EncodeTypeSection`) moved out of
   `cmd/compile/internal/wasm3` so the linker can import it too. The
   `*types.Type` walk (`typeCollector`) stays in the compiler.
+- **`wasmgc.KindFunc`** (`a9e018c98f`) — function types modelled in the
+  same `Table` as the GC types (`Params`/`Results` storage, dependency
+  edges, `0x60` composite encoding), so a function can share a recursion
+  group with the struct/array types it mentions.
+- **`wasmgc.Table` serialization** (`845ad4092d`) — `Table.Write` /
+  `ReadTable`, the object-file format each wasm3 package's compiler uses
+  to hand its table to the linker for merging. Round-trip tested.
+- **`typeCollector.collectSignature`** (`ee6285e4a5`) — lowers a Go
+  `*types.Type` function signature to a `wasmgc.KindFunc` table entry
+  (registering every GC type it references), memoized per func type.
+  This is the per-function index a wasm3 function will reference.
 
-So the compiler already knows how to turn Go types and signatures into
-the wasm GC type table and its bytes, the model is now linker-importable,
-and the obj layer can carry a per-function typed signature to the linker.
-The cutover is about *emitting* that from the compiler, *consuming* it in
-the obj/link layers, and replacing the runtime bootstrap.
+So the compiler-side type & ABI machinery is essentially complete: the
+model, the binary encoder, function types, the compiler→linker
+serialization format, and the `*types.Type` collection walk for structs
+*and* signatures all exist and are unit-tested. What remains is the
+entangled cutover — *emitting* this from the compile pipeline,
+*consuming* it in the obj/link layers, and replacing the runtime
+bootstrap — which the authoring order below frames as landing together.
 
 ---
 
@@ -279,13 +292,19 @@ together — but this is a sensible authoring order:
    the current linker's `asm.go:228` would read the new aux and feed it
    to `fieldsToTypes`, which has no `WasmRef` case, so the attachment
    must land together with the linker reroute (step 2). (task #18)
-2. **Make the type model linker-importable** — ✅ DONE (`91d7f25f6b`):
-   extracted to `cmd/internal/wasmgc`. REMAINING: write `asm3.go` —
-   extend the linker's `wasmFuncType`/`fieldsToTypes` to carry
-   `WasmRef` (`0x63/0x64` + SLEB128 heaptype, not a single byte),
-   reconstruct + merge + dedup per-package `wasmgc.Table`s, emit the GC
-   type section via `wasmgc.EncodeTypeSection`, drop the table/element
-   sections, direct-index calls; reroute `obj.go Init`. (task #19)
+2. **Make the type model linker-importable** — ✅ DONE: extracted to
+   `cmd/internal/wasmgc` (`91d7f25f6b`), with function types
+   (`a9e018c98f`) and a compiler→linker serialization format
+   (`845ad4092d`). REMAINING: write `asm3.go` — the linker reads each
+   wasm3 package's serialized `wasmgc.Table` (`wasmgc.ReadTable`) plus
+   each function's `collectSignature` index, concatenates the tables
+   (sharing the one prelude) and remaps the per-package indices, emits
+   the merged GC+func type section via `wasmgc.EncodeTypeSection`, drops
+   the table/element sections, and direct-indexes calls; reroute
+   `obj.go Init`. The compiler still has to *emit* the per-package table
+   aux + per-function index — that emission is part of step 1's
+   remainder and the obj backend (step 3), which is why asm3.go cannot
+   be finished and verified independently. (task #19)
 3. **`wasm3obj.go`** — the obj backend per §1, including the GC-opcode
    immediate encoding. (task #21)
 4. **Diverge `Wasm3.rules` / `Wasm3Ops.go`** — lower `newobject`/

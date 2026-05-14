@@ -377,40 +377,72 @@ landable commits:
   need the per-package `wasmgc.Table` emission, which is the larger
   §4 step-1/step-2 remainder and is deferred past the arithmetic rung.
 
-- **C.2 — the arithmetic body.** The blocker mapped: wasm3 currently
-  has **zero register-arg slots**. `cmd/compile/internal/ssa/config.go`
-  sets `c.intParamRegs` / `c.floatParamRegs` per arch; the `wasm`/
-  `wasm3` cases set neither, so `ABI1 = NewABIConfig(0, 0, …)` equals
-  `ABI0` — a pure memory ABI, args/results travelling through the Go
-  stack in linear memory (`I64Load … (SP)` / `I64Store`). C.2 is
-  therefore "give wasm3 a register ABI whose registers are wasm
-  locals":
-    1. `config.go` — in the `wasm3` case, set `c.intParamRegs` /
-       `c.floatParamRegs` to register lists drawn from `registersWasm3`
-       (the existing 16 GP + FP regs). Then `ABI1` carries register
-       params and `abiForFunc` hands `ABIInternal` functions a real
-       register ABI; args become `OpArgIntReg`/`OpArgFloatReg`,
-       results go to result registers.
-    2. `wasm3/ssa.go` — handle `OpArgIntReg`/`OpArgFloatReg` (the value
-       is already in its assigned register = wasm local; no prog, like
-       other register arches) and make `BlockRet` place the result
-       register on the wasm stack before `return`. The Go-stack
-       `OpWasm3LoweredAddr {NAME_PARAM}` / SP-frame paths stay for
-       non-leaf cases but a leaf arithmetic function no longer uses
-       them.
-    3. `encodeWasm3Body` — graduate from the trivial walk to a real
-       (but still SP-frame-free) encoder: local declarations (params
-       are locals `0..nparams-1`, spill regs follow — no PC_B param,
-       no local-SP, unlike `assemble`'s map), `Get`/`Set`/`Tee` of
+- **C.2 — the arithmetic body.** A probe (made and reverted; the
+  branch stays at the C.1 state) turned the rough plan into a precise
+  blocker chain. C.2 is "give wasm3 a register ABI whose registers are
+  wasm locals", and it is genuinely *one* interlocking change — every
+  step below is required before the compiler stops crashing on a
+  wasm3 program, so there is no safe partial commit:
+
+    1. **The register ABI is gated by a GOEXPERIMENT.** `abiForFunc`
+       only hands a function `ABI1` when `buildcfg.Experiment.RegabiArgs`
+       is set; `internal/buildcfg/exp.go` enables it only for
+       amd64/arm64/loong64/ppc64*/riscv64/s390x. Add `wasm3` to that
+       `regabiSupported` switch (it also grants `RegabiWrappers`, which
+       `RegabiArgs` requires). Without this, setting the param-reg
+       lists has no effect — `ABI1` is still computed but never chosen.
+    2. **`config.go`** — in the `wasm3` case set `c.intParamRegs =
+       paramIntRegWasm3` / `c.floatParamRegs = paramFloatRegWasm3`.
+    3. **`_gen/Wasm3Ops.go` — two changes, then regenerate `opGen.go`
+       (`go run -C=_gen .`):**
+         a. Add `ParamIntRegNames` / `ParamFloatRegNames` to the
+            `Wasm3` arch entry ("R0…R15" / "F0…F31"). This makes the
+            generator emit `paramIntRegWasm3` / `paramFloatRegWasm3`
+            (today both are `[]int8(nil)`).
+         b. Change the call ops (`LoweredStaticCall`, `LoweredTailCall`,
+            `LoweredClosureCall`, `LoweredInterCall`,
+            `LoweredTailCallInter`) from `argLength: 1` to
+            `argLength: -1`. They are a copy of the memory-ABI wasm
+            ops; `expand_calls` does `v.AddArgs(…)` to append the
+            register-arg values as explicit args to the call value,
+            which requires a variadic op (cf. AMD64 `CALLstatic`,
+            `argLength: -1`). With `argLength: 1` the appended args
+            corrupt the value.
+    4. **`wasm3/ssa.go` — `OpArgIntReg`/`OpArgFloatReg`.** These appear
+       once the register ABI is on. Add a `ssaGenValue` case: a no-op
+       for codegen (the value is already in its register = wasm local),
+       just `ssagen.CheckArgReg(v)` and clear `v.Block.Func.RegArgs` —
+       unlike the register arches there is no morestack entry wrapper
+       to feed spill info into.
+    5. **`wasm3/ssa.go` — `BlockRet` vs. the `OnWasmStack` optimization.**
+       `regalloc.go` marks single-use non-generic wasm values as
+       `OnWasmStack` (their value is deferred and regenerated inline at
+       the consumer). The result value (e.g. `I64Add`) feeding the
+       `OpMakeResult` gets marked, but `OpMakeResult` is codegen-nothing,
+       so the value is never consumed → `s.OnWasmStackSkipped` is left
+       non-zero → `panic("wasm: bad stack")`. Fix: `BlockRet` must walk
+       `b.Controls[0]` (the `OpMakeResult`) and `getValue*` each result
+       arg onto the wasm stack (width per `scalarPrim`), then `RET`.
+    6. **`wasm3/ssa.go` — the call site (the register↔stack-machine
+       bridge).** Go's register ABI passes args "in registers"
+       implicitly; wasm's `call` takes them from the operand stack.
+       (This is the original reason GOARCH=wasm chose the memory ABI.)
+       After step 3b the register args are explicit `v.Args` of the
+       call op: `ssaGenValue` for the call ops must `getValue*` each
+       arg onto the wasm stack before `ACALL`, then `setReg` each
+       result register afterward (in reverse — wasm leaves the last
+       result on top of the stack).
+    7. **`encodeWasm3Body`** — graduate from the trivial walk to a real
+       (still SP-frame-free) encoder: local declarations (params are
+       locals `0..nparams-1`, spill regs follow — no PC_B param, no
+       local-SP, unlike `assemble`'s map), `Get`/`Set`/`Tee` of
        registers → `local.get/set/tee`, `I64Const` + the arithmetic
-       opcodes, and a typed `return` that leaves the result on the
-       stack.
-  This is one interlocking change with no working intermediate state
-  within itself (the ABI flip, the backend, and the encoder must land
-  together), but it is the standard Go register-ABI mechanism — the
-  only unusual part is that the "registers" are wasm locals and the
-  obj backend encodes them as such. Verify with `add` called from
-  `main`, observed via the `os.Exit` exit code on `wasmtime -W gc`.
+       opcodes, and a typed `return` leaving the result on the stack.
+
+  Verify with `add` called from `main`, observed via the `os.Exit`
+  exit code on `wasmtime -W gc`. Likely further whack-a-mole once the
+  ABI is on (other `OpArgIntReg`/`MakeResult`-shaped breakage, the
+  call ops' `regInfo`, `checkLower`); budget for it.
 
 Then the struct and pointer rungs reuse the C.2 encoder, adding the
 `0xFB` GC-opcode immediates and `struct.new`/`struct.get` lowering

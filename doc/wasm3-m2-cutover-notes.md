@@ -36,11 +36,25 @@ them yet.
 - **Type-section encoder** (`fb3bf0b62a`) — `wasm3/wasmtypesec.go`:
   `wasmTable.encodeTypeSection() []byte`, validated end-to-end with
   `wasm-tools validate --features gc`.
+- **Per-function `obj.WasmType` aux** (`02b1868f0a`) — `cmd/internal/obj`:
+  `obj.WasmType`, parallel to `WasmImport`/`WasmExport`, holding a
+  `WasmFuncType` that serializes to a `goobj.AuxWasmType` aux symbol.
+  Wired into the four object-file plumbing sites (`writeAux`, `nAuxSym`,
+  `genFuncInfoSyms`, `traverseAuxSyms`). Nothing attaches one yet — the
+  compiler-side attachment lands with the wasm3 obj backend, because the
+  *current* linker would mis-read it (its `fieldsToTypes` has no
+  `WasmRef` case; see §2).
+- **Shared `cmd/internal/wasmgc` package** (`91d7f25f6b`) — the
+  Go-type-agnostic half of the model (`Type`/`Field`/`Storage`/`Table`,
+  `PreludeTypes`, `RecGroups`, `EncodeTypeSection`) moved out of
+  `cmd/compile/internal/wasm3` so the linker can import it too. The
+  `*types.Type` walk (`typeCollector`) stays in the compiler.
 
 So the compiler already knows how to turn Go types and signatures into
-the wasm GC type table and its bytes. The cutover is about *emitting*
-that, *consuming* it in the obj/link layers, and replacing the runtime
-bootstrap.
+the wasm GC type table and its bytes, the model is now linker-importable,
+and the obj layer can carry a per-function typed signature to the linker.
+The cutover is about *emitting* that from the compiler, *consuming* it in
+the obj/link layers, and replacing the runtime bootstrap.
 
 ---
 
@@ -257,14 +271,21 @@ machinery.
 The pieces below have no working intermediate state — they land
 together — but this is a sensible authoring order:
 
-1. **Generalize `objfile.go` `AuxWasmType`** to every wasm3 function
-   (4 sites: `objfile.go` `writeAux`/`nAuxSym`/`genFuncInfoSyms`,
-   `sym.go` `traverseAuxSyms`); call `loweredSignature` during compile
-   and attach the `WasmFuncType` to each `LSym`. (task #18)
-2. **Make the `wasmtype.go` model + `recGroups` + `encodeTypeSection`
-   linker-importable** (shared package or duplicate), then write
-   `asm3.go`: merge per-package tables, emit the type section, drop the
-   table/element sections, direct-index calls. (task #19)
+1. **Generalize `objfile.go` `AuxWasmType`** to every wasm3 function —
+   ✅ DONE (`02b1868f0a`): the obj-side plumbing (`obj.WasmType` + the
+   4 serialization sites) is committed. REMAINING: the compiler-side
+   attachment — call `loweredSignature` during wasm3 codegen and set
+   `fn.LSym.Func().WasmType`. This is *not* independently committable:
+   the current linker's `asm.go:228` would read the new aux and feed it
+   to `fieldsToTypes`, which has no `WasmRef` case, so the attachment
+   must land together with the linker reroute (step 2). (task #18)
+2. **Make the type model linker-importable** — ✅ DONE (`91d7f25f6b`):
+   extracted to `cmd/internal/wasmgc`. REMAINING: write `asm3.go` —
+   extend the linker's `wasmFuncType`/`fieldsToTypes` to carry
+   `WasmRef` (`0x63/0x64` + SLEB128 heaptype, not a single byte),
+   reconstruct + merge + dedup per-package `wasmgc.Table`s, emit the GC
+   type section via `wasmgc.EncodeTypeSection`, drop the table/element
+   sections, direct-index calls; reroute `obj.go Init`. (task #19)
 3. **`wasm3obj.go`** — the obj backend per §1, including the GC-opcode
    immediate encoding. (task #21)
 4. **Diverge `Wasm3.rules` / `Wasm3Ops.go`** — lower `newobject`/

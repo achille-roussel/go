@@ -1,0 +1,134 @@
+// Copyright 2018 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+package wasm3
+
+import (
+	"testing"
+
+	"cmd/compile/internal/types"
+	"cmd/internal/obj"
+)
+
+// sig builds a func type from parameter and result types (no receiver).
+func sig(params, results []*types.Type) *types.Type {
+	mkFields := func(ts []*types.Type) []*types.Field {
+		fs := make([]*types.Field, len(ts))
+		for i, t := range ts {
+			fs[i] = field("_", t)
+		}
+		return fs
+	}
+	return types.NewSignature(nil, mkFields(params), mkFields(results))
+}
+
+// wantFields checks an obj.WasmField slice against an expected shape.
+// A negative refType entry means "any reference"; a non-negative entry
+// means the reference must point at that exact type index.
+func wantFields(t *testing.T, label string, got []obj.WasmField, want []obj.WasmField) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s: got %d fields, want %d (%+v vs %+v)", label, len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i].Type != want[i].Type {
+			t.Errorf("%s field %d: type %d, want %d", label, i, got[i].Type, want[i].Type)
+			continue
+		}
+		if want[i].Type == obj.WasmRef && want[i].Offset >= 0 && got[i].Offset != want[i].Offset {
+			t.Errorf("%s field %d: ref type index %d, want %d", label, i, got[i].Offset, want[i].Offset)
+		}
+	}
+}
+
+func TestLoweredSignatureScalars(t *testing.T) {
+	// func(int64, float64, int32) int32
+	ft := sig(
+		[]*types.Type{types.Types[types.TINT64], types.Types[types.TFLOAT64], types.Types[types.TINT32]},
+		[]*types.Type{types.Types[types.TINT32]},
+	)
+	c := newTypeCollector()
+	got := c.loweredSignature(ft)
+
+	wantFields(t, "params", got.Params, []obj.WasmField{
+		{Type: obj.WasmI64}, {Type: obj.WasmF64}, {Type: obj.WasmI32},
+	})
+	wantFields(t, "results", got.Results, []obj.WasmField{{Type: obj.WasmI32}})
+}
+
+func TestLoweredSignatureEmpty(t *testing.T) {
+	// func()
+	c := newTypeCollector()
+	got := c.loweredSignature(sig(nil, nil))
+	if got.Params != nil || got.Results != nil {
+		t.Fatalf("func() lowered to %+v, want empty params and results", got)
+	}
+}
+
+func TestLoweredSignatureString(t *testing.T) {
+	// func(string) string — a string explodes to {backing, offset, length}.
+	ft := sig(
+		[]*types.Type{types.Types[types.TSTRING]},
+		[]*types.Type{types.Types[types.TSTRING]},
+	)
+	c := newTypeCollector()
+	got := c.loweredSignature(ft)
+
+	want := []obj.WasmField{
+		{Type: obj.WasmRef, Offset: typeGoBytes},
+		{Type: obj.WasmI32},
+		{Type: obj.WasmI32},
+	}
+	wantFields(t, "params", got.Params, want)
+	wantFields(t, "results", got.Results, want)
+}
+
+func TestLoweredSignaturePointer(t *testing.T) {
+	// func(*struct{v int64})
+	inner := types.NewStruct([]*types.Field{field("v", types.Types[types.TINT64])})
+	ft := sig([]*types.Type{types.NewPtr(inner)}, nil)
+	c := newTypeCollector()
+	got := c.loweredSignature(ft)
+
+	if len(got.Params) != 1 || got.Params[0].Type != obj.WasmRef {
+		t.Fatalf("func(*struct) params = %+v, want one reference", got.Params)
+	}
+	// The reference must point at a struct the collector actually registered.
+	idx := got.Params[0].Offset
+	if idx < 0 || idx >= int64(len(c.table)) {
+		t.Fatalf("pointer param references type index %d, out of range [0,%d)", idx, len(c.table))
+	}
+	if c.table[idx].kind != wasmStructType {
+		t.Errorf("pointer param references a non-struct type %+v", c.table[idx])
+	}
+}
+
+func TestLoweredSignatureStructValueFlattens(t *testing.T) {
+	// func(struct{a int32; b float64}) — a struct value flattens in place.
+	st := types.NewStruct([]*types.Field{
+		field("a", types.Types[types.TINT32]),
+		field("b", types.Types[types.TFLOAT64]),
+	})
+	c := newTypeCollector()
+	got := c.loweredSignature(sig([]*types.Type{st}, nil))
+
+	wantFields(t, "params", got.Params, []obj.WasmField{
+		{Type: obj.WasmI32}, {Type: obj.WasmF64},
+	})
+}
+
+func TestLoweredSignatureCollectsTypes(t *testing.T) {
+	// Lowering a signature that mentions a struct must register that
+	// struct (and its dependencies) in the collector's table, leaving
+	// the table in valid type-section emit order.
+	inner := types.NewStruct([]*types.Field{field("v", types.Types[types.TINT64])})
+	ft := sig([]*types.Type{types.NewPtr(inner)}, []*types.Type{types.Types[types.TSTRING]})
+	c := newTypeCollector()
+	before := len(c.table)
+	c.loweredSignature(ft)
+	if len(c.table) <= before {
+		t.Errorf("loweredSignature did not register the referenced struct type")
+	}
+	checkDependencyOrder(t, c.table)
+}

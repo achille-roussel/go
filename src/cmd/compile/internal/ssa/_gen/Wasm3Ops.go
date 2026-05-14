@@ -125,11 +125,17 @@ func init() {
 	)
 
 	var Wasm3Ops = []opData{
-		{name: "LoweredStaticCall", argLength: 1, reg: regInfo{clobbers: callerSave}, aux: "CallOff", call: true},                                           // call static function aux.(*obj.LSym). arg0=mem, auxint=argsize, returns mem
-		{name: "LoweredTailCall", argLength: 1, reg: regInfo{clobbers: callerSave}, aux: "CallOff", call: true, tailCall: true},                             // tail call static function aux.(*obj.LSym). arg0=mem, auxint=argsize, returns mem
-		{name: "LoweredTailCallInter", argLength: 2, reg: regInfo{inputs: []regMask{gp}, clobbers: callerSave}, aux: "CallOff", call: true, tailCall: true}, // tail call fn by pointer. arg0=codeptr, arg1=mem, auxint=argsize, returns mem
-		{name: "LoweredClosureCall", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp, regMask{}}, clobbers: callerSave}, aux: "CallOff", call: true},    // call function via closure. arg0=codeptr, arg1=closure, arg2=mem, auxint=argsize, returns mem
-		{name: "LoweredInterCall", argLength: 2, reg: regInfo{inputs: []regMask{gp}, clobbers: callerSave}, aux: "CallOff", call: true},                     // call fn by pointer. arg0=codeptr, arg1=mem, auxint=argsize, returns mem
+		// M2 cutover, Stage C.2: the call ops are variadic (argLength
+		// -1), like the register-ABI arches' CALL* ops. expand_calls
+		// appends each register-resident argument to the call value as
+		// an explicit arg, with mem as the last arg; a fixed argLength
+		// would corrupt the value. The leading fixed inputs (codeptr,
+		// closure) keep their positions.
+		{name: "LoweredStaticCall", argLength: -1, reg: regInfo{clobbers: callerSave}, aux: "CallOff", call: true},                                           // call static function aux.(*obj.LSym). last arg=mem, auxint=argsize, returns mem
+		{name: "LoweredTailCall", argLength: -1, reg: regInfo{clobbers: callerSave}, aux: "CallOff", call: true, tailCall: true},                             // tail call static function aux.(*obj.LSym). last arg=mem, auxint=argsize, returns mem
+		{name: "LoweredTailCallInter", argLength: -1, reg: regInfo{inputs: []regMask{gp}, clobbers: callerSave}, aux: "CallOff", call: true, tailCall: true}, // tail call fn by pointer. arg0=codeptr, last arg=mem, auxint=argsize, returns mem
+		{name: "LoweredClosureCall", argLength: -1, reg: regInfo{inputs: []regMask{gp, gp, regMask{}}, clobbers: callerSave}, aux: "CallOff", call: true},    // call function via closure. arg0=codeptr, arg1=closure, last arg=mem, auxint=argsize, returns mem
+		{name: "LoweredInterCall", argLength: -1, reg: regInfo{inputs: []regMask{gp}, clobbers: callerSave}, aux: "CallOff", call: true},                     // call fn by pointer. arg0=codeptr, last arg=mem, auxint=argsize, returns mem
 
 		{name: "LoweredAddr", argLength: 1, reg: gp11, aux: "SymOff", rematerializeable: true, symEffect: "Addr"}, // returns base+aux+auxint, arg0=base
 		{name: "LoweredMove", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "Int64"},                // large move. arg0=dst, arg1=src, arg2=mem, auxint=len, returns mem
@@ -289,17 +295,27 @@ func init() {
 	}
 
 	archs = append(archs, arch{
-		name:            "Wasm3",
-		pkg:             "cmd/internal/obj/wasm",
-		genfile:         "../../wasm3/ssa.go",
-		ops:             Wasm3Ops,
-		blocks:          nil,
-		regnames:        regNamesWasm3,
-		gpregmask:       gp,
-		fpregmask:       fp32.union(fp64),
-		fp32regmask:     fp32,
-		fp64regmask:     fp64,
-		framepointerreg: -1, // not used
-		linkreg:         -1, // not used
+		name:     "Wasm3",
+		pkg:      "cmd/internal/obj/wasm",
+		genfile:  "../../wasm3/ssa.go",
+		ops:      Wasm3Ops,
+		blocks:   nil,
+		regnames: regNamesWasm3,
+		// M2 cutover, Stage C.2: unlike GOARCH=wasm — which has no
+		// register parameters and passes everything through the Go
+		// stack in linear memory — wasm3 functions are native typed
+		// wasm functions whose parameters and results are wasm function
+		// params/results. The SSA "registers" R0-R15 / F0-F31 are the
+		// wasm locals the obj backend emits, so they double as the
+		// parameter registers; arguments beyond them spill to the
+		// frame. See doc/wasm3-m2-cutover-notes.md §5.
+		ParamIntRegNames:   "R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15",
+		ParamFloatRegNames: "F0 F1 F2 F3 F4 F5 F6 F7 F8 F9 F10 F11 F12 F13 F14 F15 F16 F17 F18 F19 F20 F21 F22 F23 F24 F25 F26 F27 F28 F29 F30 F31",
+		gpregmask:          gp,
+		fpregmask:          fp32.union(fp64),
+		fp32regmask:        fp32,
+		fp64regmask:        fp64,
+		framepointerreg:    -1, // not used
+		linkreg:            -1, // not used
 	})
 }

@@ -20,6 +20,7 @@ import (
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
 	"cmd/internal/obj/wasm"
+	"cmd/internal/wasmgc"
 )
 
 /*
@@ -146,8 +147,31 @@ func Init(arch *ssagen.ArchInfo) {
 	arch.SSAMarkMoves = ssaMarkMoves
 	arch.SSAGenValue = ssaGenValue
 	arch.SSAGenBlock = ssaGenBlock
+	arch.SpillArgReg = spillArgReg
+	arch.LoadRegResult = loadRegResult
 
 	arch.PrepareFunc = attachWasmType
+}
+
+// spillArgReg and loadRegResult bridge register-resident arguments and
+// results to the Go stack frame on the register architectures. They
+// exist to keep pointer arguments visible to the Go garbage collector
+// (the part-live-args spill) and to reload results on the open-coded
+// defer recover path.
+//
+// M2 cutover, Stage C.2: neither applies to wasm3. Its objects live on
+// the host GC heap, not in a linear-memory frame the Go collector
+// scans, so there is nothing to spill for liveness (the design's §8
+// blocker fixes suppress FUNCDATA_LocalsPointerMaps outright), and
+// defer/recover is a later milestone. Both are no-ops, but must be
+// non-nil because ssagen invokes them unconditionally once a function
+// has register parameters.
+func spillArgReg(pp *objw.Progs, p *obj.Prog, f *ssa.Func, t *types.Type, reg int16, n *ir.Name, off int64) *obj.Prog {
+	return p
+}
+
+func loadRegResult(s *ssagen.State, f *ssa.Func, t *types.Type, reg int16, n *ir.Name, off int64) *obj.Prog {
+	return nil
 }
 
 func zeroRange(pp *objw.Progs, p *obj.Prog, off, cnt int64, state *uint32) *obj.Prog {
@@ -206,6 +230,27 @@ func ssaGenBlock(s *ssagen.State, b, next *ssa.Block) {
 		}
 
 	case ssa.BlockRet:
+		// M2 cutover, Stage C.2: with the typed ABI a wasm `return`
+		// takes the function's results from the wasm stack. When the
+		// function has results, b.Controls[0] is the OpMakeResult whose
+		// args are the result values followed by the memory value;
+		// push each result value onto the wasm stack in order before
+		// returning. This also balances OnWasmStackSkipped: a result
+		// value may be marked OnWasmStack (single-use, feeds only the
+		// codegen-nothing OpMakeResult), so getValue is what actually
+		// consumes it.
+		if len(b.Controls) != 0 {
+			for _, a := range b.Controls[0].Args {
+				if a.Type.IsMemory() {
+					continue
+				}
+				if p, ok := scalarPrim(a.Type.Kind()); ok && p == wasmgc.I32 {
+					getValue32(s, a)
+				} else {
+					getValue64(s, a)
+				}
+			}
+		}
 		s.Prog(obj.ARET)
 
 	case ssa.BlockExit, ssa.BlockRetJmp:
@@ -226,7 +271,8 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 	switch v.Op {
 	case ssa.OpWasm3LoweredStaticCall, ssa.OpWasm3LoweredClosureCall, ssa.OpWasm3LoweredInterCall, ssa.OpWasm3LoweredTailCall, ssa.OpWasm3LoweredTailCallInter:
 		s.PrepareCall(v)
-		if call, ok := v.Aux.(*ssa.AuxCall); ok && call.Fn == ir.Syms.Deferreturn {
+		call, _ := v.Aux.(*ssa.AuxCall)
+		if call != nil && call.Fn == ir.Syms.Deferreturn {
 			// The runtime needs to inject jumps to
 			// deferreturn calls using the address in
 			// _func.deferreturn. Hence, the call to
@@ -238,7 +284,32 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			getValue64(s, v.Args[1])
 			setReg(s, wasm.REG_CTXT)
 		}
-		if call, ok := v.Aux.(*ssa.AuxCall); ok && call.Fn != nil {
+
+		// M2 cutover, Stage C.2: bridge Go's register ABI to wasm's
+		// stack-machine call. expand_calls appended each register-
+		// resident argument to the call value as an explicit arg, so
+		// v.Args is [fixed inputs..., register args..., mem]. Go passes
+		// those arguments "in registers"; a wasm `call` instead takes
+		// them from the operand stack, so each one is pushed here. The
+		// fixed leading inputs (a code pointer, and for a closure call
+		// the closure word) are not pushed — an indirect call takes its
+		// code pointer last, below.
+		firstRegArg := 0
+		switch v.Op {
+		case ssa.OpWasm3LoweredInterCall, ssa.OpWasm3LoweredTailCallInter:
+			firstRegArg = 1 // arg0 = code pointer
+		case ssa.OpWasm3LoweredClosureCall:
+			firstRegArg = 2 // arg0 = code pointer, arg1 = closure
+		}
+		for _, a := range v.Args[firstRegArg : len(v.Args)-1] {
+			if p, ok := scalarPrim(a.Type.Kind()); ok && p == wasmgc.I32 {
+				getValue32(s, a)
+			} else {
+				getValue64(s, a)
+			}
+		}
+
+		if call != nil && call.Fn != nil {
 			sym := call.Fn
 			p := s.Prog(obj.ACALL)
 			p.To = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: sym}
@@ -253,6 +324,22 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			p.Pos = v.Pos
 			if v.Op == ssa.OpWasm3LoweredTailCallInter {
 				p.As = obj.ARET
+			}
+		}
+
+		// Move the register-resident results off the wasm stack into
+		// their result registers. wasm leaves results on the operand
+		// stack with the last result on top, so they are popped in
+		// reverse. A tail call does not return here.
+		if call != nil && v.Op != ssa.OpWasm3LoweredTailCall && v.Op != ssa.OpWasm3LoweredTailCallInter {
+			var regs []int16
+			for _, p := range call.ABIInfo().OutParams() {
+				for _, r := range p.Registers {
+					regs = append(regs, ssa.ObjRegForAbiReg(r, v.Block.Func.Config))
+				}
+			}
+			for i := len(regs) - 1; i >= 0; i-- {
+				setReg(s, regs[i])
 			}
 		}
 
@@ -309,6 +396,15 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		getValue64(s, v.Args[1])
 		getValue64(s, v.Args[2])
 		s.Prog(wasm.AArraySet)
+
+	case ssa.OpArgIntReg, ssa.OpArgFloatReg:
+		// M2 cutover, Stage C.2: the argument is already in its
+		// assigned register, which for wasm3 is a wasm function
+		// parameter local — there is nothing to emit. Unlike the
+		// register architectures, wasm3 has no morestack prologue, so
+		// there is no entry spill/unspill wrapper to feed RegArgs into.
+		v.Block.Func.RegArgs = nil
+		ssagen.CheckArgReg(v)
 
 	case ssa.OpStoreReg:
 		getReg(s, wasm.REG_SP)

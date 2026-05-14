@@ -87047,7 +87047,7 @@ var opcodeTable = [...]opInfo{
 	{
 		name:    "LoweredStaticCall",
 		auxType: auxCallOff,
-		argLen:  1,
+		argLen:  -1,
 		call:    true,
 		reg: regInfo{
 			clobbers: regMask{v1: 844424930131967, v2: 0}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 F0 F1 F2 F3 F4 F5 F6 F7 F8 F9 F10 F11 F12 F13 F14 F15 F16 F17 F18 F19 F20 F21 F22 F23 F24 F25 F26 F27 F28 F29 F30 F31 g
@@ -87056,7 +87056,7 @@ var opcodeTable = [...]opInfo{
 	{
 		name:     "LoweredTailCall",
 		auxType:  auxCallOff,
-		argLen:   1,
+		argLen:   -1,
 		call:     true,
 		tailCall: true,
 		reg: regInfo{
@@ -87066,7 +87066,7 @@ var opcodeTable = [...]opInfo{
 	{
 		name:     "LoweredTailCallInter",
 		auxType:  auxCallOff,
-		argLen:   2,
+		argLen:   -1,
 		call:     true,
 		tailCall: true,
 		reg: regInfo{
@@ -87079,7 +87079,7 @@ var opcodeTable = [...]opInfo{
 	{
 		name:    "LoweredClosureCall",
 		auxType: auxCallOff,
-		argLen:  3,
+		argLen:  -1,
 		call:    true,
 		reg: regInfo{
 			inputs: []inputInfo{
@@ -87092,7 +87092,7 @@ var opcodeTable = [...]opInfo{
 	{
 		name:    "LoweredInterCall",
 		auxType: auxCallOff,
-		argLen:  2,
+		argLen:  -1,
 		call:    true,
 		reg: regInfo{
 			inputs: []inputInfo{
@@ -99008,8 +99008,8 @@ var registersWasm3 = [...]Register{
 	{49, wasm.REGG, "g"},
 	{50, 0, "SB"},
 }
-var paramIntRegWasm3 = []int8(nil)
-var paramFloatRegWasm3 = []int8(nil)
+var paramIntRegWasm3 = []int8{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+var paramFloatRegWasm3 = []int8{16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47}
 var gpRegMaskWasm3 = regMask{v1: 65535, v2: 0}
 var fpRegMaskWasm3 = regMask{v1: 281474976645120, v2: 0}
 var fp32RegMaskWasm3 = regMask{v1: 4294901760, v2: 0}

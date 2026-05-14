@@ -65,6 +65,14 @@ func ParseGOEXPERIMENT(goos, goarch, goexp string) (*ExperimentFlags, error) {
 	case "amd64", "arm64", "loong64", "ppc64le", "ppc64", "riscv64", "s390x":
 		regabiAlwaysOn = true
 		regabiSupported = true
+	case "wasm3":
+		// M2 cutover: wasm3 uses a register ABI whose "registers" are
+		// wasm locals — its native typed functions pass arguments and
+		// results as wasm params/results instead of through the Go
+		// stack in linear memory (the GOARCH=wasm convention). See
+		// doc/wasm3-m2-cutover-notes.md §5.
+		regabiAlwaysOn = true
+		regabiSupported = true
 	}
 
 	// Older versions (anything before V16) of dsymutil don't handle

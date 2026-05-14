@@ -383,6 +383,14 @@ func NewConfig(arch string, types Types, ctxt *obj.Link, optimize, softfloat boo
 		c.fpRegMask = fpRegMaskWasm3
 		c.fp32RegMask = fp32RegMaskWasm3
 		c.fp64RegMask = fp64RegMaskWasm3
+		// M2 cutover, Stage C.2: unlike GOARCH=wasm, which leaves these
+		// nil and so has ABI1 == ABI0 (a pure memory ABI, every
+		// argument on the Go stack), wasm3 functions are native typed
+		// wasm functions. Their Go parameters and results map to wasm
+		// function params/results, carried by the SSA "registers"
+		// R0-R15 / F0-F31 — which the obj backend emits as wasm locals.
+		c.intParamRegs = paramIntRegWasm3
+		c.floatParamRegs = paramFloatRegWasm3
 		c.FPReg = framepointerRegWasm3
 		c.LinkReg = linkRegWasm3
 		c.hasGReg = true

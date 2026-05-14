@@ -257,6 +257,64 @@ const (
 	AMOVD
 
 	AWORD
+
+	// WebAssembly 3.0 opcodes: exception handling, typed function
+	// references, and garbage collection. These are recognized and encoded
+	// by the assembler (milestone M1) but are not yet emitted by the
+	// compiler; lowering to them lands in milestone M2. See
+	// doc/wasm3-design.md. The stack-switching opcodes are deliberately
+	// omitted until milestone M4 because that proposal is not yet frozen.
+
+	// Exception handling (Wasm 3.0).
+	AThrow    // opcode 0x08
+	AThrowRef // opcode 0x0A
+	ATryTable // opcode 0x1F
+	// Typed function references (Wasm 3.0).
+	ACallRef       // opcode 0x14
+	AReturnCallRef // opcode 0x15
+	ARefNull       // opcode 0xD0
+	ARefIsNull     // opcode 0xD1
+	ARefFunc       // opcode 0xD2
+	ARefEq         // opcode 0xD3
+	ARefAsNonNull  // opcode 0xD4
+	ABrOnNull      // opcode 0xD5
+	ABrOnNonNull   // opcode 0xD6
+
+	// Garbage collection (Wasm 3.0). All 0xFB-prefixed; the order of these
+	// constants must match the sub-opcode encoding 0x00..0x1E, because the
+	// assembler derives the sub-opcode by subtracting AStructNew.
+	AStructNew        // opcode 0xFB 0x00
+	AStructNewDefault // opcode 0xFB 0x01
+	AStructGet        // opcode 0xFB 0x02
+	AStructGetS       // opcode 0xFB 0x03
+	AStructGetU       // opcode 0xFB 0x04
+	AStructSet        // opcode 0xFB 0x05
+	AArrayNew         // opcode 0xFB 0x06
+	AArrayNewDefault  // opcode 0xFB 0x07
+	AArrayNewFixed    // opcode 0xFB 0x08
+	AArrayNewData     // opcode 0xFB 0x09
+	AArrayNewElem     // opcode 0xFB 0x0A
+	AArrayGet         // opcode 0xFB 0x0B
+	AArrayGetS        // opcode 0xFB 0x0C
+	AArrayGetU        // opcode 0xFB 0x0D
+	AArraySet         // opcode 0xFB 0x0E
+	AArrayLen         // opcode 0xFB 0x0F
+	AArrayFill        // opcode 0xFB 0x10
+	AArrayCopy        // opcode 0xFB 0x11
+	AArrayInitData    // opcode 0xFB 0x12
+	AArrayInitElem    // opcode 0xFB 0x13
+	ARefTest          // opcode 0xFB 0x14
+	ARefTestNull      // opcode 0xFB 0x15
+	ARefCast          // opcode 0xFB 0x16
+	ARefCastNull      // opcode 0xFB 0x17
+	ABrOnCast         // opcode 0xFB 0x18
+	ABrOnCastFail     // opcode 0xFB 0x19
+	AAnyConvertExtern // opcode 0xFB 0x1A
+	AExternConvertAny // opcode 0xFB 0x1B
+	ARefI31           // opcode 0xFB 0x1C
+	AI31GetS          // opcode 0xFB 0x1D
+	AI31GetU          // opcode 0xFB 0x1E
+
 	ALAST
 )
 

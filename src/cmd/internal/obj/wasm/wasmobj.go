@@ -1391,6 +1391,36 @@ func writeOpcode(w *bytes.Buffer, as obj.As) {
 	case as < ALast:
 		w.WriteByte(0xFC)
 		w.WriteByte(byte(as - AI32TruncSatF32S + 0x00))
+	case as >= AStructNew && as <= AI31GetU:
+		// WebAssembly 3.0 garbage-collection opcodes are 0xFB-prefixed; the
+		// sub-opcode 0x00..0x1E is the offset from AStructNew (the constants
+		// in a.out.go are ordered to match).
+		w.WriteByte(0xFB)
+		w.WriteByte(byte(as - AStructNew))
+	case as == AThrow:
+		w.WriteByte(0x08)
+	case as == AThrowRef:
+		w.WriteByte(0x0A)
+	case as == ATryTable:
+		w.WriteByte(0x1F)
+	case as == ACallRef:
+		w.WriteByte(0x14)
+	case as == AReturnCallRef:
+		w.WriteByte(0x15)
+	case as == ARefNull:
+		w.WriteByte(0xD0)
+	case as == ARefIsNull:
+		w.WriteByte(0xD1)
+	case as == ARefFunc:
+		w.WriteByte(0xD2)
+	case as == ARefEq:
+		w.WriteByte(0xD3)
+	case as == ARefAsNonNull:
+		w.WriteByte(0xD4)
+	case as == ABrOnNull:
+		w.WriteByte(0xD5)
+	case as == ABrOnNonNull:
+		w.WriteByte(0xD6)
 	default:
 		panic(fmt.Sprintf("unexpected assembler op: %s", as))
 	}

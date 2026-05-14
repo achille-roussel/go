@@ -5,6 +5,7 @@
 package wasm3
 
 import (
+	"cmd/compile/internal/ir"
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
 	"cmd/internal/wasmgc"
@@ -99,6 +100,49 @@ func (c *typeCollector) loweredStorages(ft *types.Type) (params, results []wasmg
 		}
 	}
 	return params, results
+}
+
+// attachWasmType attaches fn's typed-ABI signature to its LSym as an
+// obj.WasmType aux symbol, so the linker (cmd/link/internal/wasm's
+// asm3.go) declares the function with its real wasm signature instead
+// of the degenerate ()->(). It is wired in as ssagen.Arch.PrepareFunc
+// and runs once per function, after genssa and before the obj backend.
+//
+// Stage C.1: only signatures whose every parameter and result is a Go
+// scalar are attached. Those lower to wasm primitives and need no GC
+// type table. A signature that mentions a pointer, string, slice,
+// struct or other composite would lower to reference fields, which the
+// linker cannot yet resolve — it needs the per-package wasmgc.Table
+// the compiler does not emit yet. Such a function is left without an
+// aux and falls back to ()->(); its body is the unreachable stub until
+// the reference rungs of the bring-up ladder land. See
+// doc/wasm3-m2-cutover-notes.md §5.
+func attachWasmType(fn *ir.Func) {
+	ft := fn.Type()
+	if ft == nil || ft.Kind() != types.TFUNC {
+		return
+	}
+	// //go:wasmimport and //go:wasmexport functions already carry a
+	// typed signature to the linker through their own aux symbol (which
+	// is also emitted as a goobj.AuxWasmType); attaching a second one
+	// would be a duplicate.
+	if fn.WasmImport != nil || fn.WasmExport != nil {
+		return
+	}
+	for _, p := range ft.RecvParams() {
+		if _, ok := scalarPrim(p.Type.Kind()); !ok {
+			return
+		}
+	}
+	for _, r := range ft.Results() {
+		if _, ok := scalarPrim(r.Type.Kind()); !ok {
+			return
+		}
+	}
+	// Every slot is primitive, so loweredSignature touches no GC types
+	// and the throwaway collector's table stays empty.
+	sig := newTypeCollector().loweredSignature(ft)
+	fn.LSym.Func().WasmType = &obj.WasmType{WasmFuncType: sig}
 }
 
 // collectSignature reserves and returns the table index of the wasm

@@ -312,6 +312,10 @@ func Compile(fn *ir.Func, worker int, profile *pgoir.Profile) {
 	pp := objw.NewProgs(fn, worker)
 	defer pp.Free()
 	genssa(f, pp)
+
+	if Arch.PrepareFunc != nil {
+		Arch.PrepareFunc(fn)
+	}
 	// Check frame size again.
 	// The check above included only the space needed for local variables.
 	// After genssa, the space needed includes local variables and the callee arg region.

@@ -146,6 +146,8 @@ func Init(arch *ssagen.ArchInfo) {
 	arch.SSAMarkMoves = ssaMarkMoves
 	arch.SSAGenValue = ssaGenValue
 	arch.SSAGenBlock = ssaGenBlock
+
+	arch.PrepareFunc = attachWasmType
 }
 
 func zeroRange(pp *objw.Progs, p *obj.Prog, off, cnt int64, state *uint32) *obj.Prog {

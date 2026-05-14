@@ -67,6 +67,9 @@ func preprocess3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 	if we := s.Func().WasmExport; we != nil {
 		we.CreateAuxSym()
 	}
+	if wt := s.Func().WasmType; wt != nil {
+		wt.CreateAuxSym()
+	}
 }
 
 // assemble3 encodes a function body for GOARCH=wasm3.
@@ -103,9 +106,16 @@ func assemble3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 		return
 	}
 
-	// Not yet encodable at this rung: emit the degenerate stub.
+	// Not yet encodable at this rung: emit the degenerate stub. The
+	// `unreachable` is what makes the stub valid against *any* declared
+	// signature — once the compiler attaches a real typed signature
+	// (e.g. (i64,i64)->i64), a bare `end` would fail validation because
+	// the wasm stack would not hold the declared results, but an
+	// unreachable body type-checks against every signature. A function
+	// that traps here is one whose real body lands in a later rung.
 	s.P = []byte{
 		0x00, // local declaration count: 0
+		0x00, // unreachable
 		0x0b, // end
 	}
 }
@@ -116,6 +126,15 @@ func assemble3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 // can fall back to the stub. See assemble3's comment for the staging
 // rationale.
 func encodeWasm3Body(s *obj.LSym) (body []byte, ok bool) {
+	// The trivial walked body leaves the wasm stack empty on return,
+	// which only type-checks against a signature with no results. A
+	// function that declares results needs a later rung; until then it
+	// falls back to the unreachable stub, which is valid against any
+	// signature.
+	if wasm3ResultCount(s) != 0 {
+		return nil, false
+	}
+
 	w := new(bytes.Buffer)
 	w.WriteByte(0x00) // local declaration count: 0
 
@@ -141,6 +160,24 @@ func encodeWasm3Body(s *obj.LSym) (body []byte, ok bool) {
 
 	w.WriteByte(0x0b) // end
 	return w.Bytes(), true
+}
+
+// wasm3ResultCount reports how many wasm result values s's declared
+// signature has. The signature reaches the linker through whichever
+// aux the function carries: an obj.WasmType for ordinary wasm3
+// functions, or the WasmImport/WasmExport aux for functions bearing
+// those pragmas. A function with no aux is declared ()->().
+func wasm3ResultCount(s *obj.LSym) int {
+	fn := s.Func()
+	switch {
+	case fn.WasmType != nil:
+		return len(fn.WasmType.Results)
+	case fn.WasmExport != nil:
+		return len(fn.WasmExport.Results)
+	case fn.WasmImport != nil:
+		return len(fn.WasmImport.Results)
+	}
+	return 0
 }
 
 // entrySym is the wasip1 entry symbol; cmd/link exports it as "_start".

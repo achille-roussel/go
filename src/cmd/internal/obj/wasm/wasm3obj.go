@@ -26,6 +26,7 @@ package wasm
 // and only the function *semantics* are still stubbed.
 
 import (
+	"bytes"
 	"cmd/internal/obj"
 	"cmd/internal/objabi"
 )
@@ -70,26 +71,76 @@ func preprocess3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 
 // assemble3 encodes a function body for GOARCH=wasm3.
 //
-// Stage A/B: every function is emitted as the minimal valid body for
-// the degenerate ()->() signature — zero local declarations followed by
-// `end` (0x0b). asm3.go declares every function as ()->() until the
-// compiler attaches typed signatures, so this body validates against
-// its declared type.
+// Stage C: assemble3 walks the obj.Prog stream the wasm3 SSA backend
+// produced and encodes as much of it as the current rung of the
+// bring-up ladder supports. The first rung handles only the trivial
+// body — the no-op progs the backend threads through every function
+// (TEXT/FUNCDATA/PCDATA/RESUMEPOINT) and the terminating RET of a
+// ()->() function.
+//
+// A function that contains any instruction this rung does not yet
+// understand falls back to the degenerate ()->() stub body (zero
+// locals, bare `end`), exactly as Stage A/B emitted for every
+// function. That keeps an empty main — whose own body is trivial and
+// is now genuinely walked — buildable and runnable while the ladder is
+// climbed: each later rung (arithmetic, then struct/pointer) teaches
+// assemble3 more instruction encodings, including the 0xFB GC-opcode
+// immediates, and more functions graduate from the stub to a real
+// body. asm3.go declares every function as ()->() until the compiler
+// attaches typed signatures, so both the stub and a trivial walked
+// body validate against the declared type.
 //
 // The entry symbol is the one exception (Stage B): it is given a real
 // body that calls main.main, so an empty Go program runs end to end.
-// Stage C replaces the generic stub with real codegen: walking the
-// obj.Prog stream, declaring typed locals, and encoding the instruction
-// operands (including the 0xFB GC-opcode immediates).
 func assemble3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 	if s.Name == entrySym {
 		assembleWasm3Entry(ctxt, s)
 		return
 	}
+
+	if body, ok := encodeWasm3Body(s); ok {
+		s.P = body
+		return
+	}
+
+	// Not yet encodable at this rung: emit the degenerate stub.
 	s.P = []byte{
 		0x00, // local declaration count: 0
 		0x0b, // end
 	}
+}
+
+// encodeWasm3Body walks s's obj.Prog stream and encodes it as a typed
+// wasm function body, returning ok=false (and no body) the moment it
+// meets an instruction the current rung does not support, so assemble3
+// can fall back to the stub. See assemble3's comment for the staging
+// rationale.
+func encodeWasm3Body(s *obj.LSym) (body []byte, ok bool) {
+	w := new(bytes.Buffer)
+	w.WriteByte(0x00) // local declaration count: 0
+
+	for p := s.Func().Text; p != nil; p = p.Link {
+		switch p.As {
+		case obj.ATEXT, obj.AFUNCDATA, obj.APCDATA, obj.ANOP, ANop, ARESUMEPOINT:
+			// No body contribution: ATEXT carries the signature,
+			// FUNCDATA/PCDATA carry metadata, and RESUMEPOINT is the
+			// Go-stack ABI's block marker, which the wasm3 typed ABI
+			// has no use for.
+			continue
+
+		case obj.ARET:
+			// Trivial ()->() function: a bare return. Typed results
+			// land in a later rung once signatures carry them.
+			writeOpcode(w, AReturn)
+			continue
+
+		default:
+			return nil, false
+		}
+	}
+
+	w.WriteByte(0x0b) // end
+	return w.Bytes(), true
 }
 
 // entrySym is the wasip1 entry symbol; cmd/link exports it as "_start".

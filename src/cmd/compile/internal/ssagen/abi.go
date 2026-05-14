@@ -359,7 +359,7 @@ func CreateWasmImportWrapper(fn *ir.Func) bool {
 	if fn.WasmImport == nil {
 		return false
 	}
-	if buildcfg.GOARCH != "wasm" {
+	if buildcfg.GOARCH != "wasm" && buildcfg.GOARCH != "wasm3" {
 		base.FatalfAt(fn.Pos(), "CreateWasmImportWrapper call not supported on %s: func was %v", buildcfg.GOARCH, fn)
 	}
 
@@ -382,7 +382,7 @@ func GenWasmExportWrapper(wrapped *ir.Func) {
 	if wrapped.WasmExport == nil {
 		return
 	}
-	if buildcfg.GOARCH != "wasm" {
+	if buildcfg.GOARCH != "wasm" && buildcfg.GOARCH != "wasm3" {
 		base.FatalfAt(wrapped.Pos(), "GenWasmExportWrapper call not supported on %s: func was %v", buildcfg.GOARCH, wrapped)
 	}
 

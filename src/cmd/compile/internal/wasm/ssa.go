@@ -14,6 +14,7 @@ import (
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
 	"cmd/internal/obj/wasm"
+	"internal/buildcfg"
 )
 
 /*
@@ -131,6 +132,12 @@ import (
 
 func Init(arch *ssagen.ArchInfo) {
 	arch.LinkArch = &wasm.Linkwasm
+	if buildcfg.GOARCH == "wasm3" {
+		// M0: wasm3 shares the wasm backend but must keep its own arch
+		// identity so the compiler, assembler, and linker agree. See
+		// doc/wasm3-design.md.
+		arch.LinkArch = &wasm.Linkwasm3
+	}
 	arch.REGSP = wasm.REG_SP
 	arch.MAXWIDTH = 1 << 50
 

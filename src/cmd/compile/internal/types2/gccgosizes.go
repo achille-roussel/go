@@ -38,4 +38,5 @@ var gccgoArchSizes = map[string]*StdSizes{
 	"sparc":       {4, 8},
 	"sparc64":     {8, 8},
 	"wasm":        {8, 8},
+	"wasm3":       {8, 8},
 }

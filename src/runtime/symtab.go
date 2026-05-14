@@ -656,7 +656,7 @@ func moduledataverify1(datap *moduledata) {
 	max := datap.textAddr(datap.ftab[nftab].entryoff)
 	minpc := datap.minpc
 	maxpc := datap.maxpc
-	if GOARCH == "wasm" {
+	if GOARCH == "wasm" || GOARCH == "wasm3" {
 		// On Wasm, the func table contains the function index, whereas
 		// the "PC" is function index << 16 + block index.
 		maxpc = alignUp(maxpc, 1<<16) // round up for end PC
@@ -703,12 +703,12 @@ func (md *moduledata) textAddr(off32 uint32) uintptr {
 				break
 			}
 		}
-		if res > md.etext && GOARCH != "wasm" { // on wasm, functions do not live in the same address space as the linear memory
+		if res > md.etext && GOARCH != "wasm" && GOARCH != "wasm3" { // on wasm, functions do not live in the same address space as the linear memory
 			println("runtime: textAddr", hex(res), "out of range", hex(md.text), "-", hex(md.etext))
 			throw("runtime: text offset out of range")
 		}
 	}
-	if GOARCH == "wasm" {
+	if GOARCH == "wasm" || GOARCH == "wasm3" {
 		// On Wasm, a text offset (e.g. in the method table) is function index, whereas
 		// the "PC" is function index << 16 + block index.
 		res <<= 16
@@ -724,14 +724,14 @@ func (md *moduledata) textAddr(off32 uint32) uintptr {
 //go:nosplit
 func (md *moduledata) textOff(pc uintptr) (uint32, bool) {
 	off := pc - md.text
-	if GOARCH == "wasm" {
+	if GOARCH == "wasm" || GOARCH == "wasm3" {
 		// On Wasm, the func table contains the function index, whereas
 		// the "PC" is function index << 16 + block index.
 		off >>= 16
 	}
 	res := uint32(off)
 	if len(md.textsectmap) > 1 {
-		if GOARCH == "wasm" {
+		if GOARCH == "wasm" || GOARCH == "wasm3" {
 			fatal("unexpected multiple text sections on Wasm")
 		}
 		for i, sect := range md.textsectmap {
@@ -932,7 +932,7 @@ func findfunc(pc uintptr) funcInfo {
 	}
 
 	x := uintptr(pcOff) + datap.text - datap.minpc // TODO: are datap.text and datap.minpc always equal?
-	if GOARCH == "wasm" {
+	if GOARCH == "wasm" || GOARCH == "wasm3" {
 		// On Wasm, pcOff is the function index, whereas
 		// the "PC" is function index << 16 + block index.
 		x = uintptr(pcOff)<<16 + datap.text - datap.minpc

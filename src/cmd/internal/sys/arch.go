@@ -24,6 +24,7 @@ const (
 	RISCV64 = goarch.RISCV64
 	S390X   = goarch.S390X
 	Wasm    = goarch.WASM
+	Wasm3   = goarch.WASM3
 )
 
 // Arch represents an individual architecture.
@@ -269,6 +270,23 @@ var ArchWasm = &Arch{
 	FixedFrameSize: 0,
 }
 
+// ArchWasm3 is the WebAssembly target backed by the WebAssembly 3.0 GC,
+// stack-switching, and exception-handling proposals. For milestone M0 it shares
+// the Wasm arch family so that family-keyed checks (Family == sys.Wasm) treat it
+// identically to wasm; see doc/wasm3-design.md.
+var ArchWasm3 = &Arch{
+	Name:           "wasm3",
+	Family:         Wasm,
+	ByteOrder:      binary.LittleEndian,
+	PtrSize:        8,
+	RegSize:        8,
+	MinLC:          1,
+	Alignment:      1,
+	CanMergeLoads:  false,
+	HasLR:          false,
+	FixedFrameSize: 0,
+}
+
 var Archs = [...]*Arch{
 	Arch386,
 	ArchAMD64,
@@ -284,4 +302,5 @@ var Archs = [...]*Arch{
 	ArchRISCV64,
 	ArchS390X,
 	ArchWasm,
+	ArchWasm3,
 }

@@ -69,6 +69,9 @@ var wasmFuncTypes = map[string]*wasmFuncType{
 	"_rt0_wasm_js":            {Params: []byte{}},                                         //
 	"_rt0_wasm_wasip1":        {Params: []byte{}},                                         //
 	"_rt0_wasm_wasip1_lib":    {Params: []byte{}},                                         //
+	"_rt0_wasm3_js":           {Params: []byte{}},                                         // M0: wasm3 entry, see doc/wasm3-design.md
+	"_rt0_wasm3_wasip1":       {Params: []byte{}},                                         //
+	"_rt0_wasm3_wasip1_lib":   {Params: []byte{}},                                         //
 	"wasm_export__start":      {},                                                         //
 	"wasm_export_run":         {Params: []byte{I32, I32}},                                 // argc, argv
 	"wasm_export_resume":      {Params: []byte{}},                                         //
@@ -420,12 +423,14 @@ func writeExportSec(ctxt *ld.Link, ldr *loader.Loader, lenHostImports int) {
 	case "wasip1":
 		writeUleb128(ctxt.Out, uint64(2+len(ldr.WasmExports))) // number of exports
 		var entry, entryExpName string
+		// The entry symbol follows the _rt0_<GOARCH>_<GOOS> convention used by
+		// cmd/link/internal/ld/lib.go, so it is "_rt0_wasm3_wasip1" for wasm3.
 		switch ctxt.BuildMode {
 		case ld.BuildModeExe:
-			entry = "_rt0_wasm_wasip1"
+			entry = "_rt0_" + buildcfg.GOARCH + "_wasip1"
 			entryExpName = "_start"
 		case ld.BuildModeCShared:
-			entry = "_rt0_wasm_wasip1_lib"
+			entry = "_rt0_" + buildcfg.GOARCH + "_wasip1_lib"
 			entryExpName = "_initialize"
 		}
 		s := ldr.Lookup(entry, 0)

@@ -455,7 +455,7 @@ func gogoarchTags() []string {
 			list = append(list, GOARCH+"."+"rva23u64")
 		}
 		return list
-	case "wasm":
+	case "wasm", "wasm3":
 		var list []string
 		// SatConv is always enabled
 		list = append(list, GOARCH+".satconv")

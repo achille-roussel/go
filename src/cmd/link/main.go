@@ -68,6 +68,11 @@ func main() {
 		arch, theArch = s390x.Init()
 	case "wasm":
 		arch, theArch = wasm.Init()
+	case "wasm3":
+		// M0: wasm3 delegates to the wasm linker backend so its output is
+		// identical to wasm. The wasm3-specific backend is introduced in
+		// milestone M2. See doc/wasm3-design.md.
+		arch, theArch = wasm.Init()
 	}
 	ld.Main(arch, theArch)
 }

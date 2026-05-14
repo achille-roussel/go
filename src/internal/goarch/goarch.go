@@ -28,6 +28,7 @@ const (
 	RISCV64
 	S390X
 	WASM
+	WASM3
 )
 
 // PtrSize is the size of a pointer in bytes - unsafe.Sizeof(uintptr(0)) but as an ideal constant.

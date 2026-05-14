@@ -7,6 +7,7 @@ package wasm
 import (
 	"cmd/internal/sys"
 	"cmd/link/internal/ld"
+	"internal/buildcfg"
 )
 
 func Init() (*sys.Arch, ld.Arch) {
@@ -22,7 +23,13 @@ func Init() (*sys.Arch, ld.Arch) {
 		Gentext:       gentext,
 	}
 
-	return sys.ArchWasm, theArch
+	// M0: wasm3 uses the wasm linker backend but must report its own arch so
+	// that buildcfg.GOARCH matches arch.Name. See doc/wasm3-design.md.
+	arch := sys.ArchWasm
+	if buildcfg.GOARCH == "wasm3" {
+		arch = sys.ArchWasm3
+	}
+	return arch, theArch
 }
 
 func archinit(ctxt *ld.Link) {

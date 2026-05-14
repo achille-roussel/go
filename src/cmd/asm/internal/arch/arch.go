@@ -80,7 +80,12 @@ func Set(GOARCH string, shared bool) *Arch {
 	case "s390x":
 		return archS390x()
 	case "wasm":
-		return archWasm()
+		return archWasm(&wasm.Linkwasm)
+	case "wasm3":
+		// M0: wasm3 shares the wasm assembler logic but keeps its own arch
+		// identity so the compiler, assembler, and linker agree. See
+		// doc/wasm3-design.md.
+		return archWasm(&wasm.Linkwasm3)
 	}
 	return nil
 }
@@ -769,7 +774,7 @@ func archS390x() *Arch {
 	}
 }
 
-func archWasm() *Arch {
+func archWasm(linkArch *obj.LinkArch) *Arch {
 	instructions := make(map[string]obj.As)
 	for i, s := range obj.Anames {
 		instructions[s] = obj.As(i)
@@ -781,7 +786,7 @@ func archWasm() *Arch {
 	}
 
 	return &Arch{
-		LinkArch:       &wasm.Linkwasm,
+		LinkArch:       linkArch,
 		Instructions:   instructions,
 		Register:       wasm.Register,
 		RegisterPrefix: nil,

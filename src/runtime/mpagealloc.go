@@ -61,7 +61,7 @@ const (
 	// size (see heapArenaBytes).
 	pallocChunkPages    = 1 << logPallocChunkPages
 	pallocChunkBytes    = pallocChunkPages * pageSize
-	logPallocChunkPages = 9*(1-goarch.IsWasm) + 6*goarch.IsWasm
+	logPallocChunkPages = 9*(1-goarch.IsWasmFamily) + 6*goarch.IsWasmFamily
 	logPallocChunkBytes = logPallocChunkPages + gc.PageShift
 
 	// The number of radix bits for each level.

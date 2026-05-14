@@ -249,7 +249,7 @@ func (p *noder) pragma(pos syntax.Pos, blankLine bool, text string, old syntax.P
 			break
 		}
 
-		if buildcfg.GOARCH == "wasm" {
+		if buildcfg.GOARCH == "wasm" || buildcfg.GOARCH == "wasm3" {
 			// Only actually use them if we're compiling to WASM though.
 			pragma.WasmImport = &WasmImport{
 				Pos:    pos,
@@ -266,7 +266,7 @@ func (p *noder) pragma(pos syntax.Pos, blankLine bool, text string, old syntax.P
 			break
 		}
 
-		if buildcfg.GOARCH == "wasm" {
+		if buildcfg.GOARCH == "wasm" || buildcfg.GOARCH == "wasm3" {
 			// Only actually use them if we're compiling to WASM though.
 			pragma.WasmExport = &WasmExport{
 				Pos:  pos,

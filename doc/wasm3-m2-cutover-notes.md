@@ -359,34 +359,60 @@ This rung is one interlocking change with no working intermediate
 state *within itself*, but it decomposes into two independently
 landable commits:
 
-- **C.1 — typed signatures + unreachable stub.** The compiler attaches
-  a `WasmType` to every wasm3 func `LSym` (`loweredSignature` /
-  `collectSignature` during wasm3 codegen) and emits the per-package
-  `wasmgc.Table` aux; `asm3.go` reads them and declares each function
-  with its true signature instead of `()->()`. This is the §4 step-1
-  and step-2 remainder, and entangles the per-package-table emission
-  + serialization + linker merge — the large piece. **Key enabler:**
-  change the `encodeWasm3Body` fallback stub from `localcount=0; end`
-  (only valid for `()->()`) to `localcount=0; unreachable; end`
-  (`0x00 0x00 0x0b`) — `unreachable` validates against *any* declared
-  signature, so a function with a real typed signature but no
-  walkable body still validates. After C.1: every function carries
-  its true type; `main.main` (`()->()`) still runs via its real
-  walked body; everything else traps if reached.
+- **C.1 — typed signatures + unreachable stub.** ✅ DONE
+  (`9ffa8cd069`). Added `ssagen.ArchInfo.PrepareFunc`, a per-function
+  hook called after `genssa`; the wasm3 backend wires it to
+  `attachWasmType`, which lowers an all-scalar Go signature with
+  `loweredSignature` and attaches it as an `obj.WasmType` aux —
+  `asm3.go` already consumes that aux. `preprocess3` now also
+  materializes the `WasmType` aux symbol. The `encodeWasm3Body`
+  fallback stub became `localcount=0; unreachable; end`
+  (`0x00 0x00 0x0b`): `unreachable` validates against *any* declared
+  signature. `encodeWasm3Body` also declines any function whose
+  declared signature has results, since the trivial walked body
+  leaves the stack empty. Verified: empty main still runs; a
+  `//go:wasmexport` scalar function is now declared and validates
+  with its real `(i32,i32)->i32` type. Reference-typed signatures
+  (pointers/strings/slices/structs) are still left as `()->()` — they
+  need the per-package `wasmgc.Table` emission, which is the larger
+  §4 step-1/step-2 remainder and is deferred past the arithmetic rung.
 
-- **C.2 — the arithmetic body.** Diverge `Wasm3.rules` / `Wasm3Ops.go`
-  + `wasm3/ssa.go` so a leaf arithmetic function (`func add(a, b int)
-  int { return a+b }`) emits a typed body: `OpArg` → `local.get` of
-  the parameter index, arithmetic ops unchanged, `RET` → value on the
-  wasm stack + `return`. Extend `encodeWasm3Body` to encode local
-  declarations (count + types from regalloc — note `assemble`'s reg
-  map already puts `REG_R0+` in wasm locals, the wasm3 version just
-  drops the PC_B param and local-SP so locals start at the param
-  count), `LocalGet`/`LocalSet`/`LocalTee`, `I64Const` and the
-  arithmetic opcodes, and a typed `return`. Verify with `add` called
-  from `main` and observed via `os.Exit` (exit code) on
-  `wasmtime -W gc`.
+- **C.2 — the arithmetic body.** The blocker mapped: wasm3 currently
+  has **zero register-arg slots**. `cmd/compile/internal/ssa/config.go`
+  sets `c.intParamRegs` / `c.floatParamRegs` per arch; the `wasm`/
+  `wasm3` cases set neither, so `ABI1 = NewABIConfig(0, 0, …)` equals
+  `ABI0` — a pure memory ABI, args/results travelling through the Go
+  stack in linear memory (`I64Load … (SP)` / `I64Store`). C.2 is
+  therefore "give wasm3 a register ABI whose registers are wasm
+  locals":
+    1. `config.go` — in the `wasm3` case, set `c.intParamRegs` /
+       `c.floatParamRegs` to register lists drawn from `registersWasm3`
+       (the existing 16 GP + FP regs). Then `ABI1` carries register
+       params and `abiForFunc` hands `ABIInternal` functions a real
+       register ABI; args become `OpArgIntReg`/`OpArgFloatReg`,
+       results go to result registers.
+    2. `wasm3/ssa.go` — handle `OpArgIntReg`/`OpArgFloatReg` (the value
+       is already in its assigned register = wasm local; no prog, like
+       other register arches) and make `BlockRet` place the result
+       register on the wasm stack before `return`. The Go-stack
+       `OpWasm3LoweredAddr {NAME_PARAM}` / SP-frame paths stay for
+       non-leaf cases but a leaf arithmetic function no longer uses
+       them.
+    3. `encodeWasm3Body` — graduate from the trivial walk to a real
+       (but still SP-frame-free) encoder: local declarations (params
+       are locals `0..nparams-1`, spill regs follow — no PC_B param,
+       no local-SP, unlike `assemble`'s map), `Get`/`Set`/`Tee` of
+       registers → `local.get/set/tee`, `I64Const` + the arithmetic
+       opcodes, and a typed `return` that leaves the result on the
+       stack.
+  This is one interlocking change with no working intermediate state
+  within itself (the ABI flip, the backend, and the encoder must land
+  together), but it is the standard Go register-ABI mechanism — the
+  only unusual part is that the "registers" are wasm locals and the
+  obj backend encodes them as such. Verify with `add` called from
+  `main`, observed via the `os.Exit` exit code on `wasmtime -W gc`.
 
-Then the struct and pointer rungs reuse the same encoder, adding the
+Then the struct and pointer rungs reuse the C.2 encoder, adding the
 `0xFB` GC-opcode immediates and `struct.new`/`struct.get` lowering
-(§4 steps 3–4).
+(§4 steps 3–4), and the deferred reference-typed-signature work brings
+in the per-package `wasmgc.Table` (§4 steps 1–2).

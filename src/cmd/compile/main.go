@@ -18,6 +18,7 @@ import (
 	"cmd/compile/internal/s390x"
 	"cmd/compile/internal/ssagen"
 	"cmd/compile/internal/wasm"
+	"cmd/compile/internal/wasm3"
 	"cmd/compile/internal/x86"
 	"fmt"
 	"internal/buildcfg"
@@ -40,10 +41,10 @@ var archInits = map[string]func(*ssagen.ArchInfo){
 	"riscv64":  riscv64.Init,
 	"s390x":    s390x.Init,
 	"wasm":     wasm.Init,
-	// M0: wasm3 delegates to the wasm backend so its output is identical to
-	// wasm. The wasm3-specific backend is introduced in milestone M2.
-	// See doc/wasm3-design.md.
-	"wasm3": wasm.Init,
+	// M2: wasm3 has its own backend package. It starts as a copy of the
+	// wasm backend (the pure-refactor checkpoint) and diverges to the
+	// WebAssembly 3.0 object model later in M2. See doc/wasm3-m2-design.md.
+	"wasm3": wasm3.Init,
 }
 
 func main() {

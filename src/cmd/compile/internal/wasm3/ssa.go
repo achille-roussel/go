@@ -2,7 +2,13 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package wasm
+// Package wasm3 is the compiler backend for GOARCH=wasm3.
+//
+// For the M2 pure-refactor checkpoint it is a copy of the wasm backend
+// (cmd/compile/internal/wasm); the cutover to the WebAssembly 3.0 object
+// model — typed-function calling convention, GC types, struct.new
+// allocation — lands later in milestone M2. See doc/wasm3-m2-design.md.
+package wasm3
 
 import (
 	"cmd/compile/internal/base"
@@ -130,7 +136,7 @@ import (
 */
 
 func Init(arch *ssagen.ArchInfo) {
-	arch.LinkArch = &wasm.Linkwasm
+	arch.LinkArch = &wasm.Linkwasm3
 	arch.REGSP = wasm.REG_SP
 	arch.MAXWIDTH = 1 << 50
 

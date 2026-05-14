@@ -209,11 +209,19 @@ These are not M4/M6 deferrals — if any is wrong, M2 does not link or does not 
 
 M2 lands as one change. To test it incrementally:
 
-1. **`.wat` spike (hard prerequisite, do first).** Hand-write the target WasmGC module
-   for `func main(){}` and a one-struct program: the typed calling convention, the
-   type section, `struct.new` usage, the bump allocator, the degenerate entry.
-   Validate with `wasm-tools`, run on wasmtime. This pins the *shape* M2 must produce
-   and resolves residual representation questions before any backend code.
+1. **`.wat` spike — DONE.** `doc/wasm3-m2-spike.wat` is the hand-written target
+   WasmGC module for a representative program (a self-recursive `$point` struct,
+   `struct.new`/`struct.get`, a GC `(array i8)` string, the bump allocator, the
+   GC→linear copy, WASI `fd_write`, typed functions, the degenerate `_start`). It
+   passes `wasm-tools validate` and runs on `wasmtime run -W gc` (prints its message,
+   exits 0 — exit code is `p.x+p.y-42`, so 0 confirms `struct.new`+`struct.get`
+   worked). It pins the shape M2 must produce; nothing in it contradicted this
+   design. Findings: the bump allocator is genuinely a single global plus a
+   ~3-instruction function; `array.new_data` from a passive data segment is the
+   clean lowering for a string constant; and **`wasmtime` needs `-W gc`** — so the
+   `lib/wasm/go_wasip1_wasm3_exec` wrapper must add `-W gc` once M2 emits real
+   WasmGC binaries (it is a harmless no-op for the M0/M1 non-GC binaries, so it can
+   be added at the start of M2).
 2. Backend fork compiles and `GOARCH=wasm3` still builds via the forked path *still
    emitting the old scheme* — pure-refactor checkpoint.
 3. The cutover lands. Test ladder: empty `main` → arithmetic → one struct → plain
@@ -224,7 +232,10 @@ M2 lands as one change. To test it incrementally:
 - The exact minimal subset `schedinit_wasm3` needs — derive empirically from link
   errors once the excluded files are out.
 - Whether `g`-as-module-global vs. a threaded value is cheapest given the kept call
-  sites; resolve in the `.wat` spike / step 2.
+  sites. (The spike used no `g` at all — its degenerate entry calls `main` directly;
+  the real M2 entry needs whatever the kept runtime's `getg()` sites require.)
 - Rec-group dependency ordering for the type section — validate against a fixture.
+  (The spike's single self-recursive `rec` group validates; multi-type dependency
+  ordering is still untested.)
 - Whether any kept stdlib package M2 must build pulls in `reflectcall` transitively —
-  audit item #2 above.
+  audit item #2 in §8.

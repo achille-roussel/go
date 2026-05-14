@@ -504,6 +504,7 @@ type FuncInfo struct {
 
 	WasmImport *WasmImport
 	WasmExport *WasmExport
+	WasmType   *WasmType
 
 	sehUnwindInfoSym *LSym
 }
@@ -777,6 +778,30 @@ func (we *WasmExport) CreateAuxSym() {
 	we.WasmFuncType.Write(&b)
 	p := b.Bytes()
 	we.AuxSym = &LSym{
+		Type: objabi.SDATA, // doesn't really matter
+		P:    append([]byte(nil), p...),
+		Size: int64(len(p)),
+	}
+}
+
+// WasmType carries the WebAssembly typed-function ABI of an ordinary
+// function for GOARCH=wasm3. Unlike GOARCH=wasm, where every function
+// shares the (i32)->i32 block-dispatch signature, wasm3 functions are
+// emitted as native typed wasm functions, so each one carries its own
+// WasmFuncType for the linker to intern into the type section.
+type WasmType struct {
+	WasmFuncType
+
+	// AuxSym is the serialization of WasmFuncType, passed to the linker
+	// as a goobj.AuxWasmType aux symbol.
+	AuxSym *LSym
+}
+
+func (wt *WasmType) CreateAuxSym() {
+	var b bytes.Buffer
+	wt.WasmFuncType.Write(&b)
+	p := b.Bytes()
+	wt.AuxSym = &LSym{
 		Type: objabi.SDATA, // doesn't really matter
 		P:    append([]byte(nil), p...),
 		Size: int64(len(p)),

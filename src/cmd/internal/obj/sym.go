@@ -499,6 +499,9 @@ func (ctxt *Link) traverseFuncAux(flag traverseFlag, fsym *LSym, fn func(parent 
 	if we := fninfo.WasmExport; we != nil {
 		auxsyms = append(auxsyms, we.AuxSym)
 	}
+	if wt := fninfo.WasmType; wt != nil {
+		auxsyms = append(auxsyms, wt.AuxSym)
+	}
 	for _, s := range auxsyms {
 		if s == nil || s.Size == 0 {
 			continue

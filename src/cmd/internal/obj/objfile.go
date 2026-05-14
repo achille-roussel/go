@@ -642,6 +642,12 @@ func (w *writer) Aux(s *LSym) {
 		if fn.WasmExport != nil {
 			w.aux1(goobj.AuxWasmType, fn.WasmExport.AuxSym)
 		}
+		if fn.WasmType != nil {
+			if fn.WasmType.AuxSym.Size == 0 {
+				panic("wasm3 type aux sym must have non-zero size")
+			}
+			w.aux1(goobj.AuxWasmType, fn.WasmType.AuxSym)
+		}
 	} else if v := s.VarInfo(); v != nil {
 		if v.dwarfInfoSym != nil && v.dwarfInfoSym.Size != 0 {
 			w.aux1(goobj.AuxDwarfInfo, v.dwarfInfoSym)
@@ -755,6 +761,12 @@ func nAuxSym(s *LSym) int {
 		if fn.WasmExport != nil {
 			n++
 		}
+		if fn.WasmType != nil {
+			if fn.WasmType.AuxSym == nil || fn.WasmType.AuxSym.Size == 0 {
+				panic("wasm3 type aux sym must exist and have non-zero size")
+			}
+			n++
+		}
 	} else if v := s.VarInfo(); v != nil {
 		if v.dwarfInfoSym != nil && v.dwarfInfoSym.Size != 0 {
 			n++
@@ -821,6 +833,9 @@ func genFuncInfoSyms(ctxt *Link) {
 		}
 		if we := fn.WasmExport; we != nil {
 			auxsyms = append(auxsyms, we.AuxSym)
+		}
+		if wt := fn.WasmType; wt != nil {
+			auxsyms = append(auxsyms, wt.AuxSym)
 		}
 		for _, s := range auxsyms {
 			if s == nil || s.Size == 0 {

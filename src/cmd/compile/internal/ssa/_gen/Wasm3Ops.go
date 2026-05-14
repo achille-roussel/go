@@ -264,6 +264,28 @@ func init() {
 		{name: "I32Rotl", asm: "I32Rotl", argLength: 2, reg: gp21, typ: "Int32"},     // rotl(arg0, arg1)
 		{name: "I64Rotl", asm: "I64Rotl", argLength: 2, reg: gp21, typ: "Int64"},     // rotl(arg0, arg1)
 		{name: "I64Popcnt", asm: "I64Popcnt", argLength: 1, reg: gp11, typ: "Int64"}, // popcnt(arg0)
+
+		// WebAssembly 3.0 garbage-collection ops. These implement the
+		// design-doc §6 object model: Go heap objects become host-GC
+		// structs and arrays instead of linear-memory blocks. Aux carries
+		// the *types.Type whose wasm type index the obj backend resolves;
+		// for the field accessors AuxInt carries the field index. They are
+		// defined here for the M2 cutover but are not yet produced by any
+		// rule in Wasm3.rules — the lowering that emits them lands in a
+		// later M2 commit. See doc/wasm3-m2-design.md §3, §5.
+		{name: "StructNew", argLength: -1, reg: gp01, aux: "Typ"},                                             // struct.new $Aux; allocates a struct of wasm type Aux with fields taken from args
+		{name: "StructNewDefault", argLength: 0, reg: gp01, aux: "Typ"},                                       // struct.new_default $Aux; allocates a zeroed struct of wasm type Aux
+		{name: "StructGet", argLength: 1, reg: gp11, aux: "Typ"},                                              // struct.get $Aux AuxInt; reads field AuxInt of struct arg0
+		{name: "StructSet", argLength: 2, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "Typ", typ: "Mem"},    // struct.set $Aux AuxInt; arg0=struct, arg1=value
+		{name: "ArrayNew", argLength: 2, reg: gp21, aux: "Typ"},                                               // array.new $Aux; arg0=element value, arg1=length
+		{name: "ArrayNewDefault", argLength: 1, reg: gp11, aux: "Typ"},                                        // array.new_default $Aux; arg0=length
+		{name: "ArrayGet", argLength: 2, reg: gp21, aux: "Typ"},                                               // array.get $Aux; arg0=array, arg1=index
+		{name: "ArraySet", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp, gp}}, aux: "Typ", typ: "Mem"}, // array.set $Aux; arg0=array, arg1=index, arg2=value
+		{name: "ArrayLen", argLength: 1, reg: gp11, typ: "Int64"},                                             // array.len; arg0=array
+		{name: "RefNull", argLength: 0, reg: gp01, aux: "Typ", rematerializeable: true},                       // ref.null $Aux
+		{name: "RefIsNull", argLength: 1, reg: gp11, typ: "Bool"},                                             // ref.is_null; arg0=ref
+		{name: "RefCast", argLength: 1, reg: gp11, aux: "Typ"},                                                // ref.cast (ref $Aux); arg0=ref
+		{name: "RefTest", argLength: 1, reg: gp11, aux: "Typ", typ: "Bool"},                                   // ref.test (ref $Aux); arg0=ref
 	}
 
 	archs = append(archs, arch{

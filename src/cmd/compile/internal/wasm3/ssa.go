@@ -292,6 +292,22 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		p := s.Prog(v.Op.Asm())
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: v.AuxInt}
 
+	case ssa.OpWasm3StructSet:
+		// struct.set $type AuxInt. The wasm type index for v.Aux and the
+		// field-index immediate are resolved by the obj backend; see
+		// doc/wasm3-m2-design.md §5. Not yet emitted by any rule.
+		getValue64(s, v.Args[0])
+		getValue64(s, v.Args[1])
+		p := s.Prog(wasm.AStructSet)
+		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: v.AuxInt}
+
+	case ssa.OpWasm3ArraySet:
+		// array.set $type. Not yet emitted by any rule.
+		getValue64(s, v.Args[0])
+		getValue64(s, v.Args[1])
+		getValue64(s, v.Args[2])
+		s.Prog(wasm.AArraySet)
+
 	case ssa.OpStoreReg:
 		getReg(s, wasm.REG_SP)
 		getValue64(s, v.Args[0])
@@ -456,6 +472,64 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		getValue64(s, v.Args[0])
 		s.Prog(v.Op.Asm())
 
+	// WebAssembly 3.0 garbage-collection ops (design-doc §6 object model).
+	// The wasm type index for v.Aux and, for the field accessors, the
+	// field-index immediate in v.AuxInt are resolved by the obj backend
+	// once type-section emission lands. These ops are not yet produced by
+	// any rule in Wasm3.rules. See doc/wasm3-m2-design.md §3, §5.
+	case ssa.OpWasm3StructNew:
+		for _, a := range v.Args {
+			getValue64(s, a)
+		}
+		s.Prog(wasm.AStructNew)
+
+	case ssa.OpWasm3StructNewDefault:
+		s.Prog(wasm.AStructNewDefault)
+
+	case ssa.OpWasm3StructGet:
+		getValue64(s, v.Args[0])
+		p := s.Prog(wasm.AStructGet)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: v.AuxInt}
+
+	case ssa.OpWasm3ArrayNew:
+		getValue64(s, v.Args[0])
+		getValue64(s, v.Args[1])
+		s.Prog(wasm.AArrayNew)
+
+	case ssa.OpWasm3ArrayNewDefault:
+		getValue64(s, v.Args[0])
+		s.Prog(wasm.AArrayNewDefault)
+
+	case ssa.OpWasm3ArrayGet:
+		getValue64(s, v.Args[0])
+		getValue64(s, v.Args[1])
+		s.Prog(wasm.AArrayGet)
+
+	case ssa.OpWasm3ArrayLen:
+		getValue64(s, v.Args[0])
+		s.Prog(wasm.AArrayLen)
+
+	case ssa.OpWasm3RefNull:
+		s.Prog(wasm.ARefNull)
+
+	case ssa.OpWasm3RefIsNull:
+		getValue64(s, v.Args[0])
+		s.Prog(wasm.ARefIsNull)
+		if extend {
+			s.Prog(wasm.AI64ExtendI32U)
+		}
+
+	case ssa.OpWasm3RefCast:
+		getValue64(s, v.Args[0])
+		s.Prog(wasm.ARefCast)
+
+	case ssa.OpWasm3RefTest:
+		getValue64(s, v.Args[0])
+		s.Prog(wasm.ARefTest)
+		if extend {
+			s.Prog(wasm.AI64ExtendI32U)
+		}
+
 	case ssa.OpLoadReg:
 		p := s.Prog(loadOp(v.Type))
 		ssagen.AddrAuto(&p.From, v.Args[0])
@@ -473,7 +547,8 @@ func isCmp(v *ssa.Value) bool {
 	switch v.Op {
 	case ssa.OpWasm3I64Eqz, ssa.OpWasm3I64Eq, ssa.OpWasm3I64Ne, ssa.OpWasm3I64LtS, ssa.OpWasm3I64LtU, ssa.OpWasm3I64GtS, ssa.OpWasm3I64GtU, ssa.OpWasm3I64LeS, ssa.OpWasm3I64LeU, ssa.OpWasm3I64GeS, ssa.OpWasm3I64GeU,
 		ssa.OpWasm3F32Eq, ssa.OpWasm3F32Ne, ssa.OpWasm3F32Lt, ssa.OpWasm3F32Gt, ssa.OpWasm3F32Le, ssa.OpWasm3F32Ge,
-		ssa.OpWasm3F64Eq, ssa.OpWasm3F64Ne, ssa.OpWasm3F64Lt, ssa.OpWasm3F64Gt, ssa.OpWasm3F64Le, ssa.OpWasm3F64Ge:
+		ssa.OpWasm3F64Eq, ssa.OpWasm3F64Ne, ssa.OpWasm3F64Lt, ssa.OpWasm3F64Gt, ssa.OpWasm3F64Le, ssa.OpWasm3F64Ge,
+		ssa.OpWasm3RefIsNull, ssa.OpWasm3RefTest:
 		return true
 	default:
 		return false

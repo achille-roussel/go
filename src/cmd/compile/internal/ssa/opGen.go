@@ -5856,6 +5856,19 @@ const (
 	OpWasm3I32Rotl
 	OpWasm3I64Rotl
 	OpWasm3I64Popcnt
+	OpWasm3StructNew
+	OpWasm3StructNewDefault
+	OpWasm3StructGet
+	OpWasm3StructSet
+	OpWasm3ArrayNew
+	OpWasm3ArrayNewDefault
+	OpWasm3ArrayGet
+	OpWasm3ArraySet
+	OpWasm3ArrayLen
+	OpWasm3RefNull
+	OpWasm3RefIsNull
+	OpWasm3RefCast
+	OpWasm3RefTest
 
 	OpLast
 	OpAdd8
@@ -88503,6 +88516,164 @@ var opcodeTable = [...]opInfo{
 		name:   "I64Popcnt",
 		argLen: 1,
 		asm:    wasm.AI64Popcnt,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, regMask{v1: 281474976776191, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 SP
+			},
+			outputs: []outputInfo{
+				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:    "StructNew",
+		auxType: auxTyp,
+		argLen:  -1,
+		reg: regInfo{
+			outputs: []outputInfo{
+				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:    "StructNewDefault",
+		auxType: auxTyp,
+		argLen:  0,
+		reg: regInfo{
+			outputs: []outputInfo{
+				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:    "StructGet",
+		auxType: auxTyp,
+		argLen:  1,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, regMask{v1: 281474976776191, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 SP
+			},
+			outputs: []outputInfo{
+				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:    "StructSet",
+		auxType: auxTyp,
+		argLen:  2,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+				{1, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:    "ArrayNew",
+		auxType: auxTyp,
+		argLen:  2,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, regMask{v1: 281474976776191, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 SP
+				{1, regMask{v1: 281474976776191, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 SP
+			},
+			outputs: []outputInfo{
+				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:    "ArrayNewDefault",
+		auxType: auxTyp,
+		argLen:  1,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, regMask{v1: 281474976776191, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 SP
+			},
+			outputs: []outputInfo{
+				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:    "ArrayGet",
+		auxType: auxTyp,
+		argLen:  2,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, regMask{v1: 281474976776191, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 SP
+				{1, regMask{v1: 281474976776191, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 SP
+			},
+			outputs: []outputInfo{
+				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:    "ArraySet",
+		auxType: auxTyp,
+		argLen:  3,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+				{1, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+				{2, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:   "ArrayLen",
+		argLen: 1,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, regMask{v1: 281474976776191, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 SP
+			},
+			outputs: []outputInfo{
+				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:              "RefNull",
+		auxType:           auxTyp,
+		argLen:            0,
+		rematerializeable: true,
+		reg: regInfo{
+			outputs: []outputInfo{
+				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:   "RefIsNull",
+		argLen: 1,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, regMask{v1: 281474976776191, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 SP
+			},
+			outputs: []outputInfo{
+				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:    "RefCast",
+		auxType: auxTyp,
+		argLen:  1,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, regMask{v1: 281474976776191, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 SP
+			},
+			outputs: []outputInfo{
+				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:    "RefTest",
+		auxType: auxTyp,
+		argLen:  1,
 		reg: regInfo{
 			inputs: []inputInfo{
 				{0, regMask{v1: 281474976776191, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 SP

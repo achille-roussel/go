@@ -35,6 +35,7 @@ type typeCollector struct {
 	structs map[*types.Type]int // Go struct type -> table index
 	backing map[*types.Type]int // slice/array element type -> backing array index
 	boxed   map[wasmgc.Prim]int // primitive -> boxed-scalar struct index
+	funcs   map[*types.Type]int // Go func type -> func-type table index
 }
 
 func newTypeCollector() *typeCollector {
@@ -43,6 +44,7 @@ func newTypeCollector() *typeCollector {
 		structs: make(map[*types.Type]int),
 		backing: make(map[*types.Type]int),
 		boxed:   make(map[wasmgc.Prim]int),
+		funcs:   make(map[*types.Type]int),
 	}
 }
 

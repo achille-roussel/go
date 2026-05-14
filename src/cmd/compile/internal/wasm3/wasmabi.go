@@ -81,3 +81,47 @@ func (c *typeCollector) loweredSignature(ft *types.Type) obj.WasmFuncType {
 	}
 	return sig
 }
+
+// loweredStorages lowers a Go function type's parameters and results to
+// the wasm reference/primitive storage slots of a wasmgc func type. It
+// is loweredSignature expressed in the shared wasmgc model rather than
+// obj.WasmField, used by collectSignature to build the KindFunc table
+// entry the linker needs.
+func (c *typeCollector) loweredStorages(ft *types.Type) (params, results []wasmgc.Storage) {
+	for _, p := range ft.RecvParams() {
+		for _, f := range c.lowerFields(p.Type) {
+			params = append(params, f.Storage)
+		}
+	}
+	for _, r := range ft.Results() {
+		for _, f := range c.lowerFields(r.Type) {
+			results = append(results, f.Storage)
+		}
+	}
+	return params, results
+}
+
+// collectSignature reserves and returns the table index of the wasm
+// function type for a Go function type, registering every GC type the
+// signature references along the way. Every wasm3 function is emitted as
+// a native typed wasm function referencing one such entry; the linker
+// merges the per-package tables and remaps the indices.
+func (c *typeCollector) collectSignature(ft *types.Type) int {
+	if ft.Kind() != types.TFUNC {
+		panic("wasm3: collectSignature on non-function type " + ft.Kind().String())
+	}
+	if idx, ok := c.funcs[ft]; ok {
+		return idx
+	}
+	params, results := c.loweredStorages(ft)
+	idx := len(c.table)
+	c.table = append(c.table, wasmgc.Type{
+		Name:    "go.func." + typeName(ft),
+		Kind:    wasmgc.KindFunc,
+		Super:   -1,
+		Params:  params,
+		Results: results,
+	})
+	c.funcs[ft] = idx
+	return idx
+}

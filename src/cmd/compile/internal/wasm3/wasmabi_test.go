@@ -133,3 +133,43 @@ func TestLoweredSignatureCollectsTypes(t *testing.T) {
 	}
 	checkDependencyOrder(t, c.table)
 }
+
+func TestCollectSignature(t *testing.T) {
+	// func(*struct{v int64}, int32) string
+	inner := types.NewStruct([]*types.Field{field("v", types.Types[types.TINT64])})
+	ft := sig(
+		[]*types.Type{types.NewPtr(inner), types.Types[types.TINT32]},
+		[]*types.Type{types.Types[types.TSTRING]},
+	)
+	c := newTypeCollector()
+	idx := c.collectSignature(ft)
+
+	got := c.table[idx]
+	if got.Kind != wasmgc.KindFunc {
+		t.Fatalf("collectSignature produced a %d-kind entry, want KindFunc", got.Kind)
+	}
+	// params: one reference (the *struct) + one i32; result: a string,
+	// which flattens to {backing ref, offset i32, length i32}.
+	if len(got.Params) != 2 || !got.Params[0].IsRef() || got.Params[1] != wasmgc.PrimStorage(wasmgc.I32) {
+		t.Errorf("params = %+v, want {ref, i32}", got.Params)
+	}
+	if len(got.Results) != 3 || !got.Results[0].IsRef() {
+		t.Errorf("results = %+v, want a flattened string {ref, i32, i32}", got.Results)
+	}
+	// The referenced struct must be a registered struct subtyping go.object.
+	pointee := c.table[got.Params[0].RefType]
+	if pointee.Kind != wasmgc.KindStruct || pointee.Super != wasmgc.TypeGoObject {
+		t.Errorf("param ref points at %+v, want a struct subtyping go.object", pointee)
+	}
+	checkDependencyOrder(t, c.table)
+
+	// Memoized: collecting the same func type again returns the same
+	// index without growing the table.
+	n := len(c.table)
+	if again := c.collectSignature(ft); again != idx || len(c.table) != n {
+		t.Errorf("re-collecting the signature grew/changed the table (idx %d->%d, len %d->%d)", idx, again, n, len(c.table))
+	}
+
+	// The whole table, func type included, must encode and validate.
+	validateModule(t, "collected-signature", wrapModule(c.table.EncodeTypeSection()))
+}

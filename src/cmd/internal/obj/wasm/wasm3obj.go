@@ -25,7 +25,10 @@ package wasm
 // functions, globals, exports, code, data) is exercised and validated,
 // and only the function *semantics* are still stubbed.
 
-import "cmd/internal/obj"
+import (
+	"cmd/internal/obj"
+	"cmd/internal/objabi"
+)
 
 // preprocess3 prepares a function for the wasm3 typed ABI.
 //
@@ -67,16 +70,58 @@ func preprocess3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 
 // assemble3 encodes a function body for GOARCH=wasm3.
 //
-// Stage A: every function is emitted as the minimal valid body for the
-// degenerate ()->() signature — zero local declarations followed by
+// Stage A/B: every function is emitted as the minimal valid body for
+// the degenerate ()->() signature — zero local declarations followed by
 // `end` (0x0b). asm3.go declares every function as ()->() until the
 // compiler attaches typed signatures, so this body validates against
-// its declared type. Stage C replaces this with real codegen: walking
-// the obj.Prog stream, declaring typed locals, and encoding the
-// instruction operands (including the 0xFB GC-opcode immediates).
+// its declared type.
+//
+// The entry symbol is the one exception (Stage B): it is given a real
+// body that calls main.main, so an empty Go program runs end to end.
+// Stage C replaces the generic stub with real codegen: walking the
+// obj.Prog stream, declaring typed locals, and encoding the instruction
+// operands (including the 0xFB GC-opcode immediates).
 func assemble3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
+	if s.Name == entrySym {
+		assembleWasm3Entry(ctxt, s)
+		return
+	}
 	s.P = []byte{
 		0x00, // local declaration count: 0
 		0x0b, // end
 	}
+}
+
+// entrySym is the wasip1 entry symbol; cmd/link exports it as "_start".
+// The name follows the _rt0_<GOARCH>_<GOOS> convention.
+const entrySym = "_rt0_wasm3_wasip1"
+
+// assembleWasm3Entry gives the entry symbol a degenerate bootstrap body
+// for Stage B of the cutover: call main.main, then return. WASI treats
+// a normal return from _start as a clean (exit 0) termination, and an
+// empty main.main needs no runtime initialization, so the whole
+// schedinit/scheduler/allocator bootstrap is skipped for now. It is
+// reintroduced incrementally as the runtime fork lands (Stage B proper).
+//
+// The body is:
+//
+//	local declaration count: 0
+//	call <main.main>          ; operand filled in by the R_CALL reloc
+//	end
+//
+// The call operand is variable-length and written by the linker, so the
+// obj backend emits only the 0x10 opcode and records an R_CALL reloc at
+// the byte that follows it — the same scheme assemble uses for calls.
+func assembleWasm3Entry(ctxt *obj.Link, s *obj.LSym) {
+	s.P = []byte{
+		0x00, // local declaration count: 0
+		0x10, // call
+		0x0b, // end
+	}
+	s.AddRel(ctxt, obj.Reloc{
+		Type: objabi.R_CALL,
+		Off:  2, // immediately after the 0x10 call opcode
+		Siz:  1, // variable-sized; the linker writes the function index
+		Sym:  ctxt.LookupABI("main.main", obj.ABIInternal),
+	})
 }

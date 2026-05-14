@@ -321,3 +321,72 @@ together — but this is a sensible authoring order:
    the linker `Init`, add `-W gc` to `lib/wasm/go_wasip1_wasm3_exec`;
    test empty `main` → arithmetic → struct → pointer → `println` on
    `wasmtime -W gc`. (task #24)
+
+---
+
+## 5. Stage C — the codegen ladder (in progress)
+
+Stages A and B are done: an empty `main` links into a valid module
+(`wasm-tools validate --features gc`) and runs to exit 0 on
+`wasmtime -W gc`. Stage C climbs from "empty main runs" to real
+codegen, rung by rung, on the `wasm3-m2-cutover` branch.
+
+### Rung 0 — prog-stream walker ✅ DONE (`53a7e52375`)
+
+`assemble3` no longer hardcodes the `()->()` stub. `encodeWasm3Body`
+walks the `obj.Prog` stream and encodes it; this rung handles the
+trivial body — the no-op progs threaded through every function
+(TEXT/FUNCDATA/PCDATA/NOP/RESUMEPOINT) and a terminating `RET`, which
+emits a real `return`. Any unsupported prog makes `encodeWasm3Body`
+return `ok=false` and `assemble3` falls back to the degenerate stub,
+so an empty `main` stays buildable while later rungs add encodings.
+`main.main` is now genuinely walked (`(func $main.main return)`), not
+a hardcoded constant.
+
+### The arithmetic rung — scoping
+
+The wasm/wasm3 backend uses the **memory ABI**: arguments and results
+travel through the Go stack in linear memory, not wasm params/results.
+`Wasm3.rules` has no `OpArg`-to-register lowering — `(Addr {sym} base)
+=> (LoweredAddr ...)` and args are reached with `I64Load` off `SP`.
+The morestack prologue and the `(i32)->i32` PC_B block-id ABI are
+*not* in the SSA backend or `ssagen`; they are synthesized by
+`wasmobj.go`'s `preprocess`, and `preprocess3` already omits them. So
+the divergence for typed args/results is purely: arrive-as-locals and
+return-on-stack, plus the encoder.
+
+This rung is one interlocking change with no working intermediate
+state *within itself*, but it decomposes into two independently
+landable commits:
+
+- **C.1 — typed signatures + unreachable stub.** The compiler attaches
+  a `WasmType` to every wasm3 func `LSym` (`loweredSignature` /
+  `collectSignature` during wasm3 codegen) and emits the per-package
+  `wasmgc.Table` aux; `asm3.go` reads them and declares each function
+  with its true signature instead of `()->()`. This is the §4 step-1
+  and step-2 remainder, and entangles the per-package-table emission
+  + serialization + linker merge — the large piece. **Key enabler:**
+  change the `encodeWasm3Body` fallback stub from `localcount=0; end`
+  (only valid for `()->()`) to `localcount=0; unreachable; end`
+  (`0x00 0x00 0x0b`) — `unreachable` validates against *any* declared
+  signature, so a function with a real typed signature but no
+  walkable body still validates. After C.1: every function carries
+  its true type; `main.main` (`()->()`) still runs via its real
+  walked body; everything else traps if reached.
+
+- **C.2 — the arithmetic body.** Diverge `Wasm3.rules` / `Wasm3Ops.go`
+  + `wasm3/ssa.go` so a leaf arithmetic function (`func add(a, b int)
+  int { return a+b }`) emits a typed body: `OpArg` → `local.get` of
+  the parameter index, arithmetic ops unchanged, `RET` → value on the
+  wasm stack + `return`. Extend `encodeWasm3Body` to encode local
+  declarations (count + types from regalloc — note `assemble`'s reg
+  map already puts `REG_R0+` in wasm locals, the wasm3 version just
+  drops the PC_B param and local-SP so locals start at the param
+  count), `LocalGet`/`LocalSet`/`LocalTee`, `I64Const` and the
+  arithmetic opcodes, and a typed `return`. Verify with `add` called
+  from `main` and observed via `os.Exit` (exit code) on
+  `wasmtime -W gc`.
+
+Then the struct and pointer rungs reuse the same encoder, adding the
+`0xFB` GC-opcode immediates and `struct.new`/`struct.get` lowering
+(§4 steps 3–4).

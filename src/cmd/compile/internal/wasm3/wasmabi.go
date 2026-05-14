@@ -7,6 +7,7 @@ package wasm3
 import (
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
+	"cmd/internal/wasmgc"
 )
 
 // wasmabi.go lowers Go function signatures to the typed-function
@@ -28,25 +29,25 @@ import (
 // Offset; a primitive field carries a value type. The packed i8/i16
 // storage types are valid only inside arrays and structs, never as a
 // function parameter or result, so they panic here.
-func objField(f wasmField) obj.WasmField {
-	if f.storage.isRef() {
-		return obj.WasmField{Type: obj.WasmRef, Offset: int64(f.storage.refType)}
+func objField(f wasmgc.Field) obj.WasmField {
+	if f.Storage.IsRef() {
+		return obj.WasmField{Type: obj.WasmRef, Offset: int64(f.Storage.RefType)}
 	}
-	switch f.storage.prim {
-	case wasmI32:
+	switch f.Storage.Prim {
+	case wasmgc.I32:
 		return obj.WasmField{Type: obj.WasmI32}
-	case wasmI64:
+	case wasmgc.I64:
 		return obj.WasmField{Type: obj.WasmI64}
-	case wasmF32:
+	case wasmgc.F32:
 		return obj.WasmField{Type: obj.WasmF32}
-	case wasmF64:
+	case wasmgc.F64:
 		return obj.WasmField{Type: obj.WasmF64}
 	}
 	panic("wasm3: packed i8/i16 storage is not valid in a function signature")
 }
 
 // objFields converts a slice of wasm GC fields to obj.WasmFields.
-func objFields(fields []wasmField) []obj.WasmField {
+func objFields(fields []wasmgc.Field) []obj.WasmField {
 	if len(fields) == 0 {
 		return nil
 	}

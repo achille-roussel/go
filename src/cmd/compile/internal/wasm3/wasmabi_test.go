@@ -9,6 +9,7 @@ import (
 
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
+	"cmd/internal/wasmgc"
 )
 
 // sig builds a func type from parameter and result types (no receiver).
@@ -76,7 +77,7 @@ func TestLoweredSignatureString(t *testing.T) {
 	got := c.loweredSignature(ft)
 
 	want := []obj.WasmField{
-		{Type: obj.WasmRef, Offset: typeGoBytes},
+		{Type: obj.WasmRef, Offset: wasmgc.TypeGoBytes},
 		{Type: obj.WasmI32},
 		{Type: obj.WasmI32},
 	}
@@ -99,7 +100,7 @@ func TestLoweredSignaturePointer(t *testing.T) {
 	if idx < 0 || idx >= int64(len(c.table)) {
 		t.Fatalf("pointer param references type index %d, out of range [0,%d)", idx, len(c.table))
 	}
-	if c.table[idx].kind != wasmStructType {
+	if c.table[idx].Kind != wasmgc.KindStruct {
 		t.Errorf("pointer param references a non-struct type %+v", c.table[idx])
 	}
 }

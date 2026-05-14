@@ -7,6 +7,8 @@ package wasm3
 import (
 	"bufio"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"cmd/compile/internal/base"
@@ -16,6 +18,7 @@ import (
 	"cmd/internal/obj"
 	"cmd/internal/obj/wasm"
 	"cmd/internal/src"
+	"cmd/internal/wasmgc"
 )
 
 // TestMain initializes just enough of the compiler's global state — the
@@ -63,9 +66,7 @@ func namedStruct(name string, fields func(self *types.Type) []*types.Field) *typ
 }
 
 // groupOf returns the ordinal of the recursion group that contains the
-// type at table index typeIdx, or -1 if no group does. The ordinal is
-// the group's position in the recGroups result, which is also its emit
-// order in the module type section.
+// type at table index typeIdx, or -1 if no group does.
 func groupOf(groups [][]int, typeIdx int) int {
 	for g, group := range groups {
 		for _, t := range group {
@@ -77,24 +78,19 @@ func groupOf(groups [][]int, typeIdx int) int {
 	return -1
 }
 
-// groupSize returns the number of types in the group containing typeIdx.
-func groupSize(groups [][]int, typeIdx int) int {
-	g := groupOf(groups, typeIdx)
-	if g < 0 {
-		return 0
-	}
-	return len(groups[g])
-}
-
-// checkGroupsCoverAll verifies the groups partition exactly [0, n).
-func checkGroupsCoverAll(t *testing.T, groups [][]int, n int) {
+// checkDependencyOrder verifies that every collected type only depends
+// on types in its own recursion group or an earlier one — the invariant
+// the wasm type section requires. It mirrors the same check in the
+// cmd/internal/wasmgc tests, applied here to tables the collector built.
+func checkDependencyOrder(t *testing.T, table wasmgc.Table) {
 	t.Helper()
-	seen := make([]bool, n)
+	groups := table.RecGroups()
+	seen := make([]bool, len(table))
 	count := 0
 	for _, group := range groups {
 		for _, idx := range group {
-			if idx < 0 || idx >= n {
-				t.Fatalf("group member %d out of range [0,%d)", idx, n)
+			if idx < 0 || idx >= len(table) {
+				t.Fatalf("group member %d out of range [0,%d)", idx, len(table))
 			}
 			if seen[idx] {
 				t.Fatalf("type %d appears in more than one group", idx)
@@ -103,180 +99,46 @@ func checkGroupsCoverAll(t *testing.T, groups [][]int, n int) {
 			count++
 		}
 	}
-	if count != n {
-		t.Fatalf("groups cover %d types, want %d", count, n)
+	if count != len(table) {
+		t.Fatalf("groups cover %d types, want %d", count, len(table))
 	}
-}
-
-// checkDependencyOrder verifies that every type only depends on types in
-// its own group or an earlier one — the invariant the wasm type section
-// requires.
-func checkDependencyOrder(t *testing.T, table wasmTable) {
-	t.Helper()
-	groups := table.recGroups()
-	checkGroupsCoverAll(t, groups, len(table))
 	for i := range table {
 		gi := groupOf(groups, i)
-		for _, dep := range table[i].dependsOn() {
-			gd := groupOf(groups, dep)
-			if gd > gi {
+		for _, dep := range table[i].DependsOn() {
+			if gd := groupOf(groups, dep); gd > gi {
 				t.Errorf("type %d (%s, group %d) depends on type %d (%s, group %d): dependency emitted later",
-					i, table[i].name, gi, dep, table[dep].name, gd)
+					i, table[i].Name, gi, dep, table[dep].Name, gd)
 			}
 		}
 	}
 }
 
-func TestPreludeRecGroups(t *testing.T) {
-	table := wasmTable(preludeTypes())
-	checkDependencyOrder(t, table)
-
-	groups := table.recGroups()
-	if len(groups) != numPreludeTypes {
-		t.Fatalf("prelude produced %d groups, want %d (all prelude types are non-recursive singletons)", len(groups), numPreludeTypes)
+// wrapModule wraps a type-section payload in an otherwise empty but
+// valid WebAssembly module so the encoded table can be validated.
+func wrapModule(payload []byte) []byte {
+	mod := []byte{
+		0x00, 0x61, 0x73, 0x6d, // \0asm
+		0x01, 0x00, 0x00, 0x00, // version 1
 	}
-	for _, idx := range []int{typeGoObject, typeGoBytes, typeGoString} {
-		if got := groupSize(groups, idx); got != 1 {
-			t.Errorf("prelude type %d (%s) is in a group of size %d, want 1", idx, table[idx].name, got)
-		}
-	}
-	// go.string references both go.object (super) and go.bytes (field),
-	// so it must be emitted after both.
-	if groupOf(groups, typeGoString) <= groupOf(groups, typeGoObject) {
-		t.Errorf("go.string emitted before its supertype go.object")
-	}
-	if groupOf(groups, typeGoString) <= groupOf(groups, typeGoBytes) {
-		t.Errorf("go.string emitted before its backing type go.bytes")
-	}
+	mod = append(mod, wasmgc.SectionType)
+	mod = wasmgc.AppendUleb(mod, uint64(len(payload)))
+	return append(mod, payload...)
 }
 
-func TestRecGroupsSelfRecursive(t *testing.T) {
-	// type Point struct { next *Point }
-	point := numPreludeTypes
-	table := wasmTable(append(preludeTypes(), wasmType{
-		name:  "go.Point",
-		kind:  wasmStructType,
-		super: typeGoObject,
-		fields: []wasmField{
-			{storage: ref(point, true), mutable: true}, // next *Point
-		},
-	}))
-	checkDependencyOrder(t, table)
-
-	groups := table.recGroups()
-	if got := groupSize(groups, point); got != 1 {
-		t.Fatalf("self-recursive Point is in a group of size %d, want 1", got)
+// validateModule runs `wasm-tools validate --features gc` on mod,
+// skipping the test if wasm-tools is not installed.
+func validateModule(t *testing.T, name string, mod []byte) {
+	t.Helper()
+	tool, err := exec.LookPath("wasm-tools")
+	if err != nil {
+		t.Skip("wasm-tools not found in PATH; skipping module validation")
 	}
-	if !table.selfRecursive(point) {
-		t.Errorf("selfRecursive(Point) = false, want true: it must be emitted inside a rec group")
+	path := filepath.Join(t.TempDir(), name+".wasm")
+	if err := os.WriteFile(path, mod, 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if table.selfRecursive(typeGoString) {
-		t.Errorf("selfRecursive(go.string) = true, want false")
-	}
-}
-
-func TestRecGroupsMutuallyRecursive(t *testing.T) {
-	// type A struct { b *B }; type B struct { a *A }
-	a := numPreludeTypes
-	b := numPreludeTypes + 1
-	table := wasmTable(append(preludeTypes(),
-		wasmType{
-			name:   "go.A",
-			kind:   wasmStructType,
-			super:  typeGoObject,
-			fields: []wasmField{{storage: ref(b, true), mutable: true}},
-		},
-		wasmType{
-			name:   "go.B",
-			kind:   wasmStructType,
-			super:  typeGoObject,
-			fields: []wasmField{{storage: ref(a, true), mutable: true}},
-		},
-	))
-	checkDependencyOrder(t, table)
-
-	groups := table.recGroups()
-	if groupOf(groups, a) != groupOf(groups, b) {
-		t.Fatalf("mutually recursive A and B landed in different groups (%d, %d), want the same rec group",
-			groupOf(groups, a), groupOf(groups, b))
-	}
-	if got := groupSize(groups, a); got != 2 {
-		t.Errorf("A/B rec group has size %d, want 2", got)
-	}
-	// The cycle still subtypes go.object, so the shared group is emitted
-	// after go.object's group.
-	if groupOf(groups, a) <= groupOf(groups, typeGoObject) {
-		t.Errorf("A/B rec group emitted before its supertype go.object")
-	}
-}
-
-func TestRecGroupsChainOrdering(t *testing.T) {
-	// A non-cyclic chain C -> B -> A: each is its own group, emitted in
-	// dependency order A, B, C.
-	a := numPreludeTypes
-	b := numPreludeTypes + 1
-	c := numPreludeTypes + 2
-	table := wasmTable(append(preludeTypes(),
-		wasmType{name: "go.A", kind: wasmStructType, super: typeGoObject},
-		wasmType{
-			name:   "go.B",
-			kind:   wasmStructType,
-			super:  typeGoObject,
-			fields: []wasmField{{storage: ref(a, true)}},
-		},
-		wasmType{
-			name:   "go.C",
-			kind:   wasmStructType,
-			super:  typeGoObject,
-			fields: []wasmField{{storage: ref(b, true)}},
-		},
-	))
-	checkDependencyOrder(t, table)
-
-	groups := table.recGroups()
-	if !(groupOf(groups, a) < groupOf(groups, b) && groupOf(groups, b) < groupOf(groups, c)) {
-		t.Errorf("chain not in dependency order: A=%d B=%d C=%d, want A<B<C",
-			groupOf(groups, a), groupOf(groups, b), groupOf(groups, c))
-	}
-	for _, idx := range []int{a, b, c} {
-		if got := groupSize(groups, idx); got != 1 {
-			t.Errorf("non-cyclic chain type %d is in a group of size %d, want 1", idx, got)
-		}
-		if table.selfRecursive(idx) {
-			t.Errorf("selfRecursive(%d) = true, want false", idx)
-		}
-	}
-}
-
-func TestRecGroupsArrayElement(t *testing.T) {
-	// []*Point: an (array (ref null $go.Point)) backing whose element
-	// references a self-recursive struct. The array depends on Point;
-	// Point depends on itself; they are distinct groups, array after.
-	point := numPreludeTypes
-	arr := numPreludeTypes + 1
-	table := wasmTable(append(preludeTypes(),
-		wasmType{
-			name:   "go.Point",
-			kind:   wasmStructType,
-			super:  typeGoObject,
-			fields: []wasmField{{storage: ref(point, true), mutable: true}},
-		},
-		wasmType{
-			name:    "go.array.PtrPoint",
-			kind:    wasmArrayType,
-			super:   -1,
-			elem:    ref(point, true),
-			elemMut: true,
-		},
-	))
-	checkDependencyOrder(t, table)
-
-	groups := table.recGroups()
-	if groupOf(groups, arr) == groupOf(groups, point) {
-		t.Errorf("array and its non-mutually-recursive element type share a group")
-	}
-	if groupOf(groups, arr) <= groupOf(groups, point) {
-		t.Errorf("array backing emitted before its element type go.Point")
+	if out, err := exec.Command(tool, "validate", "--features", "gc", path).CombinedOutput(); err != nil {
+		t.Fatalf("wasm-tools validate failed: %v\n%s\nmodule bytes: % x", err, out, mod)
 	}
 }
 
@@ -290,24 +152,24 @@ func TestCollectScalarStruct(t *testing.T) {
 	c := newTypeCollector()
 	idx := c.collectStruct(st)
 
-	if idx != numPreludeTypes {
-		t.Fatalf("first collected struct got index %d, want %d (just past the prelude)", idx, numPreludeTypes)
+	if idx != wasmgc.NumPreludeTypes {
+		t.Fatalf("first collected struct got index %d, want %d (just past the prelude)", idx, wasmgc.NumPreludeTypes)
 	}
 	got := c.table[idx]
-	if got.kind != wasmStructType || got.super != typeGoObject {
-		t.Fatalf("collected struct: kind=%d super=%d, want struct subtyping go.object", got.kind, got.super)
+	if got.Kind != wasmgc.KindStruct || got.Super != wasmgc.TypeGoObject {
+		t.Fatalf("collected struct: kind=%d super=%d, want struct subtyping go.object", got.Kind, got.Super)
 	}
-	want := []wasmField{
-		{storage: prim(wasmI64), mutable: true},
-		{storage: prim(wasmF64), mutable: true},
-		{storage: prim(wasmI32), mutable: true},
+	want := []wasmgc.Field{
+		{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},
+		{Storage: wasmgc.PrimStorage(wasmgc.F64), Mutable: true},
+		{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},
 	}
-	if len(got.fields) != len(want) {
-		t.Fatalf("collected struct has %d fields, want %d", len(got.fields), len(want))
+	if len(got.Fields) != len(want) {
+		t.Fatalf("collected struct has %d fields, want %d", len(got.Fields), len(want))
 	}
 	for i := range want {
-		if got.fields[i] != want[i] {
-			t.Errorf("field %d = %+v, want %+v", i, got.fields[i], want[i])
+		if got.Fields[i] != want[i] {
+			t.Errorf("field %d = %+v, want %+v", i, got.Fields[i], want[i])
 		}
 	}
 	checkDependencyOrder(t, c.table)
@@ -333,12 +195,12 @@ func TestCollectStringField(t *testing.T) {
 	c := newTypeCollector()
 	idx := c.collectStruct(st)
 
-	want := []wasmField{
-		{storage: ref(typeGoBytes, false), mutable: true},
-		{storage: prim(wasmI32), mutable: true},
-		{storage: prim(wasmI32), mutable: true},
+	want := []wasmgc.Field{
+		{Storage: wasmgc.RefStorage(wasmgc.TypeGoBytes, false), Mutable: true},
+		{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},
+		{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},
 	}
-	got := c.table[idx].fields
+	got := c.table[idx].Fields
 	if len(got) != len(want) {
 		t.Fatalf("struct{s string} lowered to %d fields, want %d (string flattens)", len(got), len(want))
 	}
@@ -355,15 +217,15 @@ func TestCollectPointerToStruct(t *testing.T) {
 	c := newTypeCollector()
 	idx := c.collectStruct(outer)
 
-	if len(c.table[idx].fields) != 1 {
-		t.Fatalf("struct{p *inner} has %d fields, want 1", len(c.table[idx].fields))
+	if len(c.table[idx].Fields) != 1 {
+		t.Fatalf("struct{p *inner} has %d fields, want 1", len(c.table[idx].Fields))
 	}
-	f := c.table[idx].fields[0]
-	if !f.storage.isRef() || !f.storage.refNull {
-		t.Fatalf("pointer field storage = %+v, want a nullable reference", f.storage)
+	f := c.table[idx].Fields[0]
+	if !f.Storage.IsRef() || !f.Storage.RefNull {
+		t.Fatalf("pointer field storage = %+v, want a nullable reference", f.Storage)
 	}
-	pointee := c.table[f.storage.refType]
-	if pointee.kind != wasmStructType || pointee.super != typeGoObject {
+	pointee := c.table[f.Storage.RefType]
+	if pointee.Kind != wasmgc.KindStruct || pointee.Super != wasmgc.TypeGoObject {
 		t.Errorf("pointee type = %+v, want a struct subtyping go.object", pointee)
 	}
 	checkDependencyOrder(t, c.table)
@@ -375,12 +237,12 @@ func TestCollectPointerToScalarBoxes(t *testing.T) {
 	c := newTypeCollector()
 	idx := c.collectStruct(st)
 
-	f := c.table[idx].fields[0]
-	if !f.storage.isRef() {
-		t.Fatalf("*int64 field storage = %+v, want a reference", f.storage)
+	f := c.table[idx].Fields[0]
+	if !f.Storage.IsRef() {
+		t.Fatalf("*int64 field storage = %+v, want a reference", f.Storage)
 	}
-	box := c.table[f.storage.refType]
-	if box.kind != wasmStructType || len(box.fields) != 1 || box.fields[0].storage != prim(wasmI64) {
+	box := c.table[f.Storage.RefType]
+	if box.Kind != wasmgc.KindStruct || len(box.Fields) != 1 || box.Fields[0].Storage != wasmgc.PrimStorage(wasmgc.I64) {
 		t.Errorf("boxed scalar = %+v, want a one-i64-field struct", box)
 	}
 	checkDependencyOrder(t, c.table)
@@ -400,15 +262,15 @@ func TestCollectRecursiveStruct(t *testing.T) {
 
 	// The recursive collect must terminate and the next field must
 	// reference the struct's own index.
-	fields := c.table[idx].fields
+	fields := c.table[idx].Fields
 	if len(fields) != 3 {
 		t.Fatalf("Point lowered to %d fields, want 3", len(fields))
 	}
-	if fields[2].storage.refType != idx {
-		t.Errorf("Point.next references type %d, want self (%d)", fields[2].storage.refType, idx)
+	if fields[2].Storage.RefType != idx {
+		t.Errorf("Point.next references type %d, want self (%d)", fields[2].Storage.RefType, idx)
 	}
-	if !c.table.selfRecursive(idx) {
-		t.Errorf("selfRecursive(Point) = false, want true")
+	if !c.table.SelfRecursive(idx) {
+		t.Errorf("SelfRecursive(Point) = false, want true")
 	}
 	checkDependencyOrder(t, c.table)
 
@@ -433,8 +295,43 @@ func TestCollectMutuallyRecursiveStructs(t *testing.T) {
 	bi := c.collectStruct(b)
 	checkDependencyOrder(t, c.table)
 
-	groups := c.table.recGroups()
+	groups := c.table.RecGroups()
 	if groupOf(groups, ai) != groupOf(groups, bi) {
 		t.Errorf("mutually recursive A (%d) and B (%d) landed in different rec groups", ai, bi)
 	}
+}
+
+func TestEncodedCollectedTypesValidate(t *testing.T) {
+	// A program-like mix: a recursive struct, a struct with a string
+	// and a slice, mutually recursive structs, and a pointer to a
+	// scalar. The whole collected table must encode to a valid GC type
+	// section.
+	point := namedStruct("Point", func(self *types.Type) []*types.Field {
+		return []*types.Field{
+			field("x", types.Types[types.TFLOAT64]),
+			field("next", types.NewPtr(self)),
+		}
+	})
+	var b *types.Type
+	a := namedStruct("A", func(self *types.Type) []*types.Field {
+		b = namedStruct("B", func(*types.Type) []*types.Field {
+			return []*types.Field{field("a", types.NewPtr(self))}
+		})
+		return []*types.Field{field("b", types.NewPtr(b))}
+	})
+	mixed := types.NewStruct([]*types.Field{
+		field("name", types.Types[types.TSTRING]),
+		field("nums", types.NewSlice(types.Types[types.TINT64])),
+		field("count", types.NewPtr(types.Types[types.TINT32])),
+		field("origin", types.NewPtr(point)),
+	})
+
+	c := newTypeCollector()
+	c.collectStruct(point)
+	c.collectStruct(a)
+	c.collectStruct(b)
+	c.collectStruct(mixed)
+
+	checkDependencyOrder(t, c.table)
+	validateModule(t, "collected", wrapModule(c.table.EncodeTypeSection()))
 }

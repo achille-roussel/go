@@ -124,14 +124,16 @@ var Linkwasm = obj.LinkArch{
 	UnaryDst:   unaryDst,
 }
 
-// Linkwasm3 is the obj backend for GOARCH=wasm3. For milestone M0 it shares all
-// of wasm's assembly logic and differs only in its arch identity, so that the
-// compiler, assembler, and linker all agree on "wasm3". See doc/wasm3-design.md.
+// Linkwasm3 is the obj backend for GOARCH=wasm3. The M2 cutover points
+// it at the wasm3-specific preprocess3/assemble3 (wasm3obj.go), which
+// emit native typed wasm functions instead of the Go-stack/PC_F/PC_B
+// model that preprocess/assemble are built around. See
+// doc/wasm3-m2-design.md and doc/wasm3-m2-cutover-notes.md §1.
 var Linkwasm3 = obj.LinkArch{
 	Arch:       sys.ArchWasm3,
 	Init:       instinit,
-	Preprocess: preprocess,
-	Assemble:   assemble,
+	Preprocess: preprocess3,
+	Assemble:   assemble3,
 	UnaryDst:   unaryDst,
 }
 

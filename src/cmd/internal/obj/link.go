@@ -785,9 +785,12 @@ func (we *WasmExport) CreateAuxSym() {
 
 type WasmField struct {
 	Type WasmFieldType
-	// Offset holds the frame-pointer-relative locations for Go's stack-based
+	// Offset holds the frame-pointer-relative location for Go's stack-based
 	// ABI. This is used by the src/cmd/internal/wasm package to map WASM
 	// import parameters to the Go stack in a wrapper function.
+	//
+	// For a WasmRef field (GOARCH=wasm3, which has no Go stack frame) Offset
+	// instead holds the WebAssembly type index of the referenced GC type.
 	Offset int64
 }
 
@@ -803,6 +806,12 @@ const (
 	// bool is not really a wasm type, but we allow it on wasmimport/wasmexport
 	// function parameters/results. 32-bit on Wasm side, 8-bit on Go side.
 	WasmBool
+
+	// WasmRef is a WebAssembly typed reference, (ref null $t). It is used only
+	// by GOARCH=wasm3, where Go pointers and other heap references are
+	// represented as host-GC-managed references rather than linear-memory
+	// addresses. The referenced type's index is carried in WasmField.Offset.
+	WasmRef
 )
 
 type InlMark struct {

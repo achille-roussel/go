@@ -355,7 +355,7 @@ func NewConfig(arch string, types Types, ctxt *obj.Link, optimize, softfloat boo
 		c.floatParamRegs = paramFloatRegRISCV64
 		c.FPReg = framepointerRegRISCV64
 		c.hasGReg = true
-	case "wasm", "wasm3":
+	case "wasm":
 		c.PtrSize = 8
 		c.RegSize = 8
 		c.lowerBlock = rewriteBlockWasm
@@ -367,6 +367,24 @@ func NewConfig(arch string, types Types, ctxt *obj.Link, optimize, softfloat boo
 		c.fp64RegMask = fp64RegMaskWasm
 		c.FPReg = framepointerRegWasm
 		c.LinkReg = linkRegWasm
+		c.hasGReg = true
+		c.unalignedOK = true
+		c.haveCondSelect = true
+	case "wasm3":
+		// M2: wasm3 has its own forked SSA backend. For now its ops and
+		// rules are a copy of wasm's; they diverge to the WebAssembly 3.0
+		// object model later in M2. See doc/wasm3-m2-design.md.
+		c.PtrSize = 8
+		c.RegSize = 8
+		c.lowerBlock = rewriteBlockWasm3
+		c.lowerValue = rewriteValueWasm3
+		c.registers = registersWasm3[:]
+		c.gpRegMask = gpRegMaskWasm3
+		c.fpRegMask = fpRegMaskWasm3
+		c.fp32RegMask = fp32RegMaskWasm3
+		c.fp64RegMask = fp64RegMaskWasm3
+		c.FPReg = framepointerRegWasm3
+		c.LinkReg = linkRegWasm3
 		c.hasGReg = true
 		c.unalignedOK = true
 		c.haveCondSelect = true

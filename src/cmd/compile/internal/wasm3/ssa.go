@@ -222,7 +222,7 @@ func ssaGenBlock(s *ssagen.State, b, next *ssa.Block) {
 
 func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 	switch v.Op {
-	case ssa.OpWasmLoweredStaticCall, ssa.OpWasmLoweredClosureCall, ssa.OpWasmLoweredInterCall, ssa.OpWasmLoweredTailCall, ssa.OpWasmLoweredTailCallInter:
+	case ssa.OpWasm3LoweredStaticCall, ssa.OpWasm3LoweredClosureCall, ssa.OpWasm3LoweredInterCall, ssa.OpWasm3LoweredTailCall, ssa.OpWasm3LoweredTailCallInter:
 		s.PrepareCall(v)
 		if call, ok := v.Aux.(*ssa.AuxCall); ok && call.Fn == ir.Syms.Deferreturn {
 			// The runtime needs to inject jumps to
@@ -232,7 +232,7 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			// point so it gets a target PC.
 			s.Prog(wasm.ARESUMEPOINT)
 		}
-		if v.Op == ssa.OpWasmLoweredClosureCall {
+		if v.Op == ssa.OpWasm3LoweredClosureCall {
 			getValue64(s, v.Args[1])
 			setReg(s, wasm.REG_CTXT)
 		}
@@ -241,7 +241,7 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			p := s.Prog(obj.ACALL)
 			p.To = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: sym}
 			p.Pos = v.Pos
-			if v.Op == ssa.OpWasmLoweredTailCall {
+			if v.Op == ssa.OpWasm3LoweredTailCall {
 				p.As = obj.ARET
 			}
 		} else {
@@ -249,24 +249,24 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			p := s.Prog(obj.ACALL)
 			p.To = obj.Addr{Type: obj.TYPE_NONE}
 			p.Pos = v.Pos
-			if v.Op == ssa.OpWasmLoweredTailCallInter {
+			if v.Op == ssa.OpWasm3LoweredTailCallInter {
 				p.As = obj.ARET
 			}
 		}
 
-	case ssa.OpWasmLoweredMove:
+	case ssa.OpWasm3LoweredMove:
 		getValue32(s, v.Args[0])
 		getValue32(s, v.Args[1])
 		i32Const(s, int32(v.AuxInt))
 		s.Prog(wasm.AMemoryCopy)
 
-	case ssa.OpWasmLoweredZero:
+	case ssa.OpWasm3LoweredZero:
 		getValue32(s, v.Args[0])
 		i32Const(s, 0)
 		i32Const(s, int32(v.AuxInt))
 		s.Prog(wasm.AMemoryFill)
 
-	case ssa.OpWasmLoweredNilCheck:
+	case ssa.OpWasm3LoweredNilCheck:
 		getValue64(s, v.Args[0])
 		s.Prog(wasm.AI64Eqz)
 		s.Prog(wasm.AIf)
@@ -280,13 +280,13 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			base.WarnfAt(v.Pos, "generated nil check")
 		}
 
-	case ssa.OpWasmLoweredWB:
+	case ssa.OpWasm3LoweredWB:
 		p := s.Prog(wasm.ACall)
 		// AuxInt encodes how many buffer entries we need.
 		p.To = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: ir.Syms.GCWriteBarrier[v.AuxInt-1]}
 		setReg(s, v.Reg0()) // move result from wasm stack to register local
 
-	case ssa.OpWasmI64Store8, ssa.OpWasmI64Store16, ssa.OpWasmI64Store32, ssa.OpWasmI64Store, ssa.OpWasmF32Store, ssa.OpWasmF64Store:
+	case ssa.OpWasm3I64Store8, ssa.OpWasm3I64Store16, ssa.OpWasm3I64Store32, ssa.OpWasm3I64Store, ssa.OpWasm3F32Store, ssa.OpWasm3F64Store:
 		getValue32(s, v.Args[0])
 		getValue64(s, v.Args[1])
 		p := s.Prog(v.Op.Asm())
@@ -321,10 +321,10 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 
 func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 	switch v.Op {
-	case ssa.OpWasmLoweredGetClosurePtr:
+	case ssa.OpWasm3LoweredGetClosurePtr:
 		getReg(s, wasm.REG_CTXT)
 
-	case ssa.OpWasmLoweredGetCallerPC:
+	case ssa.OpWasm3LoweredGetCallerPC:
 		p := s.Prog(wasm.AI64Load)
 		// Caller PC is stored 8 bytes below first parameter.
 		p.From = obj.Addr{
@@ -333,7 +333,7 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 			Offset: -8,
 		}
 
-	case ssa.OpWasmLoweredGetCallerSP:
+	case ssa.OpWasm3LoweredGetCallerSP:
 		p := s.Prog(wasm.AGet)
 		// Caller SP is the address of the first parameter.
 		p.From = obj.Addr{
@@ -343,7 +343,7 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 			Offset: 0,
 		}
 
-	case ssa.OpWasmLoweredAddr:
+	case ssa.OpWasm3LoweredAddr:
 		if v.Aux == nil { // address of off(SP), no symbol
 			getValue64(s, v.Args[0])
 			i64Const(s, v.AuxInt)
@@ -362,44 +362,44 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 			panic("wasm: bad LoweredAddr")
 		}
 
-	case ssa.OpWasmLoweredConvert:
+	case ssa.OpWasm3LoweredConvert:
 		getValue64(s, v.Args[0])
 
-	case ssa.OpWasmSelect:
+	case ssa.OpWasm3Select:
 		getValue64(s, v.Args[0])
 		getValue64(s, v.Args[1])
 		getValue32(s, v.Args[2])
 		s.Prog(v.Op.Asm())
 
-	case ssa.OpWasmI64AddConst:
+	case ssa.OpWasm3I64AddConst:
 		getValue64(s, v.Args[0])
 		i64Const(s, v.AuxInt)
 		s.Prog(v.Op.Asm())
 
-	case ssa.OpWasmI64Const:
+	case ssa.OpWasm3I64Const:
 		i64Const(s, v.AuxInt)
 
-	case ssa.OpWasmF32Const:
+	case ssa.OpWasm3F32Const:
 		f32Const(s, v.AuxFloat())
 
-	case ssa.OpWasmF64Const:
+	case ssa.OpWasm3F64Const:
 		f64Const(s, v.AuxFloat())
 
-	case ssa.OpWasmI64Load8U, ssa.OpWasmI64Load8S, ssa.OpWasmI64Load16U, ssa.OpWasmI64Load16S, ssa.OpWasmI64Load32U, ssa.OpWasmI64Load32S, ssa.OpWasmI64Load, ssa.OpWasmF32Load, ssa.OpWasmF64Load:
+	case ssa.OpWasm3I64Load8U, ssa.OpWasm3I64Load8S, ssa.OpWasm3I64Load16U, ssa.OpWasm3I64Load16S, ssa.OpWasm3I64Load32U, ssa.OpWasm3I64Load32S, ssa.OpWasm3I64Load, ssa.OpWasm3F32Load, ssa.OpWasm3F64Load:
 		getValue32(s, v.Args[0])
 		p := s.Prog(v.Op.Asm())
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: v.AuxInt}
 
-	case ssa.OpWasmI64Eqz:
+	case ssa.OpWasm3I64Eqz:
 		getValue64(s, v.Args[0])
 		s.Prog(v.Op.Asm())
 		if extend {
 			s.Prog(wasm.AI64ExtendI32U)
 		}
 
-	case ssa.OpWasmI64Eq, ssa.OpWasmI64Ne, ssa.OpWasmI64LtS, ssa.OpWasmI64LtU, ssa.OpWasmI64GtS, ssa.OpWasmI64GtU, ssa.OpWasmI64LeS, ssa.OpWasmI64LeU, ssa.OpWasmI64GeS, ssa.OpWasmI64GeU,
-		ssa.OpWasmF32Eq, ssa.OpWasmF32Ne, ssa.OpWasmF32Lt, ssa.OpWasmF32Gt, ssa.OpWasmF32Le, ssa.OpWasmF32Ge,
-		ssa.OpWasmF64Eq, ssa.OpWasmF64Ne, ssa.OpWasmF64Lt, ssa.OpWasmF64Gt, ssa.OpWasmF64Le, ssa.OpWasmF64Ge:
+	case ssa.OpWasm3I64Eq, ssa.OpWasm3I64Ne, ssa.OpWasm3I64LtS, ssa.OpWasm3I64LtU, ssa.OpWasm3I64GtS, ssa.OpWasm3I64GtU, ssa.OpWasm3I64LeS, ssa.OpWasm3I64LeU, ssa.OpWasm3I64GeS, ssa.OpWasm3I64GeU,
+		ssa.OpWasm3F32Eq, ssa.OpWasm3F32Ne, ssa.OpWasm3F32Lt, ssa.OpWasm3F32Gt, ssa.OpWasm3F32Le, ssa.OpWasm3F32Ge,
+		ssa.OpWasm3F64Eq, ssa.OpWasm3F64Ne, ssa.OpWasm3F64Lt, ssa.OpWasm3F64Gt, ssa.OpWasm3F64Le, ssa.OpWasm3F64Ge:
 		getValue64(s, v.Args[0])
 		getValue64(s, v.Args[1])
 		s.Prog(v.Op.Asm())
@@ -407,20 +407,20 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 			s.Prog(wasm.AI64ExtendI32U)
 		}
 
-	case ssa.OpWasmI64Add, ssa.OpWasmI64Sub, ssa.OpWasmI64Mul, ssa.OpWasmI64DivU, ssa.OpWasmI64RemS, ssa.OpWasmI64RemU, ssa.OpWasmI64And, ssa.OpWasmI64Or, ssa.OpWasmI64Xor, ssa.OpWasmI64Shl, ssa.OpWasmI64ShrS, ssa.OpWasmI64ShrU, ssa.OpWasmI64Rotl,
-		ssa.OpWasmF32Add, ssa.OpWasmF32Sub, ssa.OpWasmF32Mul, ssa.OpWasmF32Div, ssa.OpWasmF32Copysign,
-		ssa.OpWasmF64Add, ssa.OpWasmF64Sub, ssa.OpWasmF64Mul, ssa.OpWasmF64Div, ssa.OpWasmF64Copysign:
+	case ssa.OpWasm3I64Add, ssa.OpWasm3I64Sub, ssa.OpWasm3I64Mul, ssa.OpWasm3I64DivU, ssa.OpWasm3I64RemS, ssa.OpWasm3I64RemU, ssa.OpWasm3I64And, ssa.OpWasm3I64Or, ssa.OpWasm3I64Xor, ssa.OpWasm3I64Shl, ssa.OpWasm3I64ShrS, ssa.OpWasm3I64ShrU, ssa.OpWasm3I64Rotl,
+		ssa.OpWasm3F32Add, ssa.OpWasm3F32Sub, ssa.OpWasm3F32Mul, ssa.OpWasm3F32Div, ssa.OpWasm3F32Copysign,
+		ssa.OpWasm3F64Add, ssa.OpWasm3F64Sub, ssa.OpWasm3F64Mul, ssa.OpWasm3F64Div, ssa.OpWasm3F64Copysign:
 		getValue64(s, v.Args[0])
 		getValue64(s, v.Args[1])
 		s.Prog(v.Op.Asm())
 
-	case ssa.OpWasmI32Rotl:
+	case ssa.OpWasm3I32Rotl:
 		getValue32(s, v.Args[0])
 		getValue32(s, v.Args[1])
 		s.Prog(wasm.AI32Rotl)
 		s.Prog(wasm.AI64ExtendI32U)
 
-	case ssa.OpWasmI64DivS:
+	case ssa.OpWasm3I64DivS:
 		getValue64(s, v.Args[0])
 		getValue64(s, v.Args[1])
 		if v.Type.Size() == 8 {
@@ -431,28 +431,28 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		}
 		s.Prog(wasm.AI64DivS)
 
-	case ssa.OpWasmI64TruncSatF32S, ssa.OpWasmI64TruncSatF64S:
+	case ssa.OpWasm3I64TruncSatF32S, ssa.OpWasm3I64TruncSatF64S:
 		getValue64(s, v.Args[0])
 		s.Prog(v.Op.Asm())
 
-	case ssa.OpWasmI64TruncSatF32U, ssa.OpWasmI64TruncSatF64U:
+	case ssa.OpWasm3I64TruncSatF32U, ssa.OpWasm3I64TruncSatF64U:
 		getValue64(s, v.Args[0])
 		s.Prog(v.Op.Asm())
 
-	case ssa.OpWasmF32DemoteF64:
+	case ssa.OpWasm3F32DemoteF64:
 		getValue64(s, v.Args[0])
 		s.Prog(v.Op.Asm())
 
-	case ssa.OpWasmF64PromoteF32:
+	case ssa.OpWasm3F64PromoteF32:
 		getValue64(s, v.Args[0])
 		s.Prog(v.Op.Asm())
 
-	case ssa.OpWasmF32ConvertI64S, ssa.OpWasmF32ConvertI64U,
-		ssa.OpWasmF64ConvertI64S, ssa.OpWasmF64ConvertI64U,
-		ssa.OpWasmI64Extend8S, ssa.OpWasmI64Extend16S, ssa.OpWasmI64Extend32S,
-		ssa.OpWasmF32Neg, ssa.OpWasmF32Sqrt, ssa.OpWasmF32Trunc, ssa.OpWasmF32Ceil, ssa.OpWasmF32Floor, ssa.OpWasmF32Nearest, ssa.OpWasmF32Abs,
-		ssa.OpWasmF64Neg, ssa.OpWasmF64Sqrt, ssa.OpWasmF64Trunc, ssa.OpWasmF64Ceil, ssa.OpWasmF64Floor, ssa.OpWasmF64Nearest, ssa.OpWasmF64Abs,
-		ssa.OpWasmI64Ctz, ssa.OpWasmI64Clz, ssa.OpWasmI64Popcnt:
+	case ssa.OpWasm3F32ConvertI64S, ssa.OpWasm3F32ConvertI64U,
+		ssa.OpWasm3F64ConvertI64S, ssa.OpWasm3F64ConvertI64U,
+		ssa.OpWasm3I64Extend8S, ssa.OpWasm3I64Extend16S, ssa.OpWasm3I64Extend32S,
+		ssa.OpWasm3F32Neg, ssa.OpWasm3F32Sqrt, ssa.OpWasm3F32Trunc, ssa.OpWasm3F32Ceil, ssa.OpWasm3F32Floor, ssa.OpWasm3F32Nearest, ssa.OpWasm3F32Abs,
+		ssa.OpWasm3F64Neg, ssa.OpWasm3F64Sqrt, ssa.OpWasm3F64Trunc, ssa.OpWasm3F64Ceil, ssa.OpWasm3F64Floor, ssa.OpWasm3F64Nearest, ssa.OpWasm3F64Abs,
+		ssa.OpWasm3I64Ctz, ssa.OpWasm3I64Clz, ssa.OpWasm3I64Popcnt:
 		getValue64(s, v.Args[0])
 		s.Prog(v.Op.Asm())
 
@@ -471,9 +471,9 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 
 func isCmp(v *ssa.Value) bool {
 	switch v.Op {
-	case ssa.OpWasmI64Eqz, ssa.OpWasmI64Eq, ssa.OpWasmI64Ne, ssa.OpWasmI64LtS, ssa.OpWasmI64LtU, ssa.OpWasmI64GtS, ssa.OpWasmI64GtU, ssa.OpWasmI64LeS, ssa.OpWasmI64LeU, ssa.OpWasmI64GeS, ssa.OpWasmI64GeU,
-		ssa.OpWasmF32Eq, ssa.OpWasmF32Ne, ssa.OpWasmF32Lt, ssa.OpWasmF32Gt, ssa.OpWasmF32Le, ssa.OpWasmF32Ge,
-		ssa.OpWasmF64Eq, ssa.OpWasmF64Ne, ssa.OpWasmF64Lt, ssa.OpWasmF64Gt, ssa.OpWasmF64Le, ssa.OpWasmF64Ge:
+	case ssa.OpWasm3I64Eqz, ssa.OpWasm3I64Eq, ssa.OpWasm3I64Ne, ssa.OpWasm3I64LtS, ssa.OpWasm3I64LtU, ssa.OpWasm3I64GtS, ssa.OpWasm3I64GtU, ssa.OpWasm3I64LeS, ssa.OpWasm3I64LeU, ssa.OpWasm3I64GeS, ssa.OpWasm3I64GeU,
+		ssa.OpWasm3F32Eq, ssa.OpWasm3F32Ne, ssa.OpWasm3F32Lt, ssa.OpWasm3F32Gt, ssa.OpWasm3F32Le, ssa.OpWasm3F32Ge,
+		ssa.OpWasm3F64Eq, ssa.OpWasm3F64Ne, ssa.OpWasm3F64Lt, ssa.OpWasm3F64Gt, ssa.OpWasm3F64Le, ssa.OpWasm3F64Ge:
 		return true
 	default:
 		return false

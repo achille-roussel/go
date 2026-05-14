@@ -194,16 +194,37 @@ under M2's exclusions. `schedinit` calls `mallocinit()` (needs the excluded
 function that something still references the old model — but note that link error
 will fire from `schedinit` first, which is why `schedinit` must be forked, not stubbed.
 
-## 8. Compiler-side blockers that gate M2 *linking* (audit before coding)
+## 8. Compiler-side blockers that gate M2 *linking* — audited
 
-These are not M4/M6 deferrals — if any is wrong, M2 does not link or does not run:
+These are not M4/M6 deferrals — if any is wrong, M2 does not link or does not run.
+Audited against the current tree; conclusions below.
 
-1. **Ref values must never spill to memory** (§2) — new non-spillable value class.
-2. **`reflectcall` must be proven dead** in M2's kept runtime (§2).
-3. **Stop emitting `FUNCDATA_LocalsPointerMaps`** / stack maps (§2).
-4. **Stub `getcallerpc`/`getcallerSP`** (§2).
-5. **Gate every obj-layer `morestack` reference** and `maymorestack` (§2).
-6. **`schedinit` must be forked, not kept** (§7).
+1. **Ref values must never spill to memory** (§2). A codegen-design constraint: the
+   wasm3 SSA backend must classify ref-typed values as a non-spillable class so
+   regalloc / `OpStoreReg` / `AddrAuto` never emit `AI64Store` for them. Core M2 work.
+2. **`reflectcall`** — *resolved by exclusion.* Its only kept-runtime caller is
+   `runtime/mfinal.go` (finalizers); `proc.go` only has the `badreflectcall` panic
+   helper and `syscall_windows.go` is windows-only. M2 already excludes `mfinal.go`
+   (design §7) and `asm_wasm3.s` simply does not implement `reflectcall`, so it is
+   dead. Action: keep `mfinal.go` excluded; do not port `reflectcall`.
+3. **Stack maps.** `FUNCDATA_LocalsPointerMaps` is emitted by *generic* compiler
+   infrastructure (`cmd/compile/internal/liveness/plive.go`, `ssagen/{ssa,abi}.go`,
+   `gc/compile.go`), not the wasm backend. The wasm3 path must suppress / trivialise
+   this emission — a generic-infrastructure touch point, the most cross-cutting of
+   the six.
+4. **`getcallerpc` / `getcallerSP`.** `sys.GetCallerPC`/`GetCallerSP` are used
+   pervasively in kept runtime (`chan.go`, `asan.go`, `coro.go`, …); the current
+   `OpWasmLoweredGetCallerPC/SP` lowering reads the linear Go-stack return address
+   (`NAME_PARAM` offset −8), which does not exist under the typed ABI. The wasm3
+   backend's `ssaGenValue` must give these ops a valid stub lowering (return
+   0 / a sentinel); tracebacks are degraded until a later milestone.
+5. **`morestack`** — *confirmed.* `cmd/internal/obj/wasm/wasmobj.go` looks up
+   `runtime.morestack`/`morestack_noctxt` in `Init` and handles `maymorestack`;
+   `wasm3obj.go` drops all of it (no prologue). Localised to the obj backend.
+6. **`schedinit`** — *confirmed, must be forked.* Stock `schedinit` calls
+   `mallocinit`/`procresize`/`gcinit`/`stackinit`, which reference the excluded
+   GC/allocator/stack files and would not even compile. M2 needs a gutted
+   `schedinit_wasm3` (design §7).
 
 ## 9. Bring-up order — a *testing* aid, not a landing sequence
 

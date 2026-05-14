@@ -28,6 +28,12 @@ func Init() (*sys.Arch, ld.Arch) {
 	arch := sys.ArchWasm
 	if buildcfg.GOARCH == "wasm3" {
 		arch = sys.ArchWasm3
+		// M2 cutover: wasm3 emits a WebAssembly 3.0 module — a GC-aware
+		// type section, native typed functions, direct calls, no funcref
+		// table. assignAddress and the data-section pass are shared;
+		// asmb2_3 replaces the module writer. See asm3.go.
+		theArch.Asmb = asmb3
+		theArch.Asmb2 = asmb2_3
 	}
 	return arch, theArch
 }

@@ -102,6 +102,47 @@ are real wasm results).
 unwind-check, `funcValueOffset` and the table-replay indexing in the linker, write
 barriers, the morestack prologue.
 
+### 2.1 ABI mechanism — spike conclusion
+
+The ABI spike traced `ssagen`/`abi`'s signature path. **Decision: do not add a new
+`abi.ABIConfig` for wasm3.** The `abi` package models register-or-memory-frame
+assignment; wasm3 wants neither — wasm parameters are positional value slots. Instead
+wasm3 reuses and extends the infrastructure the `//go:wasmimport` / `//go:wasmexport`
+feature already established:
+
+- **`obj.WasmFuncType` / `obj.WasmField` / `WasmTypeSym`** (`cmd/internal/obj/link.go`,
+  `cmd/link/internal/loader`) — the per-function wasm-level signature, serialized as
+  the `AuxWasmType` aux symbol. The linker (`cmd/link/internal/wasm/asm.go:228`)
+  **already** reads `WasmTypeSym` per function and emits that type; today only
+  `//go:wasmexport` functions carry one and normal functions fall back to the
+  hardcoded type-0 `(i32)->i32`. For wasm3 *every* function carries a `WasmTypeSym`,
+  so the linker side is essentially already done.
+- **`obj.WasmFieldType` must be extended.** Today it is only
+  `WasmI32/I64/F32/F64/Ptr/Bool`, where `Ptr` means an i32 linear-memory address.
+  wasm3 needs a `WasmRef` field type carrying a wasm type index, to represent
+  `(ref $go.T)`. `WasmField.Offset` (a frame-pointer-relative memory-ABI location) is
+  meaningless for wasm3 and is left zero / repurposed for the type index.
+- **A new wasm3 signature-lowering pass**, analogous to `paramsToWasmFields` /
+  `resultsToWasmFields` (`cmd/compile/internal/ssagen/abi.go`) but doing the full
+  design-doc §6 object-model lowering (string → ref + 2×i32, slice → ref + 3×i32,
+  interface → 2 fields, structs flattened or boxed) and not computing memory offsets.
+  Lives in the wasm3 backend.
+- **`cmd/internal/obj/objfile.go`** — generalize the `AuxWasmType` emission (today
+  gated to `fn.WasmExport`) to every function under GOARCH=wasm3.
+- **Codegen** — `OpArg` lowering (parameter *i* → `local.get i`) and the result/return
+  path live in the wasm3 SSA backend (`wasm3/ssa.go` + `wasm3obj.go`), driven by the
+  `WasmFuncType`, not by `abi.ABIParamResultInfo` frame offsets. This is part of the
+  SSA-layer fork, not `abi`-package work.
+
+**Ordering dependency:** ref-typed `WasmField`s carry a wasm type index assigned by the
+type-collection pass (§3), so signature lowering runs after — or interleaved with —
+type collection.
+
+Net: the "ABI" is not an `abi.ABIConfig` — it is a small `obj` extension, a
+backend-local signature-lowering pass, and codegen. The first draft's worry ("a new
+ABI ... am I underestimating it") resolves to: it largely reuses the existing
+wasmimport/wasmexport plumbing.
+
 ## 3. Object model and the type section
 
 The design-doc §6 lowering rules (the `$go.object` supertype, the six rules, the
@@ -258,5 +299,7 @@ M2 lands as one change. To test it incrementally:
 - Rec-group dependency ordering for the type section — validate against a fixture.
   (The spike's single self-recursive `rec` group validates; multi-type dependency
   ordering is still untested.)
-- Whether any kept stdlib package M2 must build pulls in `reflectcall` transitively —
-  audit item #2 in §8.
+
+Resolved since the first draft: the ABI mechanism (§2.1 — reuse/extend the
+`WasmFuncType` infrastructure, no new `abi.ABIConfig`); `reflectcall` reachability
+(§8 — resolved by excluding `mfinal.go`).

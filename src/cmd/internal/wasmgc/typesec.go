@@ -32,6 +32,7 @@ const (
 	opSub       = 0x50 // sub type, non-final
 	opStruct    = 0x5F // struct composite type
 	opArray     = 0x5E // array composite type
+	opFunc      = 0x60 // func composite type
 	opRefNull   = 0x63 // (ref null ht)
 	opRef       = 0x64 // (ref ht)
 	valI32      = 0x7F
@@ -144,6 +145,16 @@ func (table Table) EncodeTypeSection() []byte {
 		case KindArray:
 			b = append(b, opArray)
 			b = fieldtype(b, t.Elem, t.ElemMut)
+		case KindFunc:
+			b = append(b, opFunc)
+			b = AppendUleb(b, uint64(len(t.Params)))
+			for _, p := range t.Params {
+				b = storage(b, p)
+			}
+			b = AppendUleb(b, uint64(len(t.Results)))
+			for _, r := range t.Results {
+				b = storage(b, r)
+			}
 		default:
 			panic("wasmgc: unknown wasm type kind")
 		}

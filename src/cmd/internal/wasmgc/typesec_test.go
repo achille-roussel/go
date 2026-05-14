@@ -120,3 +120,39 @@ func ValidateModule(t *testing.T, name string, mod []byte) {
 func TestEncodedTypeSectionValidates(t *testing.T) {
 	ValidateModule(t, "prelude", WrapModule(Table(PreludeTypes()).EncodeTypeSection()))
 }
+
+func TestFuncTypeEncoding(t *testing.T) {
+	// A wasm3 module's type section holds function types alongside the
+	// GC types. Append a struct and two function types: one that takes a
+	// reference to the struct and returns an i64, and the degenerate
+	// () -> () signature of an empty main.
+	st := NumPreludeTypes
+	table := Table(append(PreludeTypes(),
+		Type{
+			Name:   "go.S",
+			Kind:   KindStruct,
+			Super:  TypeGoObject,
+			Fields: []Field{{Storage: PrimStorage(I64), Mutable: true}},
+		},
+		Type{
+			Name:    "go.func.getv",
+			Kind:    KindFunc,
+			Super:   -1,
+			Params:  []Storage{RefStorage(st, true)},
+			Results: []Storage{PrimStorage(I64)},
+		},
+		Type{
+			Name:  "go.func.main",
+			Kind:  KindFunc,
+			Super: -1,
+		},
+	))
+
+	// The function type referencing go.S must be emitted after it.
+	groups := table.RecGroups()
+	if groupOf(groups, st+1) <= groupOf(groups, st) {
+		t.Errorf("func type referencing go.S emitted before it")
+	}
+
+	ValidateModule(t, "functypes", WrapModule(table.EncodeTypeSection()))
+}

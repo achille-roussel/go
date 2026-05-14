@@ -26,6 +26,7 @@ type Kind uint8
 const (
 	KindStruct Kind = iota // (struct ...)
 	KindArray              // (array ...)
+	KindFunc               // (func ...)
 )
 
 // Prim is a primitive WebAssembly storage type. I8 and I16 are packed
@@ -73,18 +74,26 @@ type Field struct {
 	Mutable bool
 }
 
-// Type is one entry in the module's type table.
+// Type is one entry in the module's type table. A wasm3 module's type
+// section is a single Table holding struct, array, and function types
+// together: every wasm3 function references one KindFunc entry, and the
+// type section is emitted as one unit so functions and the GC types
+// they mention can share recursion groups.
 type Type struct {
 	Name string // human-readable label, e.g. "go.string"
 	Kind Kind
 
 	// Super is the index of the supertype, or -1 for a top type. Every
 	// Go heap object subtypes go.object (doc/wasm3-design.md §6.1).
+	// Function types are never subtyped, so Super is -1 for KindFunc.
 	Super int
 
 	Fields  []Field // set when Kind == KindStruct
 	Elem    Storage // set when Kind == KindArray
 	ElemMut bool    // set when Kind == KindArray
+
+	Params  []Storage // set when Kind == KindFunc
+	Results []Storage // set when Kind == KindFunc
 }
 
 // Fixed type-table indices for the prelude types. These are emitted by
@@ -155,6 +164,17 @@ func (t Type) DependsOn() []int {
 	case KindArray:
 		if t.Elem.IsRef() {
 			deps = append(deps, t.Elem.RefType)
+		}
+	case KindFunc:
+		for _, p := range t.Params {
+			if p.IsRef() {
+				deps = append(deps, p.RefType)
+			}
+		}
+		for _, r := range t.Results {
+			if r.IsRef() {
+				deps = append(deps, r.RefType)
+			}
 		}
 	}
 	return deps

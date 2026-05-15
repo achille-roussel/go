@@ -562,3 +562,74 @@ relooper — which is the next, and largest remaining, rung of the
 ladder. After it: `&x` of a local (wasm locals have no address —
 design §7 interior pointers), then the struct/pointer rungs and the
 deferred reference-typed-signature work.
+
+### The branches rung — ✅ DONE (`a771a05ecf`, `be8493a7db`, `613da7c6dc`)
+
+Two-mode structured-control-flow reconstruction in
+`cmd/internal/obj/wasm/wasm3obj.go`:
+
+- **Forward-only** (no back-edge — the divcheck/cond/division-check
+  pattern): wrap one wasm `block` per distinct AJMP target boundary,
+  outermost first so the innermost ends at the smallest target. Each
+  AJMP locates its target frame in the open-structure stack and
+  emits `br <depth>`. Compact, matches the classic structured-if
+  shape:
+
+  ```wasm
+  (func (param i64) (result i64)
+    block ;; @1
+      local.get 0; i64.eqz; i32.eqz
+      if   ;; @2
+        br 1   ;; jumps over the "return 1" arm
+      end
+      i64.const 1; return
+    end
+    ;; falls through to the "return x+1" arm
+    local.get 0; i64.const 1; i64.add; return)
+  ```
+
+- **Dispatch-loop** (any back-edge — `for` loops): wrap the body in
+  `loop $L` plus N nested `block`s and a top-of-loop br_table on a
+  fresh i32 dispatch local. Every AJMP becomes
+  `i32.const K; local.set $dispatch; br $L`. Forward and back jumps
+  go through the same uniform mechanism. Trailing `unreachable` traps
+  if execution falls past the loop without an AJMP back into it.
+
+Plus three small prerequisites that came up while wiring it:
+
+- `ssaGenBlock` now emits `AUNDEF` (→ `unreachable`) for `BlockExit`
+  / `BlockRetJmp`. Without it, fall-through after a no-return call
+  (panicdivide etc.) would have to typecheck against the function's
+  declared result type.
+- `internal/abi/abi_wasm3.go` declares `IntArgRegs=16` /
+  `FloatArgRegs=32` matching the wasm3 register sets — abi_generic.go
+  excludes wasm3 because wasm3 enables the regabiargs experiment.
+- `cmd/internal/wasmgc` is now in `cmd/dist/buildtool.go`'s
+  `bootstrapDirs` so `cmd/compile/internal/wasm3` (which imports it)
+  bootstraps cleanly.
+
+And the wasmexport wrapper, which `attachWasmType` was incorrectly
+treating as a "carries its own signature" case for the *wrapped* fn
+too: narrow the skip to `WasmImport` only, and add
+`assembleWasm3ExportWrapper` to emit the trivial typed forward body
+(`local.get 0; ...; call <wrapped>; end` — no translation needed since
+wrapper and wrapped share the wasm signature).
+
+End-to-end verification: a Node.js harness loads the produced wasm and
+calls each exported function (`sum`, `divcheck`, `cond`, `multibr`)
+with a battery of inputs covering both modes — 15/15 pass:
+
+  ```
+  pass=15 fail=0
+  ```
+
+Validated subset now includes structured control flow, conditional
+expressions, multi-arm if/else cascades, for-loops with body+condition
+back-edges, and the wasmexport surface. Division still bails — its
+`runtime.wasmDiv` call needs the M2 runtime fork (the wrapped Go
+function isn't compiled in our minimal runtime).
+
+The next remaining boundaries are the M2 design rungs proper: `&x` of
+a local (interior pointers — design §7), structs (rung the M2 spike
+exercises), then the deferred reference-typed-signature work and the
+runtime fork.

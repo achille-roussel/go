@@ -774,6 +774,59 @@ composite-typed exports needs the wrapper-side struct.new construction
 intrinsics (`newobject` → `struct.new`), interior pointers (§7), and
 the runtime fork (§3).
 
+### M2 status as of this session
+
+**Done** (the encodable subset is now sizable and proven by Node.js execution):
+- Module structure: GC type section, native typed funcs, direct calls,
+  no funcref table or element section, degenerate `_start` calling
+  `main.main` (Stages A & B)
+- Stage C codegen ladder: arithmetic, branches+loops (forward + back-
+  edge dispatch), linear-memory loads/stores + globals, pointer params,
+  floats, int64 division, string params, struct-by-value
+- Per-function wasmgc.Table aux: compiler emits, linker merges with
+  prelude-aware index remapping
+- typeCollector path activated for composite Go params; per-register
+  narrowness in the SSA call site/BlockRet bridges the field-level
+  wasm signature
+
+**Still required for full M2**, each its own multi-day rung:
+
+- Heap struct allocation: new SSA ops (`Wasm3LoweredStructNew/Get/Set`,
+  `Wasm3LoweredArrayNew/Get/Set/Len`, `Wasm3LoweredRefCast/Test/Null`),
+  Wasm3.rules lowering for `OpAddr`/`OpLoad`/`OpStore` on struct fields
+  → these ops, ssaGenValue cases that emit AStructNew/AStructGet/etc.
+  with type-index + field-index operands, and an `encodeWasm3Body` case
+  that writes the typeIdx/fieldIdx uleb128s after the 0xFB-prefixed
+  opcode. (The 0xFB opcode constants and `writeOpcode` byte encoding
+  already exist in `cmd/internal/obj/wasm`.)
+- Allocation intrinsics: detect `runtime.newobject(*T)` and
+  `runtime.newarray(*T, n)` in ssagen and replace with `struct.new` /
+  `array.new` (intrinsic call replacement, not a runtime call). Removes
+  the dependency on `runtime.mallocgc` and write barriers.
+- Interior pointers (§7): SSA pre-pass that boxes any escaping
+  `&local` into a single-field struct allocated via `struct.new`, and
+  rewrites uses to ref+`struct.get`/`struct.set`. Non-escaping
+  `&local` is already handled by SSA load-store forwarding.
+- Wrapper-side composite marshal: `paramsToWasmFields` and
+  `assembleWasm3ExportWrapper` need to construct GC representations
+  from host i32 addresses for composite-typed wasmexport entries.
+- Runtime fork: `//go:build wasm3` files for proc/malloc/mbarrier/
+  schedinit. Specifically:
+  - `proc_wasm3.go`: minimal g0/m0 plus a getg() that returns g0,
+    `gopark`/`goready` as `unreachable`-trapping stubs, lock/unlock
+    as no-ops (single-goroutine).
+  - `malloc_wasm3.go`: `mallocgc` as `unreachable` (alloc happens via
+    intrinsic).
+  - `mbarrier_wasm3.go`: field-wise `typedmemmove` without write
+    barriers.
+  - `rt0_wasip1_wasm3.s`: wire g/m setup before calling `main.main`.
+- 6 §8 blocker fixes from `doc/wasm3-m2-cutover-notes.md` §8.
+
+The encodable subset already covers a large class of Go programs that
+don't use heap allocation, indirect calls, escaping locals, or runtime
+print/panic. The remaining rungs are mechanically clear; each is just
+real work.
+
 ### Earlier comprehensive regression — 33 / 33 pass
 
 A single test program now exercises the entire validated subset:

@@ -694,7 +694,37 @@ needing both an f32 and an f64 in the same F register would still fail
 can't honour that — but single-precision-width functions (no mixing)
 cover the common case.
 
-### Comprehensive regression — 33 / 33 pass
+### The int64-division and strings rungs — ✅ DONE (`bddd186555`, `0589f953cd`)
+
+Two more focused commits broaden the validated subset:
+
+- `OpWasm3I64DivS` no longer routes 8-byte signed division through
+  `runtime.wasmDiv` — the wasm-target's MinInt64/-1 helper. wasm3 has
+  no such runtime in M2 and treats engine traps as the terminal
+  failure mode (the restricted-subset compatibility level), so direct
+  `i64.div_s` is correct. 10/10 cases including small/large operands,
+  modulo, and the i32 MinInt/-1 trap edge case.
+- A new `wasm3Fields` multi-field lowering helper splits `string`
+  into two i64 wasm fields (ptr, len), matching the wrapper's
+  `paramsToWasmFields` which already splits a string into two WasmPtr
+  (i32) fields. `assembleWasm3ExportWrapper`'s existing pointer-
+  widening dance handles each part. `strLen`, `strByte`, `sumBytes`
+  all encode and run.
+
+### Comprehensive regression — 32 / 32 pass on a real-world-ish suite
+
+Beyond the per-rung tests, a single program now exercises a meaningful
+slice of "real" Go: memoized fib(45) = 1,134,903,170 backed by a
+50-element global `int64` array, bubble-sort + binary-search of a
+16-element global array, the djb2 string hash over multiple inputs,
+and raw `unsafe.Pointer` byte read/write at host-supplied addresses.
+32/32 pass under the Node.js execution harness — covering arithmetic,
+forward branches, back-edge loops, recursion, package globals
+(R/W/RMW), struct fields through globals, fixed-size global arrays
+with sort + search, pointer-param call chains, single-type floats,
+int64 division/modulo, string params, and unsafe.Pointer reads.
+
+### Earlier comprehensive regression — 33 / 33 pass
 
 A single test program now exercises the entire validated subset:
 arithmetic (i32/i64/uint32 ops, bit ops, conversions), forward

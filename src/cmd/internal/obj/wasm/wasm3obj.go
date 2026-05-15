@@ -759,11 +759,15 @@ func wasm3Locals(s *obj.LSym) (localOf map[int16]uint64, spillOf map[wasm3SpillK
 		case obj.WasmF32, obj.WasmF64:
 			reg = REG_F0 + floatParam
 			floatParam++
-		case obj.WasmI32:
+		case obj.WasmI32, obj.WasmPtr, obj.WasmBool:
+			// All three encode as i32 in the wasm signature (the
+			// linker collapses them in fieldsToTypes). Treat them as
+			// narrow so the prologue widens them to the i64 SSA
+			// register width.
 			reg = REG_R0 + intParam
 			intParam++
 			narrow = true
-		default: // WasmI64, WasmPtr, WasmBool, WasmRef
+		default: // WasmI64, WasmRef
 			reg = REG_R0 + intParam
 			intParam++
 		}

@@ -5,6 +5,7 @@
 package wasm3
 
 import (
+	"bytes"
 	"cmd/compile/internal/ir"
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
@@ -145,22 +146,99 @@ func attachWasmType(fn *ir.Func) {
 	if fn.WasmImport != nil {
 		return
 	}
+
+	// Use the legacy wasm3Fields path: every primitive type, plus
+	// string (split to two i64 slots) and pointer-shaped scalars
+	// (i64 internally, widened from i32 at the wasmexport boundary).
+	// Composite types — struct values, slices, interfaces — are
+	// rejected here and the function falls back to the unreachable
+	// stub.
+	//
+	// The typeCollector path (tryCollectorAttach below) is wired but
+	// not yet activated: lowering struct values to per-field wasm
+	// types creates a calling-convention mismatch the SSA call site
+	// can't yet bridge. The call site narrows by the Go param type
+	// (one decision per Go param), but a struct expanded to multiple
+	// wasm fields needs a decision per wasm field — and the per-callee
+	// WasmType isn't reliably available when the caller is being
+	// compiled (PrepareFunc runs concurrently across functions). The
+	// next session resolves both: either a pre-pass that attaches
+	// WasmType eagerly before any genssa, or per-callee narrowness
+	// derived from the Go *types.Type at the call site. The plumbing
+	// for emitting and consuming the per-function wasmgc.Table aux
+	// (obj.WasmType.Table, asm3.go's mergeTable) is in place.
+	if sig, ok := tryPrimitiveAttach(ft); ok {
+		fn.LSym.Func().WasmType = &obj.WasmType{WasmFuncType: sig}
+		return
+	}
+}
+
+// tryPrimitiveAttach is the legacy lowering: every Go param/result is
+// run through wasm3Fields, which handles primitives and strings (split
+// to two i64 slots). Returns ok=false on any type wasm3Fields rejects,
+// so the caller can fall through to the typeCollector path.
+func tryPrimitiveAttach(ft *types.Type) (obj.WasmFuncType, bool) {
 	var sig obj.WasmFuncType
 	for _, p := range ft.RecvParams() {
 		fs, ok := wasm3Fields(p.Type)
 		if !ok {
-			return
+			return obj.WasmFuncType{}, false
 		}
 		sig.Params = append(sig.Params, fs...)
 	}
 	for _, r := range ft.Results() {
 		fs, ok := wasm3Fields(r.Type)
 		if !ok {
-			return
+			return obj.WasmFuncType{}, false
 		}
 		sig.Results = append(sig.Results, fs...)
 	}
-	fn.LSym.Func().WasmType = &obj.WasmType{WasmFuncType: sig}
+	return sig, true
+}
+
+// tryCollectorAttach lowers a Go function type via a per-function
+// typeCollector and returns the resulting WasmType (with the collector's
+// table serialized into wt.Table). Returns ok=false if the lowering
+// recovers a panic — typeCollector.lowerFields panics on Go types it
+// can't yet represent, and we want to fall back to the primitive-only
+// path rather than abort compilation.
+func tryCollectorAttach(ft *types.Type) (wt *obj.WasmType, ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			wt = nil
+			ok = false
+		}
+	}()
+	c := newTypeCollector()
+	sig := c.loweredSignature(ft)
+	wt = &obj.WasmType{WasmFuncType: sig}
+	// Emit the per-function table whenever any field references a wasm
+	// type — even a prelude type like go.bytes. The linker uses the
+	// table as the remap source for every WasmRef Offset, so an empty
+	// table on a signature that has refs would leave the linker without
+	// a way to translate the per-function index. Primitive-only
+	// signatures (no WasmRef anywhere) skip the table to keep their aux
+	// payload small.
+	if signatureHasRef(sig) {
+		var b bytes.Buffer
+		c.table.Write(&b)
+		wt.Table = b.Bytes()
+	}
+	return wt, true
+}
+
+func signatureHasRef(sig obj.WasmFuncType) bool {
+	for _, f := range sig.Params {
+		if f.Type == obj.WasmRef {
+			return true
+		}
+	}
+	for _, f := range sig.Results {
+		if f.Type == obj.WasmRef {
+			return true
+		}
+	}
+	return false
 }
 
 // wasm3Fields lowers a Go parameter or result type to one or more wasm

@@ -708,6 +708,19 @@ func wasm3NarrowABI(t *types.Type) bool {
 	return (t.IsInteger() || t.IsBoolean()) && t.Size() <= 4
 }
 
+// isNarrowWasmField reports whether a wasm field is carried in an i32
+// slot rather than the i64 register width. Used by the call site to
+// drive per-field narrowing when the callee carries a typeCollector-
+// emitted WasmType signature, where one Go param can lower to several
+// wasm fields with their own widths.
+func isNarrowWasmField(f obj.WasmField) bool {
+	switch f.Type {
+	case obj.WasmI32, obj.WasmPtr, obj.WasmBool:
+		return true
+	}
+	return false
+}
+
 func getValue32(s *ssagen.State, v *ssa.Value) {
 	if v.OnWasmStack {
 		s.OnWasmStackSkipped--

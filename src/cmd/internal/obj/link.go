@@ -736,6 +736,13 @@ func (ft *WasmFuncType) Write(w *bytes.Buffer) {
 }
 
 func (ft *WasmFuncType) Read(b []byte) {
+	ft.ReadAndReturn(b)
+}
+
+// ReadAndReturn deserializes a WasmFuncType from the prefix of b and
+// returns the unconsumed suffix. Used by WasmType.Read to chain a
+// trailing wasmgc.Table after the function-type bytes.
+func (ft *WasmFuncType) ReadAndReturn(b []byte) []byte {
 	readByte := func() byte {
 		x := b[0]
 		b = b[1:]
@@ -761,6 +768,7 @@ func (ft *WasmFuncType) Read(b []byte) {
 		ft.Results[i].Type = WasmFieldType(readByte())
 		ft.Results[i].Offset = readInt64()
 	}
+	return b
 }
 
 // WasmExport represents a WebAssembly (WASM) exported function with
@@ -789,23 +797,46 @@ func (we *WasmExport) CreateAuxSym() {
 // shares the (i32)->i32 block-dispatch signature, wasm3 functions are
 // emitted as native typed wasm functions, so each one carries its own
 // WasmFuncType for the linker to intern into the type section.
+//
+// A wasm3 signature can reference WasmGC types by index — a struct or
+// array type that lives in the per-package wasmgc.Table. Those indices
+// are package-local; the linker remaps them when interning function
+// types into the merged module-wide table. To do that the linker needs
+// the per-package table itself, so the typed-ABI aux now carries the
+// table bytes inline alongside the WasmFuncType bytes. The format is
+// `<WasmFuncType bytes><wasmgc.Table bytes>` — both halves are
+// self-delimiting (the WasmFuncType length-prefixes its slot vectors,
+// the table length-prefixes its type vector).
 type WasmType struct {
 	WasmFuncType
 
-	// AuxSym is the serialization of WasmFuncType, passed to the linker
-	// as a goobj.AuxWasmType aux symbol.
+	// Table is the serialization of the per-function wasmgc.Table that
+	// the function's WasmRef fields index into. Empty if the signature
+	// uses only primitive (non-reference) wasm types.
+	Table []byte
+
+	// AuxSym is the serialization of WasmFuncType followed by Table,
+	// passed to the linker as a goobj.AuxWasmType aux symbol.
 	AuxSym *LSym
 }
 
 func (wt *WasmType) CreateAuxSym() {
 	var b bytes.Buffer
 	wt.WasmFuncType.Write(&b)
+	b.Write(wt.Table)
 	p := b.Bytes()
 	wt.AuxSym = &LSym{
 		Type: objabi.SDATA, // doesn't really matter
 		P:    append([]byte(nil), p...),
 		Size: int64(len(p)),
 	}
+}
+
+// Read parses the bytes produced by CreateAuxSym back into wt's
+// WasmFuncType and Table fields.
+func (wt *WasmType) Read(b []byte) {
+	rest := wt.WasmFuncType.ReadAndReturn(b)
+	wt.Table = rest
 }
 
 type WasmField struct {

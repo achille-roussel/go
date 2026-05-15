@@ -88,13 +88,9 @@ func storagesEqual(a, b []wasmgc.Storage) bool {
 
 // objStorage converts one obj.WasmField — the linker's view of a
 // compiler-lowered parameter or result slot — to a wasmgc.Storage.
-//
-// TODO(wasm3): obj.WasmRef carries a per-package wasm type index in
-// Offset. Resolving it to a global table index needs the per-package
-// wasmgc.Table the compiler will emit as an aux symbol (cutover step
-// 1/2 remainder). Until then a reference field is a hard error; the
-// empty-main and arithmetic rungs of the bring-up ladder use only
-// primitive signatures and do not hit this path.
+// Reference fields require a remap table (see objStorageRemapped); the
+// no-remap form is used for host-import signatures, which never carry
+// references.
 func objStorage(f obj.WasmField) wasmgc.Storage {
 	switch f.Type {
 	case obj.WasmI32, obj.WasmPtr, obj.WasmBool:
@@ -106,7 +102,7 @@ func objStorage(f obj.WasmField) wasmgc.Storage {
 	case obj.WasmF64:
 		return wasmgc.PrimStorage(wasmgc.F64)
 	case obj.WasmRef:
-		panic("wasm3: reference-typed signatures need the per-package type table (not yet emitted)")
+		panic("wasm3: WasmRef in a host-import signature has no per-package table to remap against")
 	default:
 		panic(fmt.Sprintf("wasm3: unknown obj.WasmField type %d", f.Type))
 	}
@@ -121,6 +117,117 @@ func objStorages(fields []obj.WasmField) []wasmgc.Storage {
 		out[i] = objStorage(f)
 	}
 	return out
+}
+
+// objStorageRemapped is objStorage but for fields whose WasmRef.Offset
+// is a per-package type index that has been remapped to a module-wide
+// index via the remap table from mergeTable.
+func objStorageRemapped(f obj.WasmField, remap []int) wasmgc.Storage {
+	if f.Type == obj.WasmRef {
+		pkgIx := int(f.Offset)
+		if pkgIx < 0 || pkgIx >= len(remap) {
+			panic(fmt.Sprintf("wasm3: WasmRef Offset %d out of range for per-package table of size %d", pkgIx, len(remap)))
+		}
+		return wasmgc.RefStorage(int(remap[pkgIx]), false)
+	}
+	return objStorage(f)
+}
+
+func objStoragesRemapped(fields []obj.WasmField, remap []int) []wasmgc.Storage {
+	if len(fields) == 0 {
+		return nil
+	}
+	out := make([]wasmgc.Storage, len(fields))
+	for i, f := range fields {
+		out[i] = objStorageRemapped(f, remap)
+	}
+	return out
+}
+
+// mergeTable folds a function's per-package wasmgc.Table (carried in
+// the WasmType aux's tail bytes) into m's module-wide table and
+// returns a remap table mapping each per-package index to the merged
+// module index.
+//
+// The per-package table starts with the same wasmgc.PreludeTypes()
+// the module-wide table starts with — both produced by the same
+// constructors — so per-pkg indices 0 .. NumPreludeTypes-1 always map
+// to the matching prelude indices in the module table. Program types
+// (per-pkg index NumPreludeTypes onward) are appended to the module
+// table, with their internal references remapped to their new module
+// positions.
+//
+// Today the merge appends each package's program types unconditionally
+// — duplicates across packages produce duplicate type-section entries,
+// which is valid wasm but redundant. Structural deduplication across
+// packages is a later refinement; for the M2 cutover the priority is
+// correctness, not table compactness.
+//
+// An empty pkgTableBytes — a primitive-only signature with no
+// reference fields — is the fast path with a nil remap.
+func (m *wasm3Module) mergeTable(pkgTableBytes []byte) []int {
+	if len(pkgTableBytes) == 0 {
+		return nil
+	}
+	pkg := wasmgc.ReadTable(pkgTableBytes)
+	remap := make([]int, len(pkg))
+	// Prelude indices map identically to the module table's prelude.
+	for i := 0; i < wasmgc.NumPreludeTypes && i < len(pkg); i++ {
+		remap[i] = i
+	}
+	// Reserve module slots for every program type in the per-package
+	// table first, so pass 2's nested-ref remapping always lands.
+	for i := wasmgc.NumPreludeTypes; i < len(pkg); i++ {
+		remap[i] = len(m.table)
+		m.table = append(m.table, wasmgc.Type{})
+	}
+	// Pass 2: fill the reserved slots with remapped types.
+	for i := wasmgc.NumPreludeTypes; i < len(pkg); i++ {
+		t := pkg[i]
+		dst := remap[i]
+		remappedT := wasmgc.Type{
+			Name:    t.Name,
+			Kind:    t.Kind,
+			Super:   -1,
+			ElemMut: t.ElemMut,
+		}
+		if t.Super >= 0 {
+			remappedT.Super = int(remap[int(t.Super)])
+		}
+		for _, f := range t.Fields {
+			f.Storage = remapStorage(f.Storage, remap)
+			remappedT.Fields = append(remappedT.Fields, f)
+		}
+		remappedT.Elem = remapStorage(t.Elem, remap)
+		for _, p := range t.Params {
+			remappedT.Params = append(remappedT.Params, remapStorage(p, remap))
+		}
+		for _, r := range t.Results {
+			remappedT.Results = append(remappedT.Results, remapStorage(r, remap))
+		}
+		m.table[dst] = remappedT
+	}
+	return remap
+}
+
+// remapStorage rewrites a wasmgc.Storage's RefType from a per-package
+// index to a module-wide index using remap. Primitive storages pass
+// through.
+func remapStorage(s wasmgc.Storage, remap []int) wasmgc.Storage {
+	if !s.IsRef() {
+		return s
+	}
+	pkgIx := int(s.RefType)
+	if pkgIx < 0 || pkgIx >= len(remap) {
+		// Negative or out-of-range indices are reserved/sentinel
+		// values (e.g. wasmgc.TypeGoObject = -1). Pass through.
+		return s
+	}
+	return wasmgc.Storage{
+		Prim:    s.Prim,
+		RefType: int(remap[pkgIx]),
+		RefNull: s.RefNull,
+	}
 }
 
 // asmb2_3 writes the final WebAssembly 3.0 module binary for
@@ -170,9 +277,18 @@ func asmb2_3(ctxt *ld.Link, ldr *loader.Loader) {
 		} else {
 			writeWasm3FuncBody(ctxt, ldr, fn, wfn, hostImportMap)
 			if s := ldr.WasmTypeSym(fn); s != 0 {
-				var ft obj.WasmFuncType
-				ft.Read(ldr.Data(s))
-				typeIx = m.internFuncType(objStorages(ft.Params), objStorages(ft.Results))
+				var wt obj.WasmType
+				wt.Read(ldr.Data(s))
+				// Merge the function's per-package wasmgc.Table into
+				// the module-wide table. The remap table maps each
+				// per-function type index to the merged module index;
+				// it then rewrites every WasmRef field's Offset in the
+				// function signature so internFuncType sees module-
+				// global indices.
+				remap := m.mergeTable(wt.Table)
+				params := objStoragesRemapped(wt.Params, remap)
+				results := objStoragesRemapped(wt.Results, remap)
+				typeIx = m.internFuncType(params, results)
 			} else {
 				typeIx = m.internFuncType(nil, nil)
 			}

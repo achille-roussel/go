@@ -243,10 +243,14 @@ func ssaGenBlock(s *ssagen.State, b, next *ssa.Block) {
 				if a.Type.IsMemory() {
 					continue
 				}
-				// Integer results cross the ABI boundary at i64 width
-				// (the GP "register" width); any narrowing stayed inside
-				// the body. getValue64 also handles float results.
-				getValue64(s, a)
+				// Width-faithful ABI: a sub-word integer result is
+				// narrowed to i32 at the boundary; everything else
+				// crosses at its register width.
+				if wasm3NarrowABI(a.Type) {
+					getValue32(s, a)
+				} else {
+					getValue64(s, a)
+				}
 			}
 		}
 		s.Prog(obj.ARET)
@@ -300,8 +304,14 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			firstRegArg = 2 // arg0 = code pointer, arg1 = closure
 		}
 		for _, a := range v.Args[firstRegArg : len(v.Args)-1] {
-			// Integer arguments cross the ABI boundary at i64 width.
-			getValue64(s, a)
+			// Width-faithful ABI: a sub-word integer argument is
+			// narrowed to i32 at the boundary; everything else crosses
+			// at its register width.
+			if wasm3NarrowABI(a.Type) {
+				getValue32(s, a)
+			} else {
+				getValue64(s, a)
+			}
 		}
 
 		if call != nil && call.Fn != nil {
@@ -325,16 +335,27 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		// Move the register-resident results off the wasm stack into
 		// their result registers. wasm leaves results on the operand
 		// stack with the last result on top, so they are popped in
-		// reverse. A tail call does not return here.
+		// reverse. A sub-word integer result arrives as an i32 and is
+		// widened to the i64 register width before being stored, the
+		// mirror of the parameter-widening prologue. A tail call does
+		// not return here.
 		if call != nil && v.Op != ssa.OpWasm3LoweredTailCall && v.Op != ssa.OpWasm3LoweredTailCallInter {
-			var regs []int16
+			type resultReg struct {
+				reg    int16
+				narrow bool
+			}
+			var regs []resultReg
 			for _, p := range call.ABIInfo().OutParams() {
+				narrow := wasm3NarrowABI(p.Type)
 				for _, r := range p.Registers {
-					regs = append(regs, ssa.ObjRegForAbiReg(r, v.Block.Func.Config))
+					regs = append(regs, resultReg{ssa.ObjRegForAbiReg(r, v.Block.Func.Config), narrow})
 				}
 			}
 			for i := len(regs) - 1; i >= 0; i-- {
-				setReg(s, regs[i])
+				if regs[i].narrow {
+					s.Prog(wasm.AI64ExtendI32U)
+				}
+				setReg(s, regs[i].reg)
 			}
 		}
 
@@ -646,6 +667,13 @@ func isCmp(v *ssa.Value) bool {
 	default:
 		return false
 	}
+}
+
+// wasm3NarrowABI reports whether t is a sub-word integer or boolean —
+// a type the width-faithful wasm3 ABI carries in an i32 slot rather
+// than the i64 register width. See attachWasmType.
+func wasm3NarrowABI(t *types.Type) bool {
+	return (t.IsInteger() || t.IsBoolean()) && t.Size() <= 4
 }
 
 func getValue32(s *ssagen.State, v *ssa.Value) {

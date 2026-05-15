@@ -128,14 +128,19 @@ func assemble3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 // support, so assemble3 can fall back to the stub.
 //
 // Stage C.2b — the arithmetic rung — handles a leaf function: register
-// access (Get/Set/Tee of a parameter register), integer and floating
-// constants, direct calls, the operand-less arithmetic/comparison/
-// conversion opcodes, and RET. A function that touches the linear-
-// memory frame (Get SP, loads, stores), uses a register that is not a
-// parameter register, branches, or makes an indirect call still falls
-// back to the unreachable stub; those are later rungs.
+// access (Get/Set/Tee of a register), integer and floating constants,
+// direct calls, the operand-less arithmetic/comparison/conversion
+// opcodes, and RET. A function that touches the linear-memory frame
+// (Get SP, loads, stores), branches, or makes an indirect call still
+// falls back to the unreachable stub; those are later rungs.
+//
+// The body opens with a prologue that copies each sub-word integer
+// parameter from its i32 parameter local into the i64 SSA-register
+// local the body uses (widening with i64.extend_i32_u); see
+// wasm3Locals for why a narrow parameter cannot simply alias its
+// register.
 func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
-	localOf, decls, ok := wasm3Locals(s)
+	localOf, decls, prologue, ok := wasm3Locals(s)
 	if !ok {
 		return nil, false
 	}
@@ -145,6 +150,13 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 	for _, d := range decls {
 		writeUleb128(w, d.count)
 		w.WriteByte(d.typ)
+	}
+	for _, c := range prologue {
+		writeOpcode(w, ALocalGet)
+		writeUleb128(w, c.paramLocal)
+		writeOpcode(w, AI64ExtendI32U)
+		writeOpcode(w, ALocalSet)
+		writeUleb128(w, c.regLocal)
 	}
 
 	var relocs []obj.Reloc
@@ -269,26 +281,40 @@ type wasm3LocalDecl struct {
 	typ   byte
 }
 
-// wasm3Locals builds the register-to-wasm-local-index map for s and
-// the body's local declaration vector.
+// wasm3ParamCopy is a body-prologue copy of a sub-word integer
+// parameter from its i32 parameter local into the i64 SSA-register
+// local the body works with, widening it on the way.
+type wasm3ParamCopy struct {
+	paramLocal uint64 // source: the i32 wasm parameter local
+	regLocal   uint64 // dest: the i64 SSA-register local
+}
+
+// wasm3Locals builds, for s, the register-to-wasm-local-index map, the
+// body's local declaration vector, and the parameter-widening prologue.
 //
 // A wasm function's parameters are locals 0..nparams-1 in signature
 // order; the register ABI assigns the integer parameters to R0, R1, …
-// and the floating parameters to F0, F1, …, so that mapping is
-// reconstructed from the parameter storage types in whichever
-// signature aux s carries — an obj.WasmType for an ordinary wasm3
-// function, or the WasmExport/WasmImport aux for a function bearing
-// those pragmas. ok is false if s carries none (a function the
-// compiler left as ()->(), or a hand-written stub): with no known
-// parameter layout it is left to the stub.
+// and the floating parameters to F0, F1, …, reconstructed here from
+// the parameter storage types in whichever signature aux s carries —
+// an obj.WasmType for an ordinary wasm3 function, or the
+// WasmExport/WasmImport aux for a function bearing those pragmas. ok is
+// false if s carries none (a function the compiler left as ()->(), or
+// a hand-written stub): with no known parameter layout it is left to
+// the stub.
 //
+// The SSA backend works in i64 GP registers and freely reuses a
+// parameter's register for unrelated i64 values once the parameter is
+// dead. An i64 parameter can therefore alias its parameter local
+// directly. A sub-word (i32) parameter local cannot: it would have to
+// hold an i64 after reuse. So each i32 parameter that the body
+// actually uses gets its own i64 register-local, declared after the
+// parameters, plus a prologue copy that widens the parameter into it.
 // Every other local-class register (R0-R15, F0-F31) the body
-// references becomes a declared local, numbered after the parameters
-// in first-use order, with one declaration entry each. Registers that
-// are not local-class — SP, g, CTXT — are not mapped; a body using one
-// makes encodeWasm3Body fall back, since the linear-memory frame is a
-// later rung.
-func wasm3Locals(s *obj.LSym) (localOf map[int16]uint64, decls []wasm3LocalDecl, ok bool) {
+// references likewise becomes a declared i64/f register-local.
+// Registers that are not local-class — SP, g, CTXT — are not mapped; a
+// body using one makes encodeWasm3Body fall back, since the
+// linear-memory frame is a later rung.
+func wasm3Locals(s *obj.LSym) (localOf map[int16]uint64, decls []wasm3LocalDecl, prologue []wasm3ParamCopy, ok bool) {
 	fn := s.Func()
 	var params []obj.WasmField
 	switch {
@@ -299,26 +325,37 @@ func wasm3Locals(s *obj.LSym) (localOf map[int16]uint64, decls []wasm3LocalDecl,
 	case fn.WasmImport != nil:
 		params = fn.WasmImport.Params
 	default:
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 
-	localOf = make(map[int16]uint64)
-	next := uint64(0)
+	// paramInfo records, per parameter register, the parameter local it
+	// holds and whether that local is the narrow (i32) kind.
+	type paramInfo struct {
+		local  uint64
+		narrow bool
+	}
+	paramOf := make(map[int16]paramInfo, len(params))
 	var intParam, floatParam int16
-	for _, f := range params {
+	for i, f := range params {
 		var reg int16
+		narrow := false
 		switch f.Type {
 		case obj.WasmF32, obj.WasmF64:
 			reg = REG_F0 + floatParam
 			floatParam++
-		default: // WasmI32, WasmI64, WasmPtr, WasmBool, WasmRef
+		case obj.WasmI32:
+			reg = REG_R0 + intParam
+			intParam++
+			narrow = true
+		default: // WasmI64, WasmPtr, WasmBool, WasmRef
 			reg = REG_R0 + intParam
 			intParam++
 		}
-		localOf[reg] = next
-		next++
+		paramOf[reg] = paramInfo{local: uint64(i), narrow: narrow}
 	}
 
+	localOf = make(map[int16]uint64)
+	next := uint64(len(params)) // register-locals follow the parameter locals
 	declare := func(reg int16) {
 		if reg < REG_R0 || reg > REG_F31 {
 			return // not a local-class register (SP, g, CTXT, …)
@@ -326,9 +363,21 @@ func wasm3Locals(s *obj.LSym) (localOf map[int16]uint64, decls []wasm3LocalDecl,
 		if _, done := localOf[reg]; done {
 			return
 		}
+		if pi, isParam := paramOf[reg]; isParam && !pi.narrow {
+			// i64 (or float) parameter: alias the register to its
+			// parameter local — reuse for another i64 value is safe.
+			localOf[reg] = pi.local
+			return
+		}
+		// A sub-word parameter register, or a non-parameter temporary:
+		// a fresh register-local, plus a widening copy if it is a
+		// parameter.
 		localOf[reg] = next
-		next++
 		decls = append(decls, wasm3LocalDecl{count: 1, typ: byte(regType(reg))})
+		if pi, isParam := paramOf[reg]; isParam {
+			prologue = append(prologue, wasm3ParamCopy{paramLocal: pi.local, regLocal: next})
+		}
+		next++
 	}
 	for p := fn.Text; p != nil; p = p.Link {
 		switch p.As {
@@ -338,7 +387,7 @@ func wasm3Locals(s *obj.LSym) (localOf map[int16]uint64, decls []wasm3LocalDecl,
 			declare(p.To.Reg)
 		}
 	}
-	return localOf, decls, true
+	return localOf, decls, prologue, true
 }
 
 // entrySym is the wasip1 entry symbol; cmd/link exports it as "_start".

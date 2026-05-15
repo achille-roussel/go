@@ -109,14 +109,14 @@ func (c *typeCollector) loweredStorages(ft *types.Type) (params, results []wasmg
 // and runs once per function, after genssa and before the obj backend.
 //
 // Stage C.2: only signatures whose every parameter and result is an
-// integer-class Go scalar are attached, and each such slot lowers to a
-// single wasm i64 — the width of the "register" the SSA backend
-// operates on. Narrower Go integers (int32, byte, bool, …) still occupy
-// a full i64 across the call boundary, with their narrowing semantics
-// kept inside the function body; this matches how Go's own register
-// ABI treats sub-word integers on 64-bit targets, and it keeps the
-// boundary type (i64) consistent with what the obj backend emits for a
-// GP register.
+// integer-class Go scalar are attached. Each slot lowers to the wasm
+// integer type of its width — i32 for the sub-word kinds (int32, byte,
+// bool, …), i64 for the 64-bit kinds (int, int64, uint, uintptr). This
+// is the width-faithful lowering: the wasm signature mirrors the Go
+// types. The SSA backend works in i64 GP "registers", so the obj
+// backend widens a narrow parameter (i64.extend_i32_u) on entry and
+// narrows a narrow result (i32.wrap_i64) at return; the conversions
+// live at the ABI boundary, not in the function body.
 //
 // Floating-point parameters are not attached yet: wasm has distinct
 // f32 and f64 register classes, which the single flat wasm3 float
@@ -139,31 +139,35 @@ func attachWasmType(fn *ir.Func) {
 	}
 	var sig obj.WasmFuncType
 	for _, p := range ft.RecvParams() {
-		if !isWasm3IntKind(p.Type.Kind()) {
+		f, ok := wasm3IntField(p.Type)
+		if !ok {
 			return
 		}
-		sig.Params = append(sig.Params, obj.WasmField{Type: obj.WasmI64})
+		sig.Params = append(sig.Params, f)
 	}
 	for _, r := range ft.Results() {
-		if !isWasm3IntKind(r.Type.Kind()) {
+		f, ok := wasm3IntField(r.Type)
+		if !ok {
 			return
 		}
-		sig.Results = append(sig.Results, obj.WasmField{Type: obj.WasmI64})
+		sig.Results = append(sig.Results, f)
 	}
 	fn.LSym.Func().WasmType = &obj.WasmType{WasmFuncType: sig}
 }
 
-// isWasm3IntKind reports whether a Go type kind is an integer-class
-// scalar that the Stage C.2 ABI lowers to a single wasm i64 slot.
-func isWasm3IntKind(k types.Kind) bool {
-	switch k {
+// wasm3IntField lowers an integer-class Go scalar to its width-faithful
+// wasm field: i64 for the 64-bit kinds, i32 for everything narrower.
+// ok is false for any non-integer type.
+func wasm3IntField(t *types.Type) (obj.WasmField, bool) {
+	switch t.Kind() {
 	case types.TBOOL,
-		types.TINT, types.TINT8, types.TINT16, types.TINT32, types.TINT64,
-		types.TUINT, types.TUINT8, types.TUINT16, types.TUINT32, types.TUINT64,
-		types.TUINTPTR:
-		return true
+		types.TINT8, types.TINT16, types.TINT32,
+		types.TUINT8, types.TUINT16, types.TUINT32:
+		return obj.WasmField{Type: obj.WasmI32}, true
+	case types.TINT, types.TINT64, types.TUINT, types.TUINT64, types.TUINTPTR:
+		return obj.WasmField{Type: obj.WasmI64}, true
 	}
-	return false
+	return obj.WasmField{}, false
 }
 
 // collectSignature reserves and returns the table index of the wasm

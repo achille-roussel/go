@@ -108,15 +108,23 @@ func (c *typeCollector) loweredStorages(ft *types.Type) (params, results []wasmg
 // of the degenerate ()->(). It is wired in as ssagen.Arch.PrepareFunc
 // and runs once per function, after genssa and before the obj backend.
 //
-// Stage C.1: only signatures whose every parameter and result is a Go
-// scalar are attached. Those lower to wasm primitives and need no GC
-// type table. A signature that mentions a pointer, string, slice,
-// struct or other composite would lower to reference fields, which the
-// linker cannot yet resolve — it needs the per-package wasmgc.Table
-// the compiler does not emit yet. Such a function is left without an
-// aux and falls back to ()->(); its body is the unreachable stub until
-// the reference rungs of the bring-up ladder land. See
-// doc/wasm3-m2-cutover-notes.md §5.
+// Stage C.2: only signatures whose every parameter and result is an
+// integer-class Go scalar are attached, and each such slot lowers to a
+// single wasm i64 — the width of the "register" the SSA backend
+// operates on. Narrower Go integers (int32, byte, bool, …) still occupy
+// a full i64 across the call boundary, with their narrowing semantics
+// kept inside the function body; this matches how Go's own register
+// ABI treats sub-word integers on 64-bit targets, and it keeps the
+// boundary type (i64) consistent with what the obj backend emits for a
+// GP register.
+//
+// Floating-point parameters are not attached yet: wasm has distinct
+// f32 and f64 register classes, which the single flat wasm3 float
+// parameter-register list does not yet distinguish. Pointers, strings,
+// slices and other composites need the per-package wasmgc.Table the
+// compiler does not emit yet. A function with any such parameter or
+// result is left without an aux and falls back to ()->() with an
+// unreachable stub body. See doc/wasm3-m2-cutover-notes.md §5.
 func attachWasmType(fn *ir.Func) {
 	ft := fn.Type()
 	if ft == nil || ft.Kind() != types.TFUNC {
@@ -129,20 +137,33 @@ func attachWasmType(fn *ir.Func) {
 	if fn.WasmImport != nil || fn.WasmExport != nil {
 		return
 	}
+	var sig obj.WasmFuncType
 	for _, p := range ft.RecvParams() {
-		if _, ok := scalarPrim(p.Type.Kind()); !ok {
+		if !isWasm3IntKind(p.Type.Kind()) {
 			return
 		}
+		sig.Params = append(sig.Params, obj.WasmField{Type: obj.WasmI64})
 	}
 	for _, r := range ft.Results() {
-		if _, ok := scalarPrim(r.Type.Kind()); !ok {
+		if !isWasm3IntKind(r.Type.Kind()) {
 			return
 		}
+		sig.Results = append(sig.Results, obj.WasmField{Type: obj.WasmI64})
 	}
-	// Every slot is primitive, so loweredSignature touches no GC types
-	// and the throwaway collector's table stays empty.
-	sig := newTypeCollector().loweredSignature(ft)
 	fn.LSym.Func().WasmType = &obj.WasmType{WasmFuncType: sig}
+}
+
+// isWasm3IntKind reports whether a Go type kind is an integer-class
+// scalar that the Stage C.2 ABI lowers to a single wasm i64 slot.
+func isWasm3IntKind(k types.Kind) bool {
+	switch k {
+	case types.TBOOL,
+		types.TINT, types.TINT8, types.TINT16, types.TINT32, types.TINT64,
+		types.TUINT, types.TUINT8, types.TUINT16, types.TUINT32, types.TUINT64,
+		types.TUINTPTR:
+		return true
+	}
+	return false
 }
 
 // collectSignature reserves and returns the table index of the wasm

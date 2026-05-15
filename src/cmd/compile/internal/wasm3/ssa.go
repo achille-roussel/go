@@ -20,7 +20,6 @@ import (
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
 	"cmd/internal/obj/wasm"
-	"cmd/internal/wasmgc"
 )
 
 /*
@@ -244,11 +243,10 @@ func ssaGenBlock(s *ssagen.State, b, next *ssa.Block) {
 				if a.Type.IsMemory() {
 					continue
 				}
-				if p, ok := scalarPrim(a.Type.Kind()); ok && p == wasmgc.I32 {
-					getValue32(s, a)
-				} else {
-					getValue64(s, a)
-				}
+				// Integer results cross the ABI boundary at i64 width
+				// (the GP "register" width); any narrowing stayed inside
+				// the body. getValue64 also handles float results.
+				getValue64(s, a)
 			}
 		}
 		s.Prog(obj.ARET)
@@ -302,11 +300,8 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			firstRegArg = 2 // arg0 = code pointer, arg1 = closure
 		}
 		for _, a := range v.Args[firstRegArg : len(v.Args)-1] {
-			if p, ok := scalarPrim(a.Type.Kind()); ok && p == wasmgc.I32 {
-				getValue32(s, a)
-			} else {
-				getValue64(s, a)
-			}
+			// Integer arguments cross the ABI boundary at i64 width.
+			getValue64(s, a)
 		}
 
 		if call != nil && call.Fn != nil {

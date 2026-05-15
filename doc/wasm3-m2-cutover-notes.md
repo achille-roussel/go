@@ -343,6 +343,28 @@ so an empty `main` stays buildable while later rungs add encodings.
 `main.main` is now genuinely walked (`(func $main.main return)`), not
 a hardcoded constant.
 
+### The arithmetic rung — ✅ DONE (`52085564ce`, `fbdc85ccef`)
+
+A leaf arithmetic function now compiles to a genuine typed WasmGC body
+and runs end to end:
+
+	//go:noinline
+	func add(a, b int) int { return a + b }
+	func main() { add(2, 3) }
+
+	(func $main.add (param i64 i64) (result i64)
+	  local.get 0  local.get 1  i64.add  return)
+	(func $main.main (local i64)
+	  i64.const 2  i64.const 3  call $main.add  local.set 0  return)
+
+builds, validates with `wasm-tools --features gc`, and runs to exit 0
+on `wasmtime -W gc`. C.2a (`52085564ce`) flipped the SSA backend to the
+register ABI; C.2b (`fbdc85ccef`) graduated `encodeWasm3Body` to a real
+encoder. The scoping notes below are kept as the record of how it was
+mapped. The remaining bring-up rungs (linear-memory frame access:
+`Get SP`, loads, stores; branches; indirect calls; `0xFB` GC opcodes)
+reuse this same encoder.
+
 ### The arithmetic rung — scoping
 
 The wasm/wasm3 backend uses the **memory ABI**: arguments and results

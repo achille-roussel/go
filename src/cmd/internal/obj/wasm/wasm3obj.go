@@ -140,7 +140,7 @@ func assemble3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 // wasm3Locals for why a narrow parameter cannot simply alias its
 // register.
 func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
-	localOf, decls, prologue, ok := wasm3Locals(s)
+	localOf, spillOf, decls, prologue, ok := wasm3Locals(s)
 	if !ok {
 		return nil, false
 	}
@@ -194,6 +194,27 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 			} else {
 				writeOpcode(w, ALocalTee)
 			}
+			writeUleb128(w, idx)
+
+		case AI64Store, AF32Store, AF64Store:
+			// A register spill (OpStoreReg): store the value already on
+			// the wasm stack into the slot's spill local. A store with a
+			// constant offset instead of an auto/param slot is a real
+			// linear-memory write — the frame rung, not yet handled.
+			idx, isSpill := spillOf[wasm3SpillSlot(&p.To)]
+			if !isSpill {
+				return nil, false
+			}
+			writeOpcode(w, ALocalSet)
+			writeUleb128(w, idx)
+
+		case AI64Load, AF32Load, AF64Load:
+			// A register reload (OpLoadReg): push the slot's spill local.
+			idx, isSpill := spillOf[wasm3SpillSlot(&p.From)]
+			if !isSpill {
+				return nil, false
+			}
+			writeOpcode(w, ALocalGet)
 			writeUleb128(w, idx)
 
 		case AI32Const, AI64Const:
@@ -289,8 +310,27 @@ type wasm3ParamCopy struct {
 	regLocal   uint64 // dest: the i64 SSA-register local
 }
 
+// wasm3SpillKey identifies a register-spill slot: the auto/param frame
+// area AddrAuto records, plus its offset. Each distinct slot gets its
+// own wasm spill local — see wasm3Locals.
+type wasm3SpillKey struct {
+	name obj.AddrName
+	off  int64
+}
+
+// wasm3SpillSlot is the wasm3SpillKey for a spill load/store operand,
+// or the zero key if a is not an auto/param slot (a real linear-memory
+// access).
+func wasm3SpillSlot(a *obj.Addr) wasm3SpillKey {
+	if a.Type != obj.TYPE_MEM || (a.Name != obj.NAME_AUTO && a.Name != obj.NAME_PARAM) {
+		return wasm3SpillKey{}
+	}
+	return wasm3SpillKey{name: a.Name, off: a.Offset}
+}
+
 // wasm3Locals builds, for s, the register-to-wasm-local-index map, the
-// body's local declaration vector, and the parameter-widening prologue.
+// spill-slot-to-wasm-local-index map, the body's local declaration
+// vector, and the parameter-widening prologue.
 //
 // A wasm function's parameters are locals 0..nparams-1 in signature
 // order; the register ABI assigns the integer parameters to R0, R1, …
@@ -311,10 +351,14 @@ type wasm3ParamCopy struct {
 // parameters, plus a prologue copy that widens the parameter into it.
 // Every other local-class register (R0-R15, F0-F31) the body
 // references likewise becomes a declared i64/f register-local.
-// Registers that are not local-class — SP, g, CTXT — are not mapped; a
-// body using one makes encodeWasm3Body fall back, since the
-// linear-memory frame is a later rung.
-func wasm3Locals(s *obj.LSym) (localOf map[int16]uint64, decls []wasm3LocalDecl, prologue []wasm3ParamCopy, ok bool) {
+//
+// A register spill (OpStoreReg/OpLoadReg) targets a wasm local, not a
+// linear-memory frame slot — wasm3 has no Go stack frame. Each distinct
+// auto/param slot the body spills to or reloads from gets its own
+// declared spill local. Registers that are not local-class — SP, g,
+// CTXT — are not mapped; a body using one makes encodeWasm3Body fall
+// back, since real linear-memory access is a later rung.
+func wasm3Locals(s *obj.LSym) (localOf map[int16]uint64, spillOf map[wasm3SpillKey]uint64, decls []wasm3LocalDecl, prologue []wasm3ParamCopy, ok bool) {
 	fn := s.Func()
 	var params []obj.WasmField
 	switch {
@@ -325,7 +369,7 @@ func wasm3Locals(s *obj.LSym) (localOf map[int16]uint64, decls []wasm3LocalDecl,
 	case fn.WasmImport != nil:
 		params = fn.WasmImport.Params
 	default:
-		return nil, nil, nil, false
+		return nil, nil, nil, nil, false
 	}
 
 	// paramInfo records, per parameter register, the parameter local it
@@ -379,15 +423,42 @@ func wasm3Locals(s *obj.LSym) (localOf map[int16]uint64, decls []wasm3LocalDecl,
 		}
 		next++
 	}
+
+	spillOf = make(map[wasm3SpillKey]uint64)
+	declareSpill := func(a *obj.Addr, typ valueType) {
+		key := wasm3SpillSlot(a)
+		if key == (wasm3SpillKey{}) {
+			return // not an auto/param slot
+		}
+		if _, done := spillOf[key]; done {
+			return
+		}
+		spillOf[key] = next
+		decls = append(decls, wasm3LocalDecl{count: 1, typ: byte(typ)})
+		next++
+	}
+
 	for p := fn.Text; p != nil; p = p.Link {
 		switch p.As {
 		case AGet:
 			declare(p.From.Reg)
 		case ASet, ATee:
 			declare(p.To.Reg)
+		case AI64Store:
+			declareSpill(&p.To, i64)
+		case AF32Store:
+			declareSpill(&p.To, f32)
+		case AF64Store:
+			declareSpill(&p.To, f64)
+		case AI64Load:
+			declareSpill(&p.From, i64)
+		case AF32Load:
+			declareSpill(&p.From, f32)
+		case AF64Load:
+			declareSpill(&p.From, f64)
 		}
 	}
-	return localOf, decls, prologue, true
+	return localOf, spillOf, decls, prologue, true
 }
 
 // entrySym is the wasip1 entry symbol; cmd/link exports it as "_start".

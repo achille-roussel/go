@@ -238,18 +238,24 @@ func ssaGenBlock(s *ssagen.State, b, next *ssa.Block) {
 		// value may be marked OnWasmStack (single-use, feeds only the
 		// codegen-nothing OpMakeResult), so getValue is what actually
 		// consumes it.
+		//
+		// Width-faithful ABI: a sub-word integer result is narrowed to
+		// i32 at the boundary. The width comes from the *result's*
+		// declared type, not the value's: a no-op conversion such as
+		// int32(x) leaves the SSA value typed int.
 		if len(b.Controls) != 0 {
-			for _, a := range b.Controls[0].Args {
-				if a.Type.IsMemory() {
-					continue
-				}
-				// Width-faithful ABI: a sub-word integer result is
-				// narrowed to i32 at the boundary; everything else
-				// crosses at its register width.
-				if wasm3NarrowABI(a.Type) {
-					getValue32(s, a)
-				} else {
-					getValue64(s, a)
+			mr := b.Controls[0]
+			argIdx := 0
+			for _, p := range b.Func.OwnAux.ABIInfo().OutParams() {
+				narrow := wasm3NarrowABI(p.Type)
+				for range p.Registers {
+					a := mr.Args[argIdx]
+					argIdx++
+					if narrow {
+						getValue32(s, a)
+					} else {
+						getValue64(s, a)
+					}
 				}
 			}
 		}
@@ -303,14 +309,23 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		case ssa.OpWasm3LoweredClosureCall:
 			firstRegArg = 2 // arg0 = code pointer, arg1 = closure
 		}
-		for _, a := range v.Args[firstRegArg : len(v.Args)-1] {
-			// Width-faithful ABI: a sub-word integer argument is
-			// narrowed to i32 at the boundary; everything else crosses
-			// at its register width.
-			if wasm3NarrowABI(a.Type) {
-				getValue32(s, a)
-			} else {
-				getValue64(s, a)
+		// Width-faithful ABI: a sub-word integer argument is narrowed to
+		// i32 at the boundary, everything else crosses at its register
+		// width. The width is taken from the *parameter's* declared
+		// type, not the argument value's: a no-op conversion such as
+		// int32(x) leaves the SSA value typed int even though the slot
+		// it fills is i32.
+		argIdx := firstRegArg
+		for _, p := range call.ABIInfo().InParams() {
+			narrow := wasm3NarrowABI(p.Type)
+			for range p.Registers {
+				a := v.Args[argIdx]
+				argIdx++
+				if narrow {
+					getValue32(s, a)
+				} else {
+					getValue64(s, a)
+				}
 			}
 		}
 
@@ -423,9 +438,14 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		ssagen.CheckArgReg(v)
 
 	case ssa.OpStoreReg:
-		getReg(s, wasm.REG_SP)
+		// M2 cutover, Stage C.2: a register spill targets a wasm local,
+		// not a linear-memory frame slot — wasm3 has no Go stack frame.
+		// The obj backend maps the auto/param slot AddrAuto records to a
+		// dedicated spill local; the spill class (i64/f32/f64) is all it
+		// needs, since the local holds the whole register regardless of
+		// the value's sub-word width. No SP base address is pushed.
 		getValue64(s, v.Args[0])
-		p := s.Prog(storeOp(v.Type))
+		p := s.Prog(spillStoreOp(v.Type))
 		ssagen.AddrAuto(&p.To, v)
 
 	case ssa.OpClobber, ssa.OpClobberReg:
@@ -645,7 +665,9 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		}
 
 	case ssa.OpLoadReg:
-		p := s.Prog(loadOp(v.Type))
+		// Mirror of OpStoreReg: reload a spilled register from its
+		// dedicated wasm local. See OpStoreReg.
+		p := s.Prog(spillLoadOp(v.Type))
 		ssagen.AddrAuto(&p.From, v.Args[0])
 
 	case ssa.OpCopy:
@@ -796,4 +818,30 @@ func storeOp(t *types.Type) obj.As {
 	default:
 		panic("bad store type")
 	}
+}
+
+// spillStoreOp and spillLoadOp give the wasm store/load opcode for a
+// register spill of a value of type t. Unlike storeOp/loadOp — which
+// pick a sub-word opcode for a linear-memory access — a spill targets a
+// wasm local that holds the whole register, so the opcode is keyed only
+// by register class: i64 for every integer or pointer, f32/f64 for
+// floats. The obj backend uses the class to type the spill local.
+func spillStoreOp(t *types.Type) obj.As {
+	if t.IsFloat() {
+		if t.Size() == 4 {
+			return wasm.AF32Store
+		}
+		return wasm.AF64Store
+	}
+	return wasm.AI64Store
+}
+
+func spillLoadOp(t *types.Type) obj.As {
+	if t.IsFloat() {
+		if t.Size() == 4 {
+			return wasm.AF32Load
+		}
+		return wasm.AF64Load
+	}
+	return wasm.AI64Load
 }

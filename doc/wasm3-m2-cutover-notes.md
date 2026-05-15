@@ -677,3 +677,31 @@ call_indirect plus a function table set up by the linker), structs
 §4 steps 1-2 + the §7 interior-pointer pass), and the runtime fork
 (§3) so the runtime stubs (printlock/printint/sigpanic/etc.) acquire
 real bodies.
+
+### The float rung — ✅ DONE (`31fe91d118`)
+
+`wasm3IntField` lowers `TFLOAT32` → `WasmF32` and `TFLOAT64` → `WasmF64`,
+giving float-param functions real typed signatures rather than the
+`()->()` unreachable stub. The encoder already passes `f32.add`,
+`f64.mul`, etc. through the operand-less default branch, and
+`wasm3Locals` already maps F0-F31 to declared float locals.
+
+`addF32`, `addF64`, `mulF64`, `intToF64`, `f64ToInt`, `mixedArgs(int32,
+float64, int32)`, and a harmonic-sum loop with float division all
+compile to the expected typed forms and run end-to-end. A function
+needing both an f32 and an f64 in the same F register would still fail
+— wasm distinguishes f32/f64 register classes and the flat F-class
+can't honour that — but single-precision-width functions (no mixing)
+cover the common case.
+
+### Comprehensive regression — 33 / 33 pass
+
+A single test program now exercises the entire validated subset:
+arithmetic (i32/i64/uint32 ops, bit ops, conversions), forward
+branches (divcheck/multibr), back-edge loops (sum/fact), recursion
+(fib up to 25 / 75025; gcd), package-level globals (counter R/W/RMW),
+struct fields through globals (Point.X/Y), array globals with for-loop
+sum, pointer-param call chains (storeAt/loadAt/withSlot), and floats
+(addF64, mixed-int-float args, harmonic sum loop). All 33 cases pass
+under `wasmtime --features gc` validation and a Node.js execution
+harness — no codegen bugs in the validated subset.

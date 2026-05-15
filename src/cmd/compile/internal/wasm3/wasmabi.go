@@ -147,28 +147,30 @@ func attachWasmType(fn *ir.Func) {
 		return
 	}
 
-	// Use the legacy wasm3Fields path: every primitive type, plus
-	// string (split to two i64 slots) and pointer-shaped scalars
-	// (i64 internally, widened from i32 at the wasmexport boundary).
-	// Composite types — struct values, slices, interfaces — are
-	// rejected here and the function falls back to the unreachable
-	// stub.
+	// Two-tier signature lowering. Try the legacy wasm3Fields path
+	// first: it produces the simpler (i64 ptr, i64 len)-style lowering
+	// the wasmexport wrapper today knows how to bridge to host i32
+	// pointers, and covers every primitive plus string. Only when
+	// wasm3Fields rejects a parameter — typically a struct, slice,
+	// interface, or other composite — fall through to the typeCollector
+	// path which emits a per-function wasmgc.Table and reference-typed
+	// wasm fields per the §6 object model. Per-register narrowness at
+	// the call site (RegisterTypesAndOffsets) keeps the wider field-
+	// level wasm signature in sync with what the caller pushes; the
+	// per-package table travels via WasmType.Table to the linker which
+	// merges it into the module-wide table.
 	//
-	// The typeCollector path (tryCollectorAttach below) is wired but
-	// not yet activated: lowering struct values to per-field wasm
-	// types creates a calling-convention mismatch the SSA call site
-	// can't yet bridge. The call site narrows by the Go param type
-	// (one decision per Go param), but a struct expanded to multiple
-	// wasm fields needs a decision per wasm field — and the per-callee
-	// WasmType isn't reliably available when the caller is being
-	// compiled (PrepareFunc runs concurrently across functions). The
-	// next session resolves both: either a pre-pass that attaches
-	// WasmType eagerly before any genssa, or per-callee narrowness
-	// derived from the Go *types.Type at the call site. The plumbing
-	// for emitting and consuming the per-function wasmgc.Table aux
-	// (obj.WasmType.Table, asm3.go's mergeTable) is in place.
+	// A wasmexport function with a composite parameter still won't have
+	// a working host call path — paramsToWasmFields and the wrapper
+	// don't know how to marshal between host and GC representations of
+	// composites — but every internal call between wasm3 functions
+	// works.
 	if sig, ok := tryPrimitiveAttach(ft); ok {
 		fn.LSym.Func().WasmType = &obj.WasmType{WasmFuncType: sig}
+		return
+	}
+	if wt, ok := tryCollectorAttach(ft); ok {
+		fn.LSym.Func().WasmType = wt
 		return
 	}
 }

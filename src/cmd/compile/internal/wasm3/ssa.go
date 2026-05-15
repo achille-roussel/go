@@ -240,17 +240,19 @@ func ssaGenBlock(s *ssagen.State, b, next *ssa.Block) {
 		// consumes it.
 		//
 		// Width-faithful ABI: a sub-word integer result is narrowed to
-		// i32 at the boundary. The width comes from the *result's*
-		// declared type, not the value's: a no-op conversion such as
-		// int32(x) leaves the SSA value typed int.
+		// i32 at the boundary. The width comes from the result's
+		// per-register Go type, mirroring the call-site argument
+		// narrowing: a struct-value result expands to one register per
+		// scalar field with its own width.
 		if len(b.Controls) != 0 {
 			mr := b.Controls[0]
 			argIdx := 0
 			for _, p := range b.Func.OwnAux.ABIInfo().OutParams() {
-				narrow := wasm3NarrowABI(p.Type)
-				for range p.Registers {
+				regTypes, _ := p.RegisterTypesAndOffsets()
+				for ri := range p.Registers {
 					a := mr.Args[argIdx]
 					argIdx++
+					narrow := wasm3NarrowABI(regTypes[ri])
 					if narrow {
 						getValue32(s, a)
 					} else {
@@ -320,16 +322,21 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		}
 		// Width-faithful ABI: a sub-word integer argument is narrowed to
 		// i32 at the boundary, everything else crosses at its register
-		// width. The width is taken from the *parameter's* declared
-		// type, not the argument value's: a no-op conversion such as
-		// int32(x) leaves the SSA value typed int even though the slot
-		// it fills is i32.
+		// width. The width is taken per-register from the parameter's
+		// per-register Go type — a struct-value param expands to one
+		// register per field, and each field's own width drives the
+		// narrowing. (For a scalar Go param this collapses to "the
+		// parameter's declared type" since RegisterTypes returns a
+		// single-element slice. The narrowness is taken from the type,
+		// not the SSA value: a no-op conversion such as int32(x) leaves
+		// the value typed int even though the slot it fills is i32.)
 		argIdx := firstRegArg
 		for _, p := range call.ABIInfo().InParams() {
-			narrow := wasm3NarrowABI(p.Type)
-			for range p.Registers {
+			regTypes, _ := p.RegisterTypesAndOffsets()
+			for ri := range p.Registers {
 				a := v.Args[argIdx]
 				argIdx++
+				narrow := wasm3NarrowABI(regTypes[ri])
 				if narrow {
 					getValue32(s, a)
 				} else {
@@ -359,10 +366,12 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		// Move the register-resident results off the wasm stack into
 		// their result registers. wasm leaves results on the operand
 		// stack with the last result on top, so they are popped in
-		// reverse. A sub-word integer result arrives as an i32 and is
-		// widened to the i64 register width before being stored, the
-		// mirror of the parameter-widening prologue. A tail call does
-		// not return here.
+		// reverse. As with arguments, narrowness is per-register: a
+		// composite-typed result expands to one register per scalar
+		// field, each driven by its own width. A sub-word integer
+		// result arrives as an i32 and is widened to the i64 register
+		// width before being stored, the mirror of the parameter-
+		// widening prologue. A tail call does not return here.
 		if call != nil && v.Op != ssa.OpWasm3LoweredTailCall && v.Op != ssa.OpWasm3LoweredTailCallInter {
 			type resultReg struct {
 				reg    int16
@@ -370,9 +379,9 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			}
 			var regs []resultReg
 			for _, p := range call.ABIInfo().OutParams() {
-				narrow := wasm3NarrowABI(p.Type)
-				for _, r := range p.Registers {
-					regs = append(regs, resultReg{ssa.ObjRegForAbiReg(r, v.Block.Func.Config), narrow})
+				regTypes, _ := p.RegisterTypesAndOffsets()
+				for ri, r := range p.Registers {
+					regs = append(regs, resultReg{ssa.ObjRegForAbiReg(r, v.Block.Func.Config), wasm3NarrowABI(regTypes[ri])})
 				}
 			}
 			for i := len(regs) - 1; i >= 0; i-- {

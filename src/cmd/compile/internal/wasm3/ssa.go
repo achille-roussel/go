@@ -582,12 +582,13 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 	case ssa.OpWasm3I64DivS:
 		getValue64(s, v.Args[0])
 		getValue64(s, v.Args[1])
-		if v.Type.Size() == 8 {
-			// Division of int64 needs helper function wasmDiv to handle the MinInt64 / -1 case.
-			p := s.Prog(wasm.ACall)
-			p.To = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: ir.Syms.WasmDiv}
-			break
-		}
+		// On wasm3 every int64 division lowers to a direct i64.div_s.
+		// The wasm target wraps i64 division in a runtime helper to
+		// turn the MinInt64 / -1 wasm trap into a Go runtime panic, but
+		// wasm3 is targeting the restricted-subset compatibility level,
+		// runs without the Go runtime, and treats engine traps as the
+		// terminal failure mode — same end result as a panic, no
+		// runtime helper required.
 		s.Prog(wasm.AI64DivS)
 
 	case ssa.OpWasm3I64TruncSatF32S, ssa.OpWasm3I64TruncSatF64S:

@@ -263,15 +263,14 @@ func asmb2_3(ctxt *ld.Link, ldr *loader.Loader) {
 	// Native functions: each carries an obj.WasmType aux with its typed
 	// signature. Functions emitted before the compiler attaches one
 	// (e.g. hand-written assembly stubs during bring-up) fall back to
-	// the degenerate ()->() signature. //go:wasmimport stubs are
-	// already in m.imports — skip them here so they don't also appear
-	// as defined functions.
+	// the degenerate ()->() signature. //go:wasmimport stubs are kept
+	// in m.funcs alongside imports — their body (via
+	// assembleWasm3ImportWrapper) forwards directly to the host import,
+	// matching the wasm linker's convention. Their type comes from the
+	// WasmImport aux rather than WasmType.
 	var buildid []byte
-	m.funcs = make([]*wasm3Func, 0, len(ctxt.Textp))
-	for _, fn := range ctxt.Textp {
-		if _, isImport := hostImportMap[fn]; isImport {
-			continue
-		}
+	m.funcs = make([]*wasm3Func, len(ctxt.Textp))
+	for i, fn := range ctxt.Textp {
 		wfn := new(bytes.Buffer)
 		var typeIx uint32
 		if ldr.SymName(fn) == "go:buildid" {
@@ -281,7 +280,10 @@ func asmb2_3(ctxt *ld.Link, ldr *loader.Loader) {
 			typeIx = m.internFuncType(nil, nil)
 		} else {
 			writeWasm3FuncBody(ctxt, ldr, fn, wfn, hostImportMap)
-			if s := ldr.WasmTypeSym(fn); s != 0 {
+			if wsym := ldr.WasmImportSym(fn); wsym != 0 {
+				wi := readWasmImport(ldr, wsym)
+				typeIx = m.internFuncType(objStorages(wi.Params), objStorages(wi.Results))
+			} else if s := ldr.WasmTypeSym(fn); s != 0 {
 				var wt obj.WasmType
 				wt.Read(ldr.Data(s))
 				// Merge the function's per-package wasmgc.Table into
@@ -299,7 +301,7 @@ func asmb2_3(ctxt *ld.Link, ldr *loader.Loader) {
 			}
 		}
 		name := nameRegexp.ReplaceAllString(ldr.SymName(fn), "_")
-		m.funcs = append(m.funcs, &wasm3Func{Name: name, TypeIx: typeIx, Code: wfn.Bytes()})
+		m.funcs[i] = &wasm3Func{Name: name, TypeIx: typeIx, Code: wfn.Bytes()}
 	}
 
 	ctxt.Out.Write([]byte{0x00, 0x61, 0x73, 0x6d}) // magic
@@ -343,15 +345,13 @@ func writeWasm3FuncBody(ctxt *ld.Link, ldr *loader.Loader, fn loader.Sym, wfn *b
 			writeSleb128(wfn, ldr.SymValue(rs)+r.Add())
 		case objabi.R_CALL:
 			// Direct function index: imports first (in import-section
-			// order), then native functions. A call to a wasmimport
-			// stub uses its import index directly; for all other
-			// targets, the >>16 recovers the function ordinal from the
-			// address assignAddress encoded.
-			if importIx, isImport := hostImportMap[rs]; isImport {
-				writeSleb128(wfn, importIx)
-			} else {
-				writeSleb128(wfn, int64(len(hostImportMap))+ldr.SymValue(rs)>>16-funcValueOffset)
-			}
+			// order), then native functions in Textp order. The >>16
+			// recovers the function ordinal from the address
+			// assignAddress encoded. A call to a wasmimport stub goes
+			// through the stub's wasm function index — the stub's body
+			// is itself a one-line forwarder to the host import via
+			// R_WASMIMPORT, so the extra hop is the only cost.
+			writeSleb128(wfn, int64(len(hostImportMap))+ldr.SymValue(rs)>>16-funcValueOffset)
 		case objabi.R_WASMIMPORT:
 			writeSleb128(wfn, hostImportMap[rs])
 		default:

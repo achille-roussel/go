@@ -209,9 +209,11 @@ func printuintptr(p uintptr) {
 	printhex(uint64(p))
 }
 
-func printstring(s string) {
-	gwrite(bytes(s))
-}
+// printstring lives in printstring.go (default !wasm3) and
+// printstring_wasm3.go (a wasm3-specific bypass that calls write1
+// directly with the string's pointer/length, avoiding bytes() — the
+// helper escapes its locals through getg-dependent boxing the M2
+// cutover has not yet wired up).
 
 func printslice(s []byte) {
 	sp := (*slice)(unsafe.Pointer(&s))

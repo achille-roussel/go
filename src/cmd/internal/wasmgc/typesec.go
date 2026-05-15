@@ -29,6 +29,7 @@ package wasmgc
 // Binary opcodes for the type section.
 const (
 	opRec       = 0x4E // rec group
+	opSubFinal  = 0x4F // sub type, final (no subtype allowed)
 	opSub       = 0x50 // sub type, non-final
 	opStruct    = 0x5F // struct composite type
 	opArray     = 0x5E // array composite type
@@ -162,7 +163,16 @@ func (table Table) EncodeTypeSection() []byte {
 	}
 
 	subtype := func(b []byte, t Type) []byte {
-		b = append(b, opSub)
+		// Function types don't participate in subtyping in our model
+		// — emit them as `sub final` so wasmtime accepts them as exact
+		// matches against host import signatures (declared as plain
+		// `func`). Struct/array types stay non-final so the
+		// $go.object subtype hierarchy works.
+		if t.Kind == KindFunc {
+			b = append(b, opSubFinal)
+		} else {
+			b = append(b, opSub)
+		}
 		if t.Super >= 0 {
 			b = AppendUleb(b, 1)
 			b = AppendUleb(b, uint64(wasmIndex[t.Super]))

@@ -506,11 +506,13 @@ blockers:
   Go's ABI machinery assumes one unified float class, so this is a
   wasm3-specific divergence.
 
-- **Values live across a call — partly fixed (`3abb2aa227`).** The
-  wasm3 call ops now have an empty `clobbers` mask: a wasm `call`
-  leaves the caller's wasm locals untouched, and M2 is
-  single-goroutine, so a value can survive a call in its register.
-  Emptying the mask exposed a latent bug in the shared
+- **Values live across a call — ✅ DONE (`3abb2aa227`,
+  `f272e1f61c`).** Two parts.
+
+  First (`3abb2aa227`), the wasm3 call ops got an empty `clobbers`
+  mask: a wasm `call` leaves the caller's wasm locals untouched, and
+  M2 is single-goroutine, so a value can survive a call in its
+  register. Emptying the mask exposed a latent bug in the shared
   `AuxCall.Reg` — it memoized its derived per-call register info
   using a non-empty `a.reg.clobbers` as the "already computed"
   sentinel, so an empty-clobbers call op made it re-run and append
@@ -518,15 +520,21 @@ blockers:
   with an explicit `regsComputed` flag; unchanged for every other
   arch.
 
-  This is groundwork, not the whole fix. A value in `R1`-`R15` now
-  survives a call. A value in the call's *own* argument/result
-  register still spills: e.g. `func nested(x int) int { return
-  dbl(x) + poly(x,x,x) }` keeps `x` in `R0`, which is also `dbl`'s
-  argument and result register, so regalloc must evict `x` — and
-  Go's regalloc spills the evicted value to its stack home
-  (`Get SP; I64Store x(SP)`) rather than relocating it to a free
-  register. The encoder then falls back to the stub on `Get SP`. The
-  remaining work is to make regalloc prefer a register relocation
-  over a memory spill for wasm3 (where the "stack home" is a
-  linear-memory frame the design wants gone) — a regalloc change,
-  the next investigation on this rung.
+  That alone left a value in the call's *own* argument/result
+  register still spilling — Go's regalloc spills an evicted value to
+  its stack home rather than relocating it. So second (`f272e1f61c`),
+  the spill itself was moved off linear memory: a wasm3 function has
+  no Go stack frame, so `OpStoreReg`/`OpLoadReg` drop the `SP` base
+  address and the obj backend maps each distinct auto/param spill
+  slot to its own wasm **spill local** — `OpStoreReg` is `local.set`,
+  `OpLoadReg` is `local.get`. `func nested(x int) int { return dbl(x)
+  + poly(x,x,x) }` now compiles, validates and runs: `x` and the
+  intermediate results spill to wasm locals, no `Get SP`, no
+  linear-memory frame.
+
+  This also surfaced a width bug in the width-faithful call site and
+  `BlockRet`: a sub-word integer argument or result was narrowed by
+  the SSA *value's* type, but a no-op conversion (`int32(x)`) leaves
+  the value typed `int` even though the slot it fills is `i32`. Fixed
+  to take the width from the parameter's / result's declared type
+  (walking the call's `InParams` / the function's `OutParams`).

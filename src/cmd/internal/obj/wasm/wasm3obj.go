@@ -31,6 +31,7 @@ import (
 	"cmd/internal/objabi"
 	"encoding/binary"
 	"math"
+	"sort"
 )
 
 // preprocess3 prepares a function for the wasm3 typed ABI.
@@ -131,8 +132,18 @@ func assemble3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 // access (Get/Set/Tee of a register), integer and floating constants,
 // direct calls, the operand-less arithmetic/comparison/conversion
 // opcodes, and RET. A function that touches the linear-memory frame
-// (Get SP, loads, stores), branches, or makes an indirect call still
-// falls back to the unreachable stub; those are later rungs.
+// (Get SP, loads, stores) or makes an indirect call still falls back
+// to the unreachable stub; those are later rungs.
+//
+// Stage C.2c — the branches rung — adds structured control flow.
+// Wasm requires nested block/loop/if/end with `br N` jumping out of
+// N enclosing levels; the SSA backend instead emits the two-headed
+// AIf/AEnd pattern and arbitrary AJMPs to ARESUMEPOINT-delimited
+// basic-block boundaries. wasm3CFG analyses the prog stream, opens
+// one wasm `block` per distinct forward-edge AJMP target wrapping the
+// body so each AJMP can be lowered to a `br <depth>` exiting the
+// right enclosing block, and bails on back-edges (loops are the next
+// sub-rung — they need an enclosing `loop` plus a back-edge `br`).
 //
 // The body opens with a prologue that copies each sub-word integer
 // parameter from its i32 parameter local into the i64 SSA-register
@@ -141,6 +152,10 @@ func assemble3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 // register.
 func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 	localOf, spillOf, decls, prologue, ok := wasm3Locals(s)
+	if !ok {
+		return nil, false
+	}
+	cfg, ok := wasm3AnalyzeCFG(s)
 	if !ok {
 		return nil, false
 	}
@@ -159,15 +174,81 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 		writeUleb128(w, c.regLocal)
 	}
 
+	// Open one wasm `block` per distinct forward-edge target boundary,
+	// outermost first (largest target boundary) so the innermost block
+	// ends at the smallest target. The frame stack records the open
+	// structures innermost-first so an AJMP to boundary B can locate B
+	// in the stack and emit `br <position>`. Each block has empty
+	// result type (0x40) — values flow between basic blocks via the
+	// register/spill locals, never via the wasm operand stack.
+	stack := make([]wasm3CFFrame, 0, len(cfg.forwardTargets)+4)
+	for i := len(cfg.forwardTargets) - 1; i >= 0; i-- {
+		writeOpcode(w, ABlock)
+		w.WriteByte(0x40)
+		stack = append([]wasm3CFFrame{{kind: wasm3CFBlock, boundary: cfg.forwardTargets[i]}}, stack...)
+	}
+
 	var relocs []obj.Reloc
 	sawRet := false
+	seenBoundary := 0
+	nextTargetIdx := 0
 	for p := s.Func().Text; p != nil; p = p.Link {
 		switch p.As {
-		case obj.ATEXT, obj.AFUNCDATA, obj.APCDATA, obj.ANOP, ANop, ARESUMEPOINT:
+		case obj.ATEXT, obj.AFUNCDATA, obj.APCDATA, obj.ANOP, ANop:
 			// No body contribution: ATEXT carries the signature,
-			// FUNCDATA/PCDATA carry metadata, and RESUMEPOINT is the
-			// Go-stack ABI's block marker, which the wasm3 typed ABI
-			// has no use for.
+			// FUNCDATA/PCDATA carry metadata.
+
+		case ARESUMEPOINT:
+			// A basic-block boundary. If some forward AJMP targets
+			// this boundary, close the wrapping block we opened for
+			// it; otherwise the boundary is invisible in the encoded
+			// body, since values flow through register locals not the
+			// wasm operand stack.
+			seenBoundary++
+			if nextTargetIdx < len(cfg.forwardTargets) && cfg.forwardTargets[nextTargetIdx] == seenBoundary {
+				if len(stack) == 0 || stack[0].kind != wasm3CFBlock || stack[0].boundary != seenBoundary {
+					return nil, false // stack mismatch (shouldn't happen)
+				}
+				writeOpcode(w, AEnd)
+				stack = stack[1:]
+				nextTargetIdx++
+			}
+
+		case obj.AJMP:
+			tBoundary, isJmp := cfg.jmpTarget[p]
+			if !isJmp {
+				return nil, false
+			}
+			depth := -1
+			for i, f := range stack {
+				if f.kind == wasm3CFBlock && f.boundary == tBoundary {
+					depth = i
+					break
+				}
+			}
+			if depth < 0 {
+				return nil, false
+			}
+			writeOpcode(w, ABr)
+			writeUleb128(w, uint64(depth))
+
+		case AIf:
+			writeOpcode(w, AIf)
+			w.WriteByte(0x40)
+			stack = append([]wasm3CFFrame{{kind: wasm3CFIf}}, stack...)
+
+		case AElse:
+			writeOpcode(w, AElse)
+
+		case AEnd:
+			// The SSA backend emits AEnd only as the terminator of an
+			// AIf it opened. A spurious AEnd that does not match an
+			// open `if` indicates an unsupported pattern.
+			if len(stack) == 0 || stack[0].kind != wasm3CFIf {
+				return nil, false
+			}
+			writeOpcode(w, AEnd)
+			stack = stack[1:]
 
 		case obj.ARET:
 			writeOpcode(w, AReturn)
@@ -269,8 +350,10 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 				return nil, false
 			}
 			switch p.As {
-			case ABlock, ALoop, AIf, AElse, AEnd, ABr, ABrIf, ABrTable,
+			case ABlock, ALoop, ABrIf, ABrTable,
 				ACall, ACallIndirect, AReturnCallRef:
+				// AIf/AElse/AEnd/ABr are handled above (the branches
+				// rung); the rest are still bailout cases.
 				return nil, false
 			}
 			writeOpcode(w, p.As)
@@ -286,6 +369,10 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 		// producing the declared results.
 		return nil, false
 	}
+	if len(stack) != 0 {
+		// Mismatched control-flow nesting (open block/if not closed).
+		return nil, false
+	}
 
 	w.WriteByte(0x0b) // end
 
@@ -293,6 +380,109 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 		s.AddRel(ctxt, r)
 	}
 	return w.Bytes(), true
+}
+
+// wasm3CFFrame is one entry of the structured-control-flow stack the
+// body encoder maintains: either a wasm `block` opened to give an
+// AJMP-target boundary a `br` label, or an `if` opened by the SSA
+// backend's BlockIf lowering. The stack is innermost-first so the
+// `br <depth>` lookup is a linear scan from index 0.
+type wasm3CFFrame struct {
+	kind     wasm3CFKind
+	boundary int // valid if kind == wasm3CFBlock: the boundary at which this block ends
+}
+
+type wasm3CFKind uint8
+
+const (
+	wasm3CFBlock wasm3CFKind = iota // wasm `block` opened for a forward AJMP target
+	wasm3CFIf                       // wasm `if` opened by an SSA AIf
+)
+
+// wasm3CFG is the result of the encoder's CFG pre-pass: which AJMPs
+// target which basic-block boundary, and the sorted set of distinct
+// forward-edge target boundaries the body must wrap blocks around.
+//
+// Boundaries are numbered by the order ARESUMEPOINT progs appear:
+// boundary 0 is the function start, boundary 1 is right after the first
+// ARESUMEPOINT, and so on. The SSA backend emits one ARESUMEPOINT at
+// the end of every basic block (and as the standard prologue marker
+// for back-edge re-entry on the wasm goroutine ABI; on wasm3 it is
+// purely a basic-block boundary marker).
+type wasm3CFG struct {
+	// forwardTargets is the sorted, deduped set of boundary indices
+	// that some AJMP targets in the forward direction (target boundary
+	// strictly greater than the source basic block's index).
+	forwardTargets []int
+	// jmpTarget maps each AJMP prog to its target boundary index.
+	jmpTarget map[*obj.Prog]int
+}
+
+// wasm3AnalyzeCFG scans s's prog stream for ARESUMEPOINT (basic-block
+// boundary) and AJMP, classifies each AJMP edge as forward or back, and
+// returns the plan the body encoder needs.
+//
+// Returns ok=false if any AJMP is a back-edge (target boundary at or
+// before the source basic block's boundary): back-edges need an
+// enclosing wasm `loop` plus a back-edge `br`, and the loop's result
+// type interacts with the function's result type in ways the simple
+// nested-blocks scheme does not handle. Loops are the next sub-rung.
+//
+// Boundary 0 is the function start; the body never JMPs to it, so the
+// useful target range is [1, N] where N is the number of ARESUMEPOINT
+// progs. AJMP targets are recorded as the boundary index of the basic
+// block that begins at the target prog (i.e. the index of the
+// ARESUMEPOINT immediately preceding the target).
+func wasm3AnalyzeCFG(s *obj.LSym) (*wasm3CFG, bool) {
+	// Pass 1: number ARESUMEPOINTs and map each Pc that begins a basic
+	// block (the prog right after an ARESUMEPOINT) to its boundary
+	// index. Function entry is boundary 0; nothing JMPs there at this
+	// stage so it does not need a Pc entry.
+	boundaryOfPc := make(map[int64]int)
+	boundaryIdx := 0
+	for p := s.Func().Text; p != nil; p = p.Link {
+		if p.As == ARESUMEPOINT {
+			boundaryIdx++
+			if next := p.Link; next != nil {
+				boundaryOfPc[next.Pc] = boundaryIdx
+			}
+		}
+	}
+
+	// Pass 2: classify each AJMP. seenBoundary tracks which basic
+	// block we are currently inside; an AJMP is a back-edge if its
+	// target boundary is at or before the boundary we are inside.
+	cfg := &wasm3CFG{jmpTarget: make(map[*obj.Prog]int)}
+	targetSet := make(map[int]bool)
+	seenBoundary := 0
+	for p := s.Func().Text; p != nil; p = p.Link {
+		if p.As == ARESUMEPOINT {
+			seenBoundary++
+			continue
+		}
+		if p.As != obj.AJMP {
+			continue
+		}
+		target := p.To.Target()
+		if target == nil {
+			return nil, false
+		}
+		tBoundary, known := boundaryOfPc[target.Pc]
+		if !known {
+			return nil, false // jumping into the middle of a basic block
+		}
+		if tBoundary <= seenBoundary {
+			return nil, false // back-edge (loops are the next sub-rung)
+		}
+		cfg.jmpTarget[p] = tBoundary
+		targetSet[tBoundary] = true
+	}
+	cfg.forwardTargets = make([]int, 0, len(targetSet))
+	for k := range targetSet {
+		cfg.forwardTargets = append(cfg.forwardTargets, k)
+	}
+	sort.Ints(cfg.forwardTargets)
+	return cfg, true
 }
 
 // wasm3LocalDecl is one entry of a wasm function body's local

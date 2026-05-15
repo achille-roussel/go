@@ -262,6 +262,15 @@ func ssaGenBlock(s *ssagen.State, b, next *ssa.Block) {
 		s.Prog(obj.ARET)
 
 	case ssa.BlockExit, ssa.BlockRetJmp:
+		// A block with no successor is one whose last call does not
+		// return — runtime.panicdivide, runtime.gopanic and the like.
+		// The wasm validator does not know that, so without an explicit
+		// terminator the bytes that follow (a fall-through into the
+		// next basic block, or the function's outer `end`) would have
+		// to typecheck against the function's declared result type.
+		// `unreachable` makes the stack polymorphic so anything
+		// validates, and traps if it is ever reached.
+		s.Prog(obj.AUNDEF)
 
 	default:
 		panic("unexpected block")

@@ -476,16 +476,26 @@ in the per-package `wasmgc.Table` (§4 steps 1–2).
 Probing the arithmetic rung's edges turned up the next concrete
 blockers:
 
-- **Sub-word integers — ✅ FIXED (`939bdfef81`).** A function such as
-  `func(int32) int32` was declared `(i32)->i32` but the SSA backend
-  operates on i64 GP "registers", so the body emitted `i64.add` on
-  `i32` locals and `wasm-tools` rejected it. Fix: every integer-class
-  parameter and result lowers to a single wasm **i64** slot — the
-  register width — with narrowing (`i64.extend32_s`, `i64.and`, …)
-  kept inside the body, as Go's own register ABI does on 64-bit
-  targets. `attachWasmType` builds the signature directly; `BlockRet`
-  and the call site push integers with `getValue64`, no boundary
-  narrowing.
+- **Sub-word integers — ✅ FIXED, width-faithful (`939bdfef81`,
+  `6a82476408`).** A function such as `func(int32) int32` was declared
+  `(i32)->i32` but the SSA backend operates on i64 GP "registers", so
+  the body emitted `i64.add` on `i32` locals and `wasm-tools` rejected
+  it. The first fix (`939bdfef81`) made every integer slot i64; the
+  design's "rich signatures" goal instead wants the wasm signature to
+  mirror the Go types, so `6a82476408` made it **width-faithful**: i32
+  for the sub-word kinds (int32, byte, bool, …), i64 for the 64-bit
+  kinds. The SSA backend still works in i64 registers, so the
+  conversions live at the ABI boundary: `attachWasmType`'s
+  `wasm3IntField` picks i32/i64 by width; `BlockRet` and the call
+  site narrow a sub-word result/argument with `getValue32`
+  (`i32.wrap_i64`) and widen a sub-word call result back with
+  `i64.extend_i32_u`. The obj backend cannot alias a sub-word
+  parameter's i32 local with its SSA register — regalloc reuses that
+  register for unrelated i64 values once the parameter is dead — so
+  `wasm3Locals` gives each used i32 parameter its own i64
+  register-local and `encodeWasm3Body` emits a prologue
+  (`local.get param; i64.extend_i32_u; local.set reg`); an i64
+  parameter still aliases its register directly.
 
 - **Floating-point parameters — not attached.** wasm has distinct f32
   and f64 register classes; the single flat `ParamFloatRegNames` list

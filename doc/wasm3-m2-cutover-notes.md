@@ -470,3 +470,45 @@ Then the struct and pointer rungs reuse the C.2 encoder, adding the
 `0xFB` GC-opcode immediates and `struct.new`/`struct.get` lowering
 (§4 steps 3–4), and the deferred reference-typed-signature work brings
 in the per-package `wasmgc.Table` (§4 steps 1–2).
+
+### Post-C.2 findings (the next rungs)
+
+Probing the arithmetic rung's edges turned up the next concrete
+blockers:
+
+- **Sub-word integers — ✅ FIXED (`939bdfef81`).** A function such as
+  `func(int32) int32` was declared `(i32)->i32` but the SSA backend
+  operates on i64 GP "registers", so the body emitted `i64.add` on
+  `i32` locals and `wasm-tools` rejected it. Fix: every integer-class
+  parameter and result lowers to a single wasm **i64** slot — the
+  register width — with narrowing (`i64.extend32_s`, `i64.and`, …)
+  kept inside the body, as Go's own register ABI does on 64-bit
+  targets. `attachWasmType` builds the signature directly; `BlockRet`
+  and the call site push integers with `getValue64`, no boundary
+  narrowing.
+
+- **Floating-point parameters — not attached.** wasm has distinct f32
+  and f64 register classes; the single flat `ParamFloatRegNames` list
+  cannot honour both, so a float param assigned to a wrong-class
+  register mis-validates. `attachWasmType` leaves any function with a
+  float parameter or result as `()->()` (unreachable stub). Fixing it
+  needs the float parameter ABI to respect the two register classes —
+  Go's ABI machinery assumes one unified float class, so this is a
+  wasm3-specific divergence.
+
+- **Values live across a call still spill to a linear-memory frame.**
+  `func nested(x int) int { return dbl(x) + poly(x,x,x) }` spills `x`
+  with `Get SP; I64Store x(SP)` because the call ops mark every
+  register `callerSave`, so the encoder falls back to the stub.
+  Conceptually a wasm `call` does *not* clobber the caller's wasm
+  locals, and M2 is single-goroutine (no stack-unwinding goroutine
+  switch), so cross-call values should simply stay in their
+  registers — no spill, no frame. But naively emptying the call ops'
+  `clobbers` mask breaks regalloc: `can't find any output register`
+  for a register-result call like `runtime.memequal`. The static
+  `clobbers` mask and the per-call output registers `AuxCall.Reg`
+  derives interact in a way that needs proper investigation before
+  the spill can be removed. Until then, any function with a value
+  live across a call falls back to the stub. This — not a new
+  encoder feature — is the highest-value next rung: it unblocks most
+  non-leaf functions and is the wasm3-correct behaviour.

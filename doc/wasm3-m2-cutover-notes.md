@@ -538,3 +538,27 @@ blockers:
   the value typed `int` even though the slot it fills is `i32`. Fixed
   to take the width from the parameter's / result's declared type
   (walking the call's `InParams` / the function's `OutParams`).
+
+### Where the encoder stands (validated)
+
+A broad arithmetic sweep (`int`/`int32`/`uint`/`uint32` add/sub/mul,
+bitwise `& | ^ << >>`, the int-width conversions, multi-call
+functions that spill across calls, constant arguments) builds,
+validates with `wasm-tools --features gc`, and runs to exit 0 — no
+codegen bugs. The encodable subset is: register access, integer and
+float constants, direct calls, the operand-less arithmetic /
+comparison / conversion opcodes, register spills to wasm locals, and
+RET.
+
+The precise next boundary is **branches**: `If`/`Block`/`Loop`/`Br`/
+`End` are still stubbed, and `/` and `%` pull them in too (the
+divide-by-zero check is an `if`). So conditionals, loops, division and
+modulo are all one rung — structured control flow. The wasm SSA
+backend emits the CFG as `If`/`JMP`/`End` + `RESUMEPOINT` block
+markers; `GOARCH=wasm`'s obj-backend `preprocess` reconstructs
+structured wasm control flow (its block-id branch-table scheme) from
+that. wasm3 needs the same reconstruction — either that scheme or a
+relooper — which is the next, and largest remaining, rung of the
+ladder. After it: `&x` of a local (wasm locals have no address —
+design §7 interior pointers), then the struct/pointer rungs and the
+deferred reference-typed-signature work.

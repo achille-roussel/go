@@ -104,6 +104,11 @@ func assemble3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 		return
 	}
 
+	if we := s.Func().WasmExport; we != nil && we.WrappedSym != nil {
+		assembleWasm3ExportWrapper(ctxt, s, we)
+		return
+	}
+
 	if body, ok := encodeWasm3Body(ctxt, s); ok {
 		s.P = body
 		return
@@ -789,6 +794,48 @@ func wasm3Locals(s *obj.LSym) (localOf map[int16]uint64, spillOf map[wasm3SpillK
 		}
 	}
 	return localOf, spillOf, decls, prologue, next, true
+}
+
+// assembleWasm3ExportWrapper emits the body of a //go:wasmexport
+// wrapper for GOARCH=wasm3.
+//
+// On wasm3 the wrapper and the wrapped Go function share the same
+// typed wasm signature (the export's WasmFuncType, recorded on both
+// symbols via attachWasmType for the wrapped sym and via the export
+// pragma for the wrapper). The wrapper body therefore has to do
+// nothing more than forward each parameter to the wrapped function and
+// return — values flow in wasm parameter locals and out as wasm
+// results, with no Go-stack frame to translate to or from.
+//
+// The body is:
+//
+//	local declaration count: 0
+//	local.get 0           ; for each parameter local, in order
+//	local.get 1
+//	...
+//	call <wrapped>        ; operand filled in by the R_CALL reloc
+//	end
+//
+// The trailing `end` of the function body acts as the implicit return
+// for a typed wasm function; whatever the wrapped call leaves on the
+// wasm stack is the wrapper's result.
+func assembleWasm3ExportWrapper(ctxt *obj.Link, s *obj.LSym, we *obj.WasmExport) {
+	w := new(bytes.Buffer)
+	writeUleb128(w, 0) // local declaration count
+	for i := range we.Params {
+		writeOpcode(w, ALocalGet)
+		writeUleb128(w, uint64(i))
+	}
+	writeOpcode(w, ACall)
+	callOff := int32(w.Len())
+	w.WriteByte(0x0b) // end (will be at len-1 once the linker grows the call operand)
+	s.P = w.Bytes()
+	s.AddRel(ctxt, obj.Reloc{
+		Type: objabi.R_CALL,
+		Off:  callOff,
+		Siz:  1, // variable-sized; the linker writes the function index
+		Sym:  we.WrappedSym,
+	})
 }
 
 // entrySym is the wasip1 entry symbol; cmd/link exports it as "_start".

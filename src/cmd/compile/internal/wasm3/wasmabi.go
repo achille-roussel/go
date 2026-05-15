@@ -130,11 +130,19 @@ func attachWasmType(fn *ir.Func) {
 	if ft == nil || ft.Kind() != types.TFUNC {
 		return
 	}
-	// //go:wasmimport and //go:wasmexport functions already carry a
-	// typed signature to the linker through their own aux symbol (which
-	// is also emitted as a goobj.AuxWasmType); attaching a second one
-	// would be a duplicate.
-	if fn.WasmImport != nil || fn.WasmExport != nil {
+	// //go:wasmimport stubs have no Go body — the linker fabricates the
+	// import call site from the WasmImport aux. Attach nothing.
+	//
+	// //go:wasmexport: the *wrapper* (a separate LSym created by
+	// GenWasmExportWrapper) carries the export signature in its
+	// WasmExport aux and is built directly by assembleWasm3ExportWrapper
+	// — attachWasmType is never called for it. The *wrapped* function
+	// (the user's Go func) still needs its own typed signature though,
+	// since the wrapper's body calls into it: it is an ordinary wasm3
+	// function and must be lowered to a typed wasm function in its own
+	// right. So fn.WasmExport != nil (set on the wrapped fn by the
+	// pragma parser) is *not* a skip condition here — only WasmImport is.
+	if fn.WasmImport != nil {
 		return
 	}
 	var sig obj.WasmFuncType

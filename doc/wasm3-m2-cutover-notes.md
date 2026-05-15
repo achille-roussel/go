@@ -724,6 +724,56 @@ forward branches, back-edge loops, recursion, package globals
 with sort + search, pointer-param call chains, single-type floats,
 int64 division/modulo, string params, and unsafe.Pointer reads.
 
+### The per-function wasmgc.Table + struct-by-value rung — ✅ DONE (`6003e25697`, `ecc247791d`)
+
+The compiler→linker channel for reference-typed wasm3 function
+signatures is wired and the typeCollector path is live for composite
+parameters.
+
+Compiler side:
+- `obj.WasmType` gains a `Table []byte` field — the serialization of
+  the per-function wasmgc.Table the function's WasmRef fields index
+  into. `CreateAuxSym` writes WasmFuncType bytes followed by the
+  table; `WasmType.Read` parses both halves via a new
+  `WasmFuncType.ReadAndReturn` that returns the unconsumed suffix.
+- `attachWasmType` is split into `tryPrimitiveAttach` (the existing
+  wasm3Fields path — primitives + strings) and `tryCollectorAttach`
+  (typeCollector.loweredSignature — composite types per the §6 object
+  model). The latter activates the moment the former rejects a
+  parameter.
+- The SSA call site (and `BlockRet`) drive per-register narrowness
+  via `ABIParamAssignment.RegisterTypesAndOffsets()` — a struct-value
+  param that the regabi expanded into one register per field gets
+  each register narrowed by its individual scalar width. For scalar
+  Go params this collapses to the previous behaviour.
+
+Linker side:
+- `asm3.go`'s new `mergeTable` folds each function's per-package
+  wasmgc.Table into the module-wide table, returning a remap from
+  per-package to module-global indices. Prelude indices map
+  identically; program types are appended (structural dedup across
+  packages is a later refinement).
+- `objStorageRemapped` lowers `obj.WasmField` slots through the
+  remap; `objStorage` stays for host-import signatures (which never
+  carry references).
+
+End-to-end: `func ptSumByValue(p Point) int32` and `func tripleSum(t
+Triple) int64` (both internal, called from wasmexport entries that
+pack the struct from scalar args) compile to typed
+`(i32 i32) → i32` / `(i64 i64 i64) → i64` signatures and run
+correctly. An 18-case Node.js sweep covering arithmetic, branches,
+loops, recursion, globals, pointer-param chains, floats, int64
+division, strings, and struct-by-value passes 18/18.
+
+The wasmexport boundary still rejects composite types directly —
+`paramsToWasmFields` and the wrapper don't yet know how to marshal
+between host i32 addresses and the GC representation. Reaching
+composite-typed exports needs the wrapper-side struct.new construction
+(a later rung). The remaining M2 rungs are: struct codegen proper
+(struct.new / struct.get / struct.set + 0xFB GC opcodes), allocation
+intrinsics (`newobject` → `struct.new`), interior pointers (§7), and
+the runtime fork (§3).
+
 ### Earlier comprehensive regression — 33 / 33 pass
 
 A single test program now exercises the entire validated subset:

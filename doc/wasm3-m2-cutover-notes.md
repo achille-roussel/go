@@ -629,7 +629,51 @@ back-edges, and the wasmexport surface. Division still bails — its
 `runtime.wasmDiv` call needs the M2 runtime fork (the wrapped Go
 function isn't compiled in our minimal runtime).
 
-The next remaining boundaries are the M2 design rungs proper: `&x` of
-a local (interior pointers — design §7), structs (rung the M2 spike
-exercises), then the deferred reference-typed-signature work and the
-runtime fork.
+### The linear-memory rung — ✅ DONE (`a7997dd24e`, `f466b1f464`)
+
+Three small extensions that together unlock package-level globals,
+arrays, struct fields read through globals, and any function whose Go
+signature carries a pointer:
+
+- AGet of TYPE_ADDR/NAME_EXTERN → `i64.const <addr>` plus an R_ADDR
+  relocation (mirrors the wasm preprocess's `Get $sym` →
+  `AI64Const $sym` rewrite that wasm3 doesn't run); used wherever the
+  SSA backend lowers a global access to an i64 address followed by an
+  `i32.wrap_i64; <load> $offset` or `; <store> $offset` chain.
+- AI*Load / AI*Store with TYPE_CONST operand → real linear-memory
+  load/store opcodes (`<load> align offset`, byte-width alignment via
+  a new `wasm3LoadStoreAlign` helper). The auto/param spill case is
+  preserved as before — both flavours of the same opcode now share
+  one branch.
+- ACALLNORESUME (the wasm-specific "call without resume point" the
+  SSA backend emits for nil-check sigpanic) → plain `call`. wasm3 has
+  no resume points (no goroutine PC trampoline) so the distinction
+  collapses.
+
+And pointer-shaped types as i64 throughout the wrapped-function
+register ABI: `wasm3IntField` lowers TPTR/TUNSAFEPTR to WasmI64,
+matching the SSA register width. The wasmexport wrapper still uses
+WasmPtr (i32) for pointer params/results — the host-visible
+linear-memory address width — so `assembleWasm3ExportWrapper` widens
+each WasmPtr param with `i64.extend_i32_u` before the call and narrows
+each WasmPtr result with `i32.wrap_i64` after.
+
+End-to-end verification covers globals R/W/RMW (counter/flag),
+pointer-param call chains (`storeAt(&counter, v); loadAt(&counter)`),
+struct fields through globals (`origin.X`, `origin.Y`, both read and
+written), and a 10-element global int32 array with set/get/sum and an
+in-place reverse — all pass.
+
+`&x` of a non-escaping local also works for free thanks to SSA load-
+store forwarding eliminating the address. The escaping case (`&x`
+passed to another function) still emits `Get $x-N(SP)` which bails —
+it needs either an SP frame (current wasm) or WasmGC boxing (design
+§7); both are deferred.
+
+The next remaining boundaries are the M2 design rungs proper: indirect
+calls (closures, interfaces — needs CTXT register handling and
+call_indirect plus a function table set up by the linker), structs
+(WasmGC types via the deferred per-package `wasmgc.Table` — design
+§4 steps 1-2 + the §7 interior-pointer pass), and the runtime fork
+(§3) so the runtime stubs (printlock/printint/sigpanic/etc.) acquire
+real bodies.

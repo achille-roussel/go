@@ -147,20 +147,44 @@ func attachWasmType(fn *ir.Func) {
 	}
 	var sig obj.WasmFuncType
 	for _, p := range ft.RecvParams() {
-		f, ok := wasm3IntField(p.Type)
+		fs, ok := wasm3Fields(p.Type)
 		if !ok {
 			return
 		}
-		sig.Params = append(sig.Params, f)
+		sig.Params = append(sig.Params, fs...)
 	}
 	for _, r := range ft.Results() {
-		f, ok := wasm3IntField(r.Type)
+		fs, ok := wasm3Fields(r.Type)
 		if !ok {
 			return
 		}
-		sig.Results = append(sig.Results, f)
+		sig.Results = append(sig.Results, fs...)
 	}
 	fn.LSym.Func().WasmType = &obj.WasmType{WasmFuncType: sig}
+}
+
+// wasm3Fields lowers a Go parameter or result type to one or more wasm
+// fields. Most types lower to a single field via wasm3IntField; the
+// composite types Go's calling convention spreads across multiple
+// register slots — currently strings (ptr, len) — are split here so
+// they line up with the wrapper's paramsToWasmFields, which does the
+// same splitting on its side.
+func wasm3Fields(t *types.Type) ([]obj.WasmField, bool) {
+	if t.Kind() == types.TSTRING {
+		// (ptr, len) — both i64 to match the wasm3 internal register
+		// width. The wasmexport wrapper splits a string into 2
+		// WasmPtr (i32) fields and widens each across the boundary,
+		// the same dance pointer params do.
+		return []obj.WasmField{
+			{Type: obj.WasmI64},
+			{Type: obj.WasmI64},
+		}, true
+	}
+	f, ok := wasm3IntField(t)
+	if !ok {
+		return nil, false
+	}
+	return []obj.WasmField{f}, true
 }
 
 // wasm3IntField lowers a primitive Go scalar to its width-faithful

@@ -774,6 +774,50 @@ composite-typed exports needs the wrapper-side struct.new construction
 intrinsics (`newobject` → `struct.new`), interior pointers (§7), and
 the runtime fork (§3).
 
+### M2 milestone — ✅ a real Go program with print runs end-to-end
+
+A program with arithmetic, recursion, loops, struct-by-value, and
+multiple `print()` calls now compiles and runs to completion under
+`wasmtime --features gc`, producing the expected stdout:
+
+```
+$ wasmtime run --dir=/ -W gc=true test.wasm
+fib(10) = 55
+fib(20) = 6765
+sum(100) = 5050
+dot{3,4}.{2,5} = 26
+```
+
+Three small fixes turned the runtime fork into actual stdout
+(commit hash `[next]`):
+
+1. `wasmgc.typesec` emits function types as `sub final` (0x4F) instead
+   of `sub` (0x50). Wasmtime's import type-checker rejects a host
+   import declared as `(func ...)` against a module that imports it
+   as `(sub (func ...))` — the non-final wrapper marks the type as
+   subtype-able, which the host's plain func isn't. Struct/array
+   types stay non-final so the `$go.object` subtype hierarchy still
+   works.
+
+2. `asm3.go` keeps `//go:wasmimport` stubs in `m.funcs` (alongside
+   `m.imports`) like the wasm linker does. The stub's body picks up
+   its signature from the WasmImport aux when no WasmType aux is
+   present.
+
+3. `printstring` is forked: `printstring.go` (default `!wasm3`) keeps
+   the original `gwrite(bytes(s))`; `printstring_wasm3.go` calls
+   write1 directly with `unsafe.StringData(s)` and `len(s)`,
+   bypassing the bytes() helper whose `&ret`/`&s` would emit
+   `Get $name(SP)` — not yet supported.
+
+This is the M2 plan's milestone: a single-goroutine Go program with
+arithmetic, structs, plain pointers, and print runs on a host wasm
+engine under host GC, with no Go GC, no allocator, no scheduler. A
+trivial heap allocation `&Point{1, 2}` also works (escape analysis
+keeps it stack-allocated; `&local` on a primitive escapes via SSA
+load-store forwarding, which the wasm3 backend handles via spill
+locals).
+
 ### M2 status as of this session
 
 **Done** (the encodable subset is now sizable and proven by Node.js execution):

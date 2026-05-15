@@ -360,6 +360,23 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 			writeOpcode(w, AUnreachable)
 
 		case AGet:
+			// Get of a symbol address (NAME_EXTERN) lowers to
+			// `i64.const <addr>` with an R_ADDR relocation; the linker
+			// resolves the variable-length operand. Used by package-
+			// level globals, where the SSA backend emits
+			// `Get $sym; i32.wrap_i64; <load> $offset` to read the
+			// value at the global's linear-memory address.
+			if p.From.Type == obj.TYPE_ADDR && p.From.Name == obj.NAME_EXTERN {
+				writeOpcode(w, AI64Const)
+				relocs = append(relocs, obj.Reloc{
+					Type: objabi.R_ADDR,
+					Off:  int32(w.Len()),
+					Siz:  1, // variable-sized; the linker writes the address
+					Sym:  p.From.Sym,
+					Add:  p.From.Offset,
+				})
+				break
+			}
 			idx, isLocal := localOf[p.From.Reg]
 			if !isLocal {
 				return nil, false
@@ -379,26 +396,41 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 			}
 			writeUleb128(w, idx)
 
-		case AI64Store, AF32Store, AF64Store:
-			// A register spill (OpStoreReg): store the value already on
-			// the wasm stack into the slot's spill local. A store with a
-			// constant offset instead of an auto/param slot is a real
-			// linear-memory write — the frame rung, not yet handled.
-			idx, isSpill := spillOf[wasm3SpillSlot(&p.To)]
-			if !isSpill {
+		case AI32Store, AI64Store, AF32Store, AF64Store,
+			AI32Store8, AI32Store16, AI64Store8, AI64Store16, AI64Store32:
+			// Two flavours: a register spill (OpStoreReg) targets an
+			// auto/param slot — encode as `local.set <spillLocal>` so
+			// the wasm stack value lands in a wasm local; otherwise the
+			// store is a real linear-memory write — the address comes
+			// from the wasm stack (pushed by a prior `Get $sym`/load
+			// chain), encode as `<store opcode> align offset`.
+			if idx, isSpill := spillOf[wasm3SpillSlot(&p.To)]; isSpill {
+				writeOpcode(w, ALocalSet)
+				writeUleb128(w, idx)
+				break
+			}
+			if p.To.Type != obj.TYPE_CONST || p.To.Offset < 0 {
 				return nil, false
 			}
-			writeOpcode(w, ALocalSet)
-			writeUleb128(w, idx)
+			writeOpcode(w, p.As)
+			writeUleb128(w, wasm3LoadStoreAlign(p.As))
+			writeUleb128(w, uint64(p.To.Offset))
 
-		case AI64Load, AF32Load, AF64Load:
-			// A register reload (OpLoadReg): push the slot's spill local.
-			idx, isSpill := spillOf[wasm3SpillSlot(&p.From)]
-			if !isSpill {
+		case AI32Load, AI64Load, AF32Load, AF64Load,
+			AI32Load8S, AI32Load8U, AI32Load16S, AI32Load16U,
+			AI64Load8S, AI64Load8U, AI64Load16S, AI64Load16U,
+			AI64Load32S, AI64Load32U:
+			if idx, isSpill := spillOf[wasm3SpillSlot(&p.From)]; isSpill {
+				writeOpcode(w, ALocalGet)
+				writeUleb128(w, idx)
+				break
+			}
+			if p.From.Type != obj.TYPE_CONST || p.From.Offset < 0 {
 				return nil, false
 			}
-			writeOpcode(w, ALocalGet)
-			writeUleb128(w, idx)
+			writeOpcode(w, p.As)
+			writeUleb128(w, wasm3LoadStoreAlign(p.As))
+			writeUleb128(w, uint64(p.From.Offset))
 
 		case AI32Const, AI64Const:
 			if p.From.Type != obj.TYPE_CONST || p.From.Name != obj.NAME_NONE {
@@ -836,6 +868,24 @@ func assembleWasm3ExportWrapper(ctxt *obj.Link, s *obj.LSym, we *obj.WasmExport)
 		Siz:  1, // variable-sized; the linker writes the function index
 		Sym:  we.WrappedSym,
 	})
+}
+
+// wasm3LoadStoreAlign returns the natural alignment immediate for a
+// wasm load/store opcode: the operand's byte width as a power of 2.
+// Mirrors cmd/internal/obj/wasm.align (the existing wasm backend's
+// helper); kept private here so wasm3obj.go is self-contained.
+func wasm3LoadStoreAlign(as obj.As) uint64 {
+	switch as {
+	case AI32Load8S, AI32Load8U, AI64Load8S, AI64Load8U, AI32Store8, AI64Store8:
+		return 0
+	case AI32Load16S, AI32Load16U, AI64Load16S, AI64Load16U, AI32Store16, AI64Store16:
+		return 1
+	case AI32Load, AF32Load, AI64Load32S, AI64Load32U, AI32Store, AF32Store, AI64Store32:
+		return 2
+	case AI64Load, AF64Load, AI64Store, AF64Store:
+		return 3
+	}
+	panic("wasm3LoadStoreAlign: bad op")
 }
 
 // entrySym is the wasip1 entry symbol; cmd/link exports it as "_start".

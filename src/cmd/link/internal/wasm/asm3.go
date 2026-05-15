@@ -263,10 +263,15 @@ func asmb2_3(ctxt *ld.Link, ldr *loader.Loader) {
 	// Native functions: each carries an obj.WasmType aux with its typed
 	// signature. Functions emitted before the compiler attaches one
 	// (e.g. hand-written assembly stubs during bring-up) fall back to
-	// the degenerate ()->() signature.
+	// the degenerate ()->() signature. //go:wasmimport stubs are
+	// already in m.imports — skip them here so they don't also appear
+	// as defined functions.
 	var buildid []byte
-	m.funcs = make([]*wasm3Func, len(ctxt.Textp))
-	for i, fn := range ctxt.Textp {
+	m.funcs = make([]*wasm3Func, 0, len(ctxt.Textp))
+	for _, fn := range ctxt.Textp {
+		if _, isImport := hostImportMap[fn]; isImport {
+			continue
+		}
 		wfn := new(bytes.Buffer)
 		var typeIx uint32
 		if ldr.SymName(fn) == "go:buildid" {
@@ -294,7 +299,7 @@ func asmb2_3(ctxt *ld.Link, ldr *loader.Loader) {
 			}
 		}
 		name := nameRegexp.ReplaceAllString(ldr.SymName(fn), "_")
-		m.funcs[i] = &wasm3Func{Name: name, TypeIx: typeIx, Code: wfn.Bytes()}
+		m.funcs = append(m.funcs, &wasm3Func{Name: name, TypeIx: typeIx, Code: wfn.Bytes()})
 	}
 
 	ctxt.Out.Write([]byte{0x00, 0x61, 0x73, 0x6d}) // magic
@@ -337,10 +342,16 @@ func writeWasm3FuncBody(ctxt *ld.Link, ldr *loader.Loader, fn loader.Sym, wfn *b
 		case objabi.R_ADDR:
 			writeSleb128(wfn, ldr.SymValue(rs)+r.Add())
 		case objabi.R_CALL:
-			// Direct function index: imports first, then native
-			// functions in Textp order. The >>16 recovers the function
-			// ordinal from the address assignAddress encoded.
-			writeSleb128(wfn, int64(len(hostImportMap))+ldr.SymValue(rs)>>16-funcValueOffset)
+			// Direct function index: imports first (in import-section
+			// order), then native functions. A call to a wasmimport
+			// stub uses its import index directly; for all other
+			// targets, the >>16 recovers the function ordinal from the
+			// address assignAddress encoded.
+			if importIx, isImport := hostImportMap[rs]; isImport {
+				writeSleb128(wfn, importIx)
+			} else {
+				writeSleb128(wfn, int64(len(hostImportMap))+ldr.SymValue(rs)>>16-funcValueOffset)
+			}
 		case objabi.R_WASMIMPORT:
 			writeSleb128(wfn, hostImportMap[rs])
 		default:

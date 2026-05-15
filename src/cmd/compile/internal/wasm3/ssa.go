@@ -330,13 +330,30 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		// single-element slice. The narrowness is taken from the type,
 		// not the SSA value: a no-op conversion such as int32(x) leaves
 		// the value typed int even though the slot it fills is i32.)
+		//
+		// A //go:wasmimport call crosses the host boundary: the import
+		// signature carries WasmPtr/WasmBool fields (i32 from the
+		// linker's view), so the call site narrows pointer-shaped
+		// register values to i32 too. paramsToWasmFields and the
+		// wasmimport stub follow the same convention.
 		argIdx := firstRegArg
+		var calleeWasmImport *obj.WasmImport
+		if call != nil && call.Fn != nil {
+			if fi := call.Fn.Func(); fi != nil {
+				calleeWasmImport = fi.WasmImport
+			}
+		}
+		wasmFieldIdx := 0
 		for _, p := range call.ABIInfo().InParams() {
 			regTypes, _ := p.RegisterTypesAndOffsets()
 			for ri := range p.Registers {
 				a := v.Args[argIdx]
 				argIdx++
 				narrow := wasm3NarrowABI(regTypes[ri])
+				if calleeWasmImport != nil && wasmFieldIdx < len(calleeWasmImport.Params) {
+					narrow = isNarrowWasmField(calleeWasmImport.Params[wasmFieldIdx])
+				}
+				wasmFieldIdx++
 				if narrow {
 					getValue32(s, a)
 				} else {
@@ -378,10 +395,16 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 				narrow bool
 			}
 			var regs []resultReg
+			wasmResultIdx := 0
 			for _, p := range call.ABIInfo().OutParams() {
 				regTypes, _ := p.RegisterTypesAndOffsets()
 				for ri, r := range p.Registers {
-					regs = append(regs, resultReg{ssa.ObjRegForAbiReg(r, v.Block.Func.Config), wasm3NarrowABI(regTypes[ri])})
+					narrow := wasm3NarrowABI(regTypes[ri])
+					if calleeWasmImport != nil && wasmResultIdx < len(calleeWasmImport.Results) {
+						narrow = isNarrowWasmField(calleeWasmImport.Results[wasmResultIdx])
+					}
+					wasmResultIdx++
+					regs = append(regs, resultReg{ssa.ObjRegForAbiReg(r, v.Block.Func.Config), narrow})
 				}
 			}
 			for i := len(regs) - 1; i >= 0; i-- {

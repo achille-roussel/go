@@ -109,6 +109,11 @@ func assemble3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 		return
 	}
 
+	if wi := s.Func().WasmImport; wi != nil {
+		assembleWasm3ImportWrapper(ctxt, s, wi)
+		return
+	}
+
 	if body, ok := encodeWasm3Body(ctxt, s); ok {
 		s.P = body
 		return
@@ -907,6 +912,44 @@ func wasm3LoadStoreAlign(as obj.As) uint64 {
 		return 3
 	}
 	panic("wasm3LoadStoreAlign: bad op")
+}
+
+// assembleWasm3ImportWrapper emits the body of a //go:wasmimport stub
+// for GOARCH=wasm3.
+//
+// The wrapper has the same wasm signature as the host function it
+// imports (both produced by paramsToWasmFields). The body is the
+// trivial forwarder: push each parameter local in order, then call
+// the host import. The R_WASMIMPORT relocation tells the linker to
+// patch the call's function index with the import's slot in the
+// hostImportMap.
+//
+// The body is:
+//
+//	local declaration count: 0
+//	local.get 0           ; for each parameter local, in order
+//	local.get 1
+//	...
+//	call <import>         ; operand filled in by the R_WASMIMPORT reloc
+//	end
+func assembleWasm3ImportWrapper(ctxt *obj.Link, s *obj.LSym, wi *obj.WasmImport) {
+	wi.CreateAuxSym()
+	w := new(bytes.Buffer)
+	writeUleb128(w, 0) // local declaration count
+	for i := range wi.Params {
+		writeOpcode(w, ALocalGet)
+		writeUleb128(w, uint64(i))
+	}
+	writeOpcode(w, ACall)
+	callOff := int32(w.Len())
+	w.WriteByte(0x0b) // end (will be at len-1 once the linker grows the call operand)
+	s.P = w.Bytes()
+	s.AddRel(ctxt, obj.Reloc{
+		Type: objabi.R_WASMIMPORT,
+		Off:  callOff,
+		Siz:  1, // variable-sized; the linker writes the import index
+		Sym:  s, // self — the linker uses this to look up the import index
+	})
 }
 
 // entrySym is the wasip1 entry symbol; cmd/link exports it as "_start".

@@ -72,27 +72,10 @@ var debuglock mutex
 // initialized yet for wasm3, so the standard implementation would
 // trap immediately).
 
-// write to goroutine-local buffer if diverting output,
-// or else standard error.
-func gwrite(b []byte) {
-	if len(b) == 0 {
-		return
-	}
-	recordForPanic(b)
-	gp := getg()
-	// Don't use the writebuf if gp.m is dying. We want anything
-	// written through gwrite to appear in the terminal rather
-	// than be written to in some buffer, if we're in a panicking state.
-	// Note that we can't just clear writebuf in the gp.m.dying case
-	// because a panic isn't allowed to have any write barriers.
-	if gp == nil || gp.writebuf == nil || gp.m.dying > 0 {
-		writeErr(b)
-		return
-	}
-
-	n := copy(gp.writebuf[len(gp.writebuf):cap(gp.writebuf)], b)
-	gp.writebuf = gp.writebuf[:len(gp.writebuf)+n]
-}
+// gwrite lives in gwrite.go (default) and gwrite_wasm3.go (a wasm3-
+// specific simplification for the M2 cutover; the standard version
+// dereferences getg().writebuf and getg().m.dying, neither of which
+// is initialized at this stage of the cutover).
 
 func printsp() {
 	printstring(" ")
@@ -142,34 +125,11 @@ func printcomplex64(c complex64) {
 	gwrite(strconv.AppendComplex(buf[:0], complex128(c), 'g', -1, 64))
 }
 
-func printuint(v uint64) {
-	// Note: Avoiding strconv.AppendUint so that it's clearer
-	// that there are no allocations in this routine.
-	// cmd/link/internal/ld.TestAbstractOriginSanity
-	// sees the append and doesn't realize it doesn't allocate.
-	var buf [20]byte
-	i := strconv.RuntimeFormatBase10(buf[:], v)
-	gwrite(buf[i:])
-}
-
-func printint(v int64) {
-	// Note: Avoiding strconv.AppendUint so that it's clearer
-	// that there are no allocations in this routine.
-	// cmd/link/internal/ld.TestAbstractOriginSanity
-	// sees the append and doesn't realize it doesn't allocate.
-	neg := v < 0
-	u := uint64(v)
-	if neg {
-		u = -u
-	}
-	var buf [20]byte
-	i := strconv.RuntimeFormatBase10(buf[:], u)
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	gwrite(buf[i:])
-}
+// printuint and printint live in printnum.go (default) and
+// printnum_wasm3.go (a wasm3-specific pair that uses a package-global
+// buffer instead of a stack-allocated one; the M2 cutover does not yet
+// box escaping &local addresses, so a stack buf would emit
+// `Get $name(SP)` which the wasm3 obj backend bails on).
 
 var minhexdigits = 0 // protected by printlock
 

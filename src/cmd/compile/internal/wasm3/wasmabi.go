@@ -204,7 +204,27 @@ func tryPrimitiveAttach(ft *types.Type) (obj.WasmFuncType, bool) {
 // recovers a panic — typeCollector.lowerFields panics on Go types it
 // can't yet represent, and we want to fall back to the primitive-only
 // path rather than abort compilation.
+//
+// The typeCollector is also rejected when a parameter or result type
+// would lower to a wasm field shape that doesn't match Go's register
+// ABI: the SSA call site pushes one register per Go-ABI register, and
+// we only know how to bridge composites whose collector lowering has
+// the same number of fields as the regabi has registers. Today that
+// rules out slices (collector: ref+3 i32; regabi: ptr+2 ints — 4 vs
+// 3) and interfaces (collector: 2 refs; regabi: 2 ints — same count
+// but ref/i64 type mismatch). Structs by value generally match because
+// both lowerings flatten field-by-field.
 func tryCollectorAttach(ft *types.Type) (wt *obj.WasmType, ok bool) {
+	for _, p := range ft.RecvParams() {
+		if !collectorMatchesRegabi(p.Type) {
+			return nil, false
+		}
+	}
+	for _, r := range ft.Results() {
+		if !collectorMatchesRegabi(r.Type) {
+			return nil, false
+		}
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			wt = nil
@@ -227,6 +247,34 @@ func tryCollectorAttach(ft *types.Type) (wt *obj.WasmType, ok bool) {
 		wt.Table = b.Bytes()
 	}
 	return wt, true
+}
+
+// collectorMatchesRegabi reports whether t's typeCollector lowering
+// has the same shape as Go's register ABI for t. Conservative: only
+// scalar primitives and structs (recursively) are accepted today.
+// Slices, strings, interfaces, maps, channels, and func values all
+// have a wasm-field shape that diverges from the regabi's per-
+// register breakdown — bridging those requires SSA-level marshalling
+// (a later rung).
+func collectorMatchesRegabi(t *types.Type) bool {
+	switch t.Kind() {
+	case types.TBOOL,
+		types.TINT8, types.TINT16, types.TINT32, types.TINT, types.TINT64,
+		types.TUINT8, types.TUINT16, types.TUINT32, types.TUINT, types.TUINT64,
+		types.TUINTPTR, types.TFLOAT32, types.TFLOAT64,
+		types.TPTR, types.TUNSAFEPTR:
+		return true
+	case types.TSTRUCT:
+		for _, f := range t.Fields() {
+			if !collectorMatchesRegabi(f.Type) {
+				return false
+			}
+		}
+		return true
+	case types.TARRAY:
+		return collectorMatchesRegabi(t.Elem())
+	}
+	return false
 }
 
 func signatureHasRef(sig obj.WasmFuncType) bool {

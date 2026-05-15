@@ -158,17 +158,11 @@ func (u *subscriptionUnion) subscriptionFdReadwrite() *subscriptionFdReadwrite {
 //go:noescape
 func poll_oneoff(in *subscription, out *event, nsubscriptions size, nevents *size) errno
 
-func write1(fd uintptr, p unsafe.Pointer, n int32) int32 {
-	iov := iovec{
-		buf:    uintptr32(uintptr(p)),
-		bufLen: size(n),
-	}
-	var nwritten size
-	if fd_write(int32(fd), unsafe.Pointer(&iov), 1, &nwritten) != 0 {
-		throw("fd_write failed")
-	}
-	return int32(nwritten)
-}
+// write1 lives in write1_wasip1.go (default) and write1_wasip1_wasm3.go
+// (a wasm3-specific version that hoists the iov/nwritten scratch
+// space into a package global; the M2 cutover does not yet box
+// escaping &local addresses, so a stack-allocated iovec would emit
+// `Get $name(SP)` which the wasm3 obj backend bails on).
 
 func usleep(usec uint32) {
 	var in subscription

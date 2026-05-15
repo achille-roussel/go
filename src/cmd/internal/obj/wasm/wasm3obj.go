@@ -29,6 +29,8 @@ import (
 	"bytes"
 	"cmd/internal/obj"
 	"cmd/internal/objabi"
+	"encoding/binary"
+	"math"
 )
 
 // preprocess3 prepares a function for the wasm3 typed ABI.
@@ -101,7 +103,7 @@ func assemble3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 		return
 	}
 
-	if body, ok := encodeWasm3Body(s); ok {
+	if body, ok := encodeWasm3Body(ctxt, s); ok {
 		s.P = body
 		return
 	}
@@ -121,23 +123,32 @@ func assemble3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 }
 
 // encodeWasm3Body walks s's obj.Prog stream and encodes it as a typed
-// wasm function body, returning ok=false (and no body) the moment it
-// meets an instruction the current rung does not support, so assemble3
-// can fall back to the stub. See assemble3's comment for the staging
-// rationale.
-func encodeWasm3Body(s *obj.LSym) (body []byte, ok bool) {
-	// The trivial walked body leaves the wasm stack empty on return,
-	// which only type-checks against a signature with no results. A
-	// function that declares results needs a later rung; until then it
-	// falls back to the unreachable stub, which is valid against any
-	// signature.
-	if wasm3ResultCount(s) != 0 {
+// wasm function body, returning ok=false (and no body, no relocations
+// added) the moment it meets an instruction the current rung does not
+// support, so assemble3 can fall back to the stub.
+//
+// Stage C.2b — the arithmetic rung — handles a leaf function: register
+// access (Get/Set/Tee of a parameter register), integer and floating
+// constants, direct calls, the operand-less arithmetic/comparison/
+// conversion opcodes, and RET. A function that touches the linear-
+// memory frame (Get SP, loads, stores), uses a register that is not a
+// parameter register, branches, or makes an indirect call still falls
+// back to the unreachable stub; those are later rungs.
+func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
+	localOf, decls, ok := wasm3Locals(s)
+	if !ok {
 		return nil, false
 	}
 
 	w := new(bytes.Buffer)
-	w.WriteByte(0x00) // local declaration count: 0
+	writeUleb128(w, uint64(len(decls)))
+	for _, d := range decls {
+		writeUleb128(w, d.count)
+		w.WriteByte(d.typ)
+	}
 
+	var relocs []obj.Reloc
+	sawRet := false
 	for p := s.Func().Text; p != nil; p = p.Link {
 		switch p.As {
 		case obj.ATEXT, obj.AFUNCDATA, obj.APCDATA, obj.ANOP, ANop, ARESUMEPOINT:
@@ -145,39 +156,189 @@ func encodeWasm3Body(s *obj.LSym) (body []byte, ok bool) {
 			// FUNCDATA/PCDATA carry metadata, and RESUMEPOINT is the
 			// Go-stack ABI's block marker, which the wasm3 typed ABI
 			// has no use for.
-			continue
 
 		case obj.ARET:
-			// Trivial ()->() function: a bare return. Typed results
-			// land in a later rung once signatures carry them.
 			writeOpcode(w, AReturn)
-			continue
+			sawRet = true
+
+		case obj.AUNDEF:
+			writeOpcode(w, AUnreachable)
+
+		case AGet:
+			idx, isLocal := localOf[p.From.Reg]
+			if !isLocal {
+				return nil, false
+			}
+			writeOpcode(w, ALocalGet)
+			writeUleb128(w, idx)
+
+		case ASet, ATee:
+			idx, isLocal := localOf[p.To.Reg]
+			if !isLocal {
+				return nil, false
+			}
+			if p.As == ASet {
+				writeOpcode(w, ALocalSet)
+			} else {
+				writeOpcode(w, ALocalTee)
+			}
+			writeUleb128(w, idx)
+
+		case AI32Const, AI64Const:
+			if p.From.Type != obj.TYPE_CONST || p.From.Name != obj.NAME_NONE {
+				// A symbol address (NAME_EXTERN) needs an R_ADDR
+				// relocation; that is a later rung.
+				return nil, false
+			}
+			writeOpcode(w, p.As)
+			writeSleb128(w, p.From.Offset)
+
+		case AF32Const:
+			writeOpcode(w, p.As)
+			var b [4]byte
+			binary.LittleEndian.PutUint32(b[:], math.Float32bits(float32(p.From.Val.(float64))))
+			w.Write(b[:])
+
+		case AF64Const:
+			writeOpcode(w, p.As)
+			var b [8]byte
+			binary.LittleEndian.PutUint64(b[:], math.Float64bits(p.From.Val.(float64)))
+			w.Write(b[:])
+
+		case obj.ACALL:
+			if p.To.Type != obj.TYPE_MEM || (p.To.Name != obj.NAME_EXTERN && p.To.Name != obj.NAME_STATIC) {
+				// An indirect call needs call_indirect plus the type
+				// table; that is a later rung.
+				return nil, false
+			}
+			writeOpcode(w, ACall)
+			relocs = append(relocs, obj.Reloc{
+				Type: objabi.R_CALL,
+				Off:  int32(w.Len()),
+				Siz:  1, // variable-sized; the linker writes the function index
+				Sym:  p.To.Sym,
+			})
+
+		case ANot:
+			writeOpcode(w, AI32Eqz)
 
 		default:
-			return nil, false
+			// The operand-less wasm stack instructions — the
+			// arithmetic, comparison and conversion opcodes the SSA
+			// backend emits with no From/To — encode as a single
+			// opcode byte. Anything carrying an operand (control-flow
+			// structure, loads, stores, memory ops) needs immediate
+			// encoding this rung does not do.
+			if p.From.Type != obj.TYPE_NONE || p.To.Type != obj.TYPE_NONE {
+				return nil, false
+			}
+			if p.As < AUnreachable || p.As >= ALast {
+				return nil, false
+			}
+			switch p.As {
+			case ABlock, ALoop, AIf, AElse, AEnd, ABr, ABrIf, ABrTable,
+				ACall, ACallIndirect, AReturnCallRef:
+				return nil, false
+			}
+			writeOpcode(w, p.As)
 		}
 	}
 
+	if !sawRet {
+		// A real function body always ends in a return (BlockRet, or a
+		// tail call lowered to RET). A prog stream with none — e.g. the
+		// not-yet-generated //go:wasmexport wrapper, which is just
+		// TEXT/FUNCDATA — is an incomplete function; fall back to the
+		// stub rather than emit a body that drops off the end without
+		// producing the declared results.
+		return nil, false
+	}
+
 	w.WriteByte(0x0b) // end
+
+	for _, r := range relocs {
+		s.AddRel(ctxt, r)
+	}
 	return w.Bytes(), true
 }
 
-// wasm3ResultCount reports how many wasm result values s's declared
-// signature has. The signature reaches the linker through whichever
-// aux the function carries: an obj.WasmType for ordinary wasm3
-// functions, or the WasmImport/WasmExport aux for functions bearing
-// those pragmas. A function with no aux is declared ()->().
-func wasm3ResultCount(s *obj.LSym) int {
+// wasm3LocalDecl is one entry of a wasm function body's local
+// declaration vector: count locals of the given wasm value type.
+type wasm3LocalDecl struct {
+	count uint64
+	typ   byte
+}
+
+// wasm3Locals builds the register-to-wasm-local-index map for s and
+// the body's local declaration vector.
+//
+// A wasm function's parameters are locals 0..nparams-1 in signature
+// order; the register ABI assigns the integer parameters to R0, R1, …
+// and the floating parameters to F0, F1, …, so that mapping is
+// reconstructed from the parameter storage types in whichever
+// signature aux s carries — an obj.WasmType for an ordinary wasm3
+// function, or the WasmExport/WasmImport aux for a function bearing
+// those pragmas. ok is false if s carries none (a function the
+// compiler left as ()->(), or a hand-written stub): with no known
+// parameter layout it is left to the stub.
+//
+// Every other local-class register (R0-R15, F0-F31) the body
+// references becomes a declared local, numbered after the parameters
+// in first-use order, with one declaration entry each. Registers that
+// are not local-class — SP, g, CTXT — are not mapped; a body using one
+// makes encodeWasm3Body fall back, since the linear-memory frame is a
+// later rung.
+func wasm3Locals(s *obj.LSym) (localOf map[int16]uint64, decls []wasm3LocalDecl, ok bool) {
 	fn := s.Func()
+	var params []obj.WasmField
 	switch {
 	case fn.WasmType != nil:
-		return len(fn.WasmType.Results)
+		params = fn.WasmType.Params
 	case fn.WasmExport != nil:
-		return len(fn.WasmExport.Results)
+		params = fn.WasmExport.Params
 	case fn.WasmImport != nil:
-		return len(fn.WasmImport.Results)
+		params = fn.WasmImport.Params
+	default:
+		return nil, nil, false
 	}
-	return 0
+
+	localOf = make(map[int16]uint64)
+	next := uint64(0)
+	var intParam, floatParam int16
+	for _, f := range params {
+		var reg int16
+		switch f.Type {
+		case obj.WasmF32, obj.WasmF64:
+			reg = REG_F0 + floatParam
+			floatParam++
+		default: // WasmI32, WasmI64, WasmPtr, WasmBool, WasmRef
+			reg = REG_R0 + intParam
+			intParam++
+		}
+		localOf[reg] = next
+		next++
+	}
+
+	declare := func(reg int16) {
+		if reg < REG_R0 || reg > REG_F31 {
+			return // not a local-class register (SP, g, CTXT, …)
+		}
+		if _, done := localOf[reg]; done {
+			return
+		}
+		localOf[reg] = next
+		next++
+		decls = append(decls, wasm3LocalDecl{count: 1, typ: byte(regType(reg))})
+	}
+	for p := fn.Text; p != nil; p = p.Link {
+		switch p.As {
+		case AGet:
+			declare(p.From.Reg)
+		case ASet, ATee:
+			declare(p.To.Reg)
+		}
+	}
+	return localOf, decls, true
 }
 
 // entrySym is the wasip1 entry symbol; cmd/link exports it as "_start".

@@ -163,13 +163,14 @@ func attachWasmType(fn *ir.Func) {
 	fn.LSym.Func().WasmType = &obj.WasmType{WasmFuncType: sig}
 }
 
-// wasm3IntField lowers an integer-class Go scalar to its width-faithful
-// wasm field: i64 for the 64-bit kinds, i32 for everything narrower.
-// Pointer-shaped scalars also lower to i64 — Go pointers occupy an i64
-// register at the SSA layer, and on this rung pointers are still raw
-// linear-memory addresses (the eventual cutover to WasmGC ref types is
-// deferred to the struct rung). ok is false for any non-integer,
-// non-pointer-shaped type.
+// wasm3IntField lowers a primitive Go scalar to its width-faithful
+// wasm field: i64 for the 64-bit integer kinds and pointer-shaped
+// scalars (Go pointers occupy an i64 register at the SSA layer; the
+// eventual cutover to WasmGC ref types is deferred to the struct
+// rung), i32 for narrower integers and bools, and f32/f64 for the
+// matching float kinds. ok is false for composite types (string,
+// slice, struct, …) — those need the deferred per-package wasmgc.Table
+// emission for their reference-typed signatures.
 func wasm3IntField(t *types.Type) (obj.WasmField, bool) {
 	switch t.Kind() {
 	case types.TBOOL,
@@ -179,6 +180,10 @@ func wasm3IntField(t *types.Type) (obj.WasmField, bool) {
 	case types.TINT, types.TINT64, types.TUINT, types.TUINT64, types.TUINTPTR,
 		types.TPTR, types.TUNSAFEPTR:
 		return obj.WasmField{Type: obj.WasmI64}, true
+	case types.TFLOAT32:
+		return obj.WasmField{Type: obj.WasmF32}, true
+	case types.TFLOAT64:
+		return obj.WasmField{Type: obj.WasmF64}, true
 	}
 	return obj.WasmField{}, false
 }

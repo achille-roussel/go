@@ -66,23 +66,11 @@ var debuglock mutex
 // the print lock to print information about the crash.
 // For both these reasons, let a thread acquire the printlock 'recursively'.
 
-func printlock() {
-	mp := getg().m
-	mp.locks++ // do not reschedule between printlock++ and lock(&debuglock).
-	mp.printlock++
-	if mp.printlock == 1 {
-		lock(&debuglock)
-	}
-	mp.locks-- // now we know debuglock is held and holding up mp.locks for us.
-}
-
-func printunlock() {
-	mp := getg().m
-	mp.printlock--
-	if mp.printlock == 0 {
-		unlock(&debuglock)
-	}
-}
+// printlock and printunlock live in printlock.go (default) and
+// printlock_wasm3.go (a wasm3-specific no-op pair the runtime fork
+// uses while M2 is in flight; neither g0/m0 nor debuglock are
+// initialized yet for wasm3, so the standard implementation would
+// trap immediately).
 
 // write to goroutine-local buffer if diverting output,
 // or else standard error.

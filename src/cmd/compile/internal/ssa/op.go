@@ -116,9 +116,10 @@ func (a *AuxNameOffset) FrameOffset() int64 {
 }
 
 type AuxCall struct {
-	Fn      *obj.LSym
-	reg     *regInfo // regInfo for this call
-	abiInfo *abi.ABIParamResultInfo
+	Fn           *obj.LSym
+	reg          *regInfo // regInfo for this call
+	abiInfo      *abi.ABIParamResultInfo
+	regsComputed bool // whether Reg has already filled in reg
 }
 
 // Reg returns the regInfo for a given call, combining the derived in/out register masks
@@ -132,10 +133,15 @@ type AuxCall struct {
 // At this point (active development of register ABI) that is very premature,
 // but if this turns out to be a cost, we could do it.
 func (a *AuxCall) Reg(i *regInfo, c *Config) *regInfo {
-	if !a.reg.clobbers.empty() {
-		// Already updated
+	if a.regsComputed {
+		// Already updated. (The flag, rather than a non-empty
+		// a.reg.clobbers, is the sentinel: a target whose call ops
+		// clobber no registers — e.g. GOARCH=wasm3, whose "registers"
+		// are wasm locals a call leaves untouched — would otherwise
+		// re-run this and append duplicate in/out register info.)
 		return a.reg
 	}
+	a.regsComputed = true
 	if a.abiInfo.InRegistersUsed()+a.abiInfo.OutRegistersUsed() == 0 {
 		// Shortcut for zero case, also handles old ABI.
 		a.reg = i

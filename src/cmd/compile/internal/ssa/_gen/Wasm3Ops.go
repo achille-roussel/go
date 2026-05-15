@@ -100,6 +100,14 @@ func init() {
 		// The "registers", which are actually local variables, can get clobbered
 		// if we're switching goroutines, because it unwinds the WebAssembly stack.
 		callerSave = gp.union(fp32).union(fp64).union(buildReg("g"))
+		// M2 cutover, Stage C.2: unlike GOARCH=wasm, a wasm3 call does not
+		// clobber the caller's registers. wasm3 functions are native
+		// typed wasm functions, so the SSA "registers" are wasm locals,
+		// which a `call` instruction leaves untouched — and M2 is
+		// single-goroutine, so there is no goroutine switch unwinding the
+		// WebAssembly stack. A value therefore survives a call in its
+		// register, with no spill to a linear-memory frame.
+		callClobbers = regMask{}
 	)
 
 	// Common regInfo
@@ -131,11 +139,11 @@ func init() {
 		// an explicit arg, with mem as the last arg; a fixed argLength
 		// would corrupt the value. The leading fixed inputs (codeptr,
 		// closure) keep their positions.
-		{name: "LoweredStaticCall", argLength: -1, reg: regInfo{clobbers: callerSave}, aux: "CallOff", call: true},                                           // call static function aux.(*obj.LSym). last arg=mem, auxint=argsize, returns mem
-		{name: "LoweredTailCall", argLength: -1, reg: regInfo{clobbers: callerSave}, aux: "CallOff", call: true, tailCall: true},                             // tail call static function aux.(*obj.LSym). last arg=mem, auxint=argsize, returns mem
-		{name: "LoweredTailCallInter", argLength: -1, reg: regInfo{inputs: []regMask{gp}, clobbers: callerSave}, aux: "CallOff", call: true, tailCall: true}, // tail call fn by pointer. arg0=codeptr, last arg=mem, auxint=argsize, returns mem
-		{name: "LoweredClosureCall", argLength: -1, reg: regInfo{inputs: []regMask{gp, gp, regMask{}}, clobbers: callerSave}, aux: "CallOff", call: true},    // call function via closure. arg0=codeptr, arg1=closure, last arg=mem, auxint=argsize, returns mem
-		{name: "LoweredInterCall", argLength: -1, reg: regInfo{inputs: []regMask{gp}, clobbers: callerSave}, aux: "CallOff", call: true},                     // call fn by pointer. arg0=codeptr, last arg=mem, auxint=argsize, returns mem
+		{name: "LoweredStaticCall", argLength: -1, reg: regInfo{clobbers: callClobbers}, aux: "CallOff", call: true},                                           // call static function aux.(*obj.LSym). last arg=mem, auxint=argsize, returns mem
+		{name: "LoweredTailCall", argLength: -1, reg: regInfo{clobbers: callClobbers}, aux: "CallOff", call: true, tailCall: true},                             // tail call static function aux.(*obj.LSym). last arg=mem, auxint=argsize, returns mem
+		{name: "LoweredTailCallInter", argLength: -1, reg: regInfo{inputs: []regMask{gp}, clobbers: callClobbers}, aux: "CallOff", call: true, tailCall: true}, // tail call fn by pointer. arg0=codeptr, last arg=mem, auxint=argsize, returns mem
+		{name: "LoweredClosureCall", argLength: -1, reg: regInfo{inputs: []regMask{gp, gp, regMask{}}, clobbers: callClobbers}, aux: "CallOff", call: true},    // call function via closure. arg0=codeptr, arg1=closure, last arg=mem, auxint=argsize, returns mem
+		{name: "LoweredInterCall", argLength: -1, reg: regInfo{inputs: []regMask{gp}, clobbers: callClobbers}, aux: "CallOff", call: true},                     // call fn by pointer. arg0=codeptr, last arg=mem, auxint=argsize, returns mem
 
 		{name: "LoweredAddr", argLength: 1, reg: gp11, aux: "SymOff", rematerializeable: true, symEffect: "Addr"}, // returns base+aux+auxint, arg0=base
 		{name: "LoweredMove", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "Int64"},                // large move. arg0=dst, arg1=src, arg2=mem, auxint=len, returns mem

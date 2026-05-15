@@ -453,7 +453,12 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 			binary.LittleEndian.PutUint64(b[:], math.Float64bits(p.From.Val.(float64)))
 			w.Write(b[:])
 
-		case obj.ACALL:
+		case obj.ACALL, ACALLNORESUME:
+			// ACALLNORESUME is the wasm-specific "call without a resume
+			// point" used to bracket runtime functions that must not
+			// trigger goroutine switching. wasm3 has no resume points
+			// (no goroutine PC trampoline), so it lowers to a plain
+			// `call` like ACALL.
 			if p.To.Type != obj.TYPE_MEM || (p.To.Name != obj.NAME_EXTERN && p.To.Name != obj.NAME_STATIC) {
 				// An indirect call needs call_indirect plus the type
 				// table; that is a later rung.
@@ -831,43 +836,55 @@ func wasm3Locals(s *obj.LSym) (localOf map[int16]uint64, spillOf map[wasm3SpillK
 // assembleWasm3ExportWrapper emits the body of a //go:wasmexport
 // wrapper for GOARCH=wasm3.
 //
-// On wasm3 the wrapper and the wrapped Go function share the same
-// typed wasm signature (the export's WasmFuncType, recorded on both
-// symbols via attachWasmType for the wrapped sym and via the export
-// pragma for the wrapper). The wrapper body therefore has to do
-// nothing more than forward each parameter to the wrapped function and
-// return — values flow in wasm parameter locals and out as wasm
-// results, with no Go-stack frame to translate to or from.
+// The wrapper signature is the wasmexport view, with pointer-shaped
+// scalars carried in WasmPtr (i32) — the host's linear-memory address
+// width. The wrapped Go function (compiled by wasm3IntField) instead
+// carries pointer-shaped scalars in i64, matching the SSA register
+// width. The wrapper bridges the two by widening each WasmPtr param
+// with `i64.extend_i32_u` before the call and narrowing each WasmPtr
+// result with `i32.wrap_i64` after — every other field type lines up
+// (WasmI32/WasmI64/WasmBool/WasmF32/WasmF64 are the same on both
+// sides).
 //
 // The body is:
 //
 //	local declaration count: 0
-//	local.get 0           ; for each parameter local, in order
+//	local.get 0
+//	[ i64.extend_i32_u ]   ; if param 0 is WasmPtr
 //	local.get 1
+//	[ i64.extend_i32_u ]   ; if param 1 is WasmPtr
 //	...
-//	call <wrapped>        ; operand filled in by the R_CALL reloc
+//	call <wrapped>         ; operand filled in by the R_CALL reloc
+//	[ i32.wrap_i64 ]       ; if a result is WasmPtr
 //	end
-//
-// The trailing `end` of the function body acts as the implicit return
-// for a typed wasm function; whatever the wrapped call leaves on the
-// wasm stack is the wrapper's result.
 func assembleWasm3ExportWrapper(ctxt *obj.Link, s *obj.LSym, we *obj.WasmExport) {
 	w := new(bytes.Buffer)
 	writeUleb128(w, 0) // local declaration count
-	for i := range we.Params {
+	for i, p := range we.Params {
 		writeOpcode(w, ALocalGet)
 		writeUleb128(w, uint64(i))
+		if p.Type == obj.WasmPtr {
+			writeOpcode(w, AI64ExtendI32U)
+		}
 	}
 	writeOpcode(w, ACall)
 	callOff := int32(w.Len())
-	w.WriteByte(0x0b) // end (will be at len-1 once the linker grows the call operand)
-	s.P = w.Bytes()
-	s.AddRel(ctxt, obj.Reloc{
+	relocs := []obj.Reloc{{
 		Type: objabi.R_CALL,
 		Off:  callOff,
 		Siz:  1, // variable-sized; the linker writes the function index
 		Sym:  we.WrappedSym,
-	})
+	}}
+	for _, r := range we.Results {
+		if r.Type == obj.WasmPtr {
+			writeOpcode(w, AI32WrapI64)
+		}
+	}
+	w.WriteByte(0x0b) // end
+	s.P = w.Bytes()
+	for _, r := range relocs {
+		s.AddRel(ctxt, r)
+	}
 }
 
 // wasm3LoadStoreAlign returns the natural alignment immediate for a

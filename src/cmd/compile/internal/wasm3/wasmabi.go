@@ -165,14 +165,19 @@ func attachWasmType(fn *ir.Func) {
 
 // wasm3IntField lowers an integer-class Go scalar to its width-faithful
 // wasm field: i64 for the 64-bit kinds, i32 for everything narrower.
-// ok is false for any non-integer type.
+// Pointer-shaped scalars also lower to i64 — Go pointers occupy an i64
+// register at the SSA layer, and on this rung pointers are still raw
+// linear-memory addresses (the eventual cutover to WasmGC ref types is
+// deferred to the struct rung). ok is false for any non-integer,
+// non-pointer-shaped type.
 func wasm3IntField(t *types.Type) (obj.WasmField, bool) {
 	switch t.Kind() {
 	case types.TBOOL,
 		types.TINT8, types.TINT16, types.TINT32,
 		types.TUINT8, types.TUINT16, types.TUINT32:
 		return obj.WasmField{Type: obj.WasmI32}, true
-	case types.TINT, types.TINT64, types.TUINT, types.TUINT64, types.TUINTPTR:
+	case types.TINT, types.TINT64, types.TUINT, types.TUINT64, types.TUINTPTR,
+		types.TPTR, types.TUNSAFEPTR:
 		return obj.WasmField{Type: obj.WasmI64}, true
 	}
 	return obj.WasmField{}, false

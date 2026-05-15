@@ -506,19 +506,27 @@ blockers:
   Go's ABI machinery assumes one unified float class, so this is a
   wasm3-specific divergence.
 
-- **Values live across a call still spill to a linear-memory frame.**
-  `func nested(x int) int { return dbl(x) + poly(x,x,x) }` spills `x`
-  with `Get SP; I64Store x(SP)` because the call ops mark every
-  register `callerSave`, so the encoder falls back to the stub.
-  Conceptually a wasm `call` does *not* clobber the caller's wasm
-  locals, and M2 is single-goroutine (no stack-unwinding goroutine
-  switch), so cross-call values should simply stay in their
-  registers — no spill, no frame. But naively emptying the call ops'
-  `clobbers` mask breaks regalloc: `can't find any output register`
-  for a register-result call like `runtime.memequal`. The static
-  `clobbers` mask and the per-call output registers `AuxCall.Reg`
-  derives interact in a way that needs proper investigation before
-  the spill can be removed. Until then, any function with a value
-  live across a call falls back to the stub. This — not a new
-  encoder feature — is the highest-value next rung: it unblocks most
-  non-leaf functions and is the wasm3-correct behaviour.
+- **Values live across a call — partly fixed (`3abb2aa227`).** The
+  wasm3 call ops now have an empty `clobbers` mask: a wasm `call`
+  leaves the caller's wasm locals untouched, and M2 is
+  single-goroutine, so a value can survive a call in its register.
+  Emptying the mask exposed a latent bug in the shared
+  `AuxCall.Reg` — it memoized its derived per-call register info
+  using a non-empty `a.reg.clobbers` as the "already computed"
+  sentinel, so an empty-clobbers call op made it re-run and append
+  duplicate in/out entries (`can't find any output register`). Fixed
+  with an explicit `regsComputed` flag; unchanged for every other
+  arch.
+
+  This is groundwork, not the whole fix. A value in `R1`-`R15` now
+  survives a call. A value in the call's *own* argument/result
+  register still spills: e.g. `func nested(x int) int { return
+  dbl(x) + poly(x,x,x) }` keeps `x` in `R0`, which is also `dbl`'s
+  argument and result register, so regalloc must evict `x` — and
+  Go's regalloc spills the evicted value to its stack home
+  (`Get SP; I64Store x(SP)`) rather than relocating it to a free
+  register. The encoder then falls back to the stub on `Get SP`. The
+  remaining work is to make regalloc prefer a register relocation
+  over a memory spill for wasm3 (where the "stack home" is a
+  linear-memory frame the design wants gone) — a regalloc change,
+  the next investigation on this rung.

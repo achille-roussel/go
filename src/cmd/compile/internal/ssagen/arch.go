@@ -54,9 +54,10 @@ type ArchInfo struct {
 	// SpillArgReg emits instructions that spill reg to n+off.
 	SpillArgReg func(pp *objw.Progs, p *obj.Prog, f *ssa.Func, t *types.Type, reg int16, n *ir.Name, off int64) *obj.Prog
 
-	// PrepareFunc, if non-nil, is called for each function after genssa
-	// has populated its LSym and before the obj backend assembles it.
-	// GOARCH=wasm3 uses it to attach the function's typed-ABI signature
-	// as an aux symbol.
+	// PrepareFunc, if non-nil, is called for each function early in
+	// Compile — after buildssa has set up fn.LSym but before SSA passes
+	// run, so SSA passes and genssa can both consult any aux symbol the
+	// hook attaches. GOARCH=wasm3 uses it to attach the function's
+	// typed-ABI signature, which wasm3PlaceValues and genssa both read.
 	PrepareFunc func(*ir.Func)
 }

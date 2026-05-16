@@ -820,7 +820,20 @@ func wasm3Locals(s *obj.LSym) (localOf map[int16]uint64, spillOf map[wasm3SpillK
 	}
 
 	localOf = make(map[int16]uint64)
-	next := uint64(len(params)) // register-locals follow the parameter locals
+	next := uint64(len(params)) // register/per-value locals follow the parameter locals
+
+	// M3 Phase 3: declare per-value locals from the wasm3PlaceValues
+	// pass *immediately* after the parameter locals so that the
+	// SSA-genssa side can compute each per-value local's absolute
+	// wasm index as len(params) + Wasm3ValueLocals[v.ID] without
+	// needing to know how many register-locals or spill-locals the
+	// obj backend will materialize. Register-locals (and later
+	// spill-locals) follow these.
+	for _, t := range fn.Wasm3LocalTypes {
+		decls = append(decls, wasm3LocalDecl{count: 1, typ: t})
+		next++
+	}
+
 	declare := func(reg int16) {
 		if reg < REG_R0 || reg > REG_F31 {
 			return // not a local-class register (SP, g, CTXT, …)
@@ -878,18 +891,6 @@ func wasm3Locals(s *obj.LSym) (localOf map[int16]uint64, spillOf map[wasm3SpillK
 		case AF64Load:
 			declareSpill(&p.From, f64)
 		}
-	}
-
-	// M3 Phase 2: append per-value locals from the wasm3PlaceValues
-	// pass. Their wasm-local indices start at the current `next`
-	// counter (i.e. after all params, register-locals, and spill
-	// locals). Codegen does not yet reference these — Phase 3 flips
-	// ssaGenValue to consume the placement. Declaring them now is
-	// harmless (wasm allows unused locals) and proves the
-	// SSA-pass → obj-backend channel works.
-	for _, t := range fn.Wasm3LocalTypes {
-		decls = append(decls, wasm3LocalDecl{count: 1, typ: t})
-		next++
 	}
 
 	return localOf, spillOf, decls, prologue, next, true

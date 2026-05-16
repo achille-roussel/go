@@ -39,20 +39,21 @@ func wasm3PlaceValues(f *Func) {
 		return
 	}
 
-	// Two passes. Pass 1 reserves the first M locals for the
-	// function's parameter values (those produced by OpArgIntReg /
-	// OpArgFloatReg) in parameter order, so the resulting local
-	// indices match wasm's "params are locals 0..M-1" convention.
-	// Pass 2 walks blocks in layout order, values in schedule order,
-	// and assigns a fresh local to every other value-producing op.
+	// Single walk over blocks/values in layout/schedule order:
+	// assign a fresh local to every value that survives wasm3HasOutput.
+	// OpArgIntReg / OpArgFloatReg are intentionally skipped (see
+	// wasm3HasOutput): a parameter already lives in its wasm
+	// parameter local 0..nparams-1, and the genssa fallback path
+	// for unplaced values (getReg → local.get <param>) handles
+	// the read just fine — no per-value-local copy needed for it.
 
 	// maxID + 1 is the upper bound on value IDs in this function;
 	// we use a sparse slice rather than a map so the lookup in
 	// genssa is a direct index without a map probe.
 	locals := make([]uint32, f.NumValues())
-	// noLocal sentinel — a value with no local mapping (e.g. Phi,
-	// statement-mark ops). Use 0xFFFFFFFF; real local indices fit
-	// well within 32 bits for any realistic function.
+	// noLocal sentinel — a value with no local mapping (parameters,
+	// Phi, statement-mark ops). Use 0xFFFFFFFF; real local indices
+	// fit well within 32 bits for any realistic function.
 	const noLocal = ^uint32(0)
 	for i := range locals {
 		locals[i] = noLocal
@@ -60,27 +61,10 @@ func wasm3PlaceValues(f *Func) {
 
 	var types []byte
 	nextLocal := uint32(0)
-
-	// Pass 1: parameters first, in (block-entry) order. The entry
-	// block (f.Entry) holds the OpArg* values; the compiler emits
-	// them in parameter order.
-	for _, v := range f.Entry.Values {
-		switch v.Op {
-		case OpArgIntReg, OpArgFloatReg:
-			locals[v.ID] = nextLocal
-			types = append(types, wasm3ValueType(v))
-			nextLocal++
-		}
-	}
-
-	// Pass 2: every other value-producing op, block by block.
 	for _, b := range f.Blocks {
 		for _, v := range b.Values {
-			if locals[v.ID] != noLocal {
-				continue // already placed in pass 1
-			}
 			if !wasm3HasOutput(v) {
-				continue // memory phi, statement marks, etc.
+				continue
 			}
 			locals[v.ID] = nextLocal
 			types = append(types, wasm3ValueType(v))
@@ -115,6 +99,12 @@ func wasm3HasOutput(v *Value) bool {
 	// emit no bytes — they don't need a local.
 	switch v.Op {
 	case OpInlMark, OpInvalid, OpUnknown, OpVarDef, OpVarLive, OpKeepAlive:
+		return false
+	case OpArgIntReg, OpArgFloatReg:
+		// Parameters already live in wasm parameter locals
+		// 0..nparams-1 by the wasm function signature. genssa's
+		// fallback path (getReg(v.Reg()) → local.get <param>)
+		// reads them in place; no per-value-local copy needed.
 		return false
 	case OpPhi:
 		// Phi resolution (merging incoming locals into one) is a

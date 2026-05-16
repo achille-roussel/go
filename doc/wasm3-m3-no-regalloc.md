@@ -202,6 +202,42 @@ Op family by op family, switch `setReg(v.Reg())` to
 ~20-30 are mechanical, rest need attention. Each conversion is
 verifiable in isolation.
 
+**Phase 3a (lifecycle + layout prep, landed):**
+attachWasmType is moved to run *before* SSA passes (it was a
+post-genssa hook), so wasm3PlaceValues and genssa can both read
+the per-function WasmType.Params. Per-value locals are
+declared in the wasm function body immediately after the
+parameter locals (was: at the very end) — this gives genssa
+a deterministic formula `nparams + Wasm3ValueLocals[v.ID]` for
+each placement's absolute wasm-local index without needing to
+know the register-local or spill-local count. `OpArgIntReg`
+and `OpArgFloatReg` are intentionally skipped by the placement
+pass: the wasm function signature already places parameters in
+locals 0..nparams-1, so the regalloc fallback (`getReg(v.Reg())`
+→ `local.get <param>`) reads them in place. With these in
+place, the codegen flip becomes an isolated mechanical change.
+
+**Phase 3b (the codegen flip, BLOCKED on Phi resolution):**
+
+A first attempt at flipping `setReg(v.Reg())` to
+`localSetIdx(nparams + Wasm3ValueLocals[v.ID])` (and the mirror
+for `getValue32`/`getValue64`) made empty `main` and
+straight-line functions pass but broke any function with a
+loop — `sum(10)` hung. Root cause: regalloc resolves Phi nodes
+by ensuring every Phi-input value lives in the Phi
+destination's *register-local*. When a Phi input takes the
+per-value-local path, the value lands in the wrong slot and
+the Phi reads stale data on each iteration.
+
+The fix needs a Phi resolution pass that runs alongside
+wasm3PlaceValues (or fused into it): allocate one wasm local
+per `OpPhi`, and on each incoming control-flow edge emit a
+copy from the predecessor's source per-value-local into the
+Phi's local immediately before the branch. Reads of the Phi
+value then become `local.get <phi_local>`. This is the same
+shape regalloc does for register reuse, just hung off the
+per-value-local scheme instead.
+
 **Phase 4 — skip regalloc for wasm3.**
 
 Once nothing reads `v.Reg()` for wasm3, gate the regalloc pass in

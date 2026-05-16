@@ -512,8 +512,9 @@ var passes = [...]pass{
 	{name: "layout", fn: layout, required: true},     // schedule blocks
 	{name: "schedule", fn: schedule, required: true}, // schedule values
 	{name: "late nilcheck", fn: nilcheckelim2},
-	{name: "flagalloc", fn: flagalloc, required: true}, // allocate flags register
-	{name: "regalloc", fn: regalloc, required: true},   // allocate int & float registers + stack slots
+	{name: "flagalloc", fn: flagalloc, required: true},      // allocate flags register
+	{name: "wasm3 place values", fn: wasm3PlaceValues},      // GOARCH=wasm3: assign each SSA value a wasm local; no-op for others
+	{name: "regalloc", fn: regalloc, required: true},        // allocate int & float registers + stack slots
 	{name: "loop rotate", fn: loopRotate},
 	{name: "trim", fn: trim}, // remove empty blocks
 }

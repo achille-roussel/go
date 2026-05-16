@@ -74,6 +74,20 @@ type Func struct {
 	// where we spill the closure pointer for range func bodies.
 	CloSlot *ir.Name
 
+	// Wasm3ValueLocals, if non-nil (only set for GOARCH=wasm3), maps
+	// each SSA value's ID to the wasm local index that holds it. The
+	// wasm3-place-values pass produces this map; the wasm3 obj
+	// backend's ssaGenValue consumes it instead of v.Reg(). See
+	// doc/wasm3-m3-no-regalloc.md.
+	Wasm3ValueLocals []uint32
+
+	// Wasm3LocalTypes, if non-nil (only set for GOARCH=wasm3),
+	// gives the wasm value-type byte (0x7F=i32, 0x7E=i64, 0x7D=f32,
+	// 0x7C=f64) at index N for the wasm local at index N. The wasm3
+	// obj backend emits the function's local-declarations vector
+	// from this slice.
+	Wasm3LocalTypes []byte
+
 	freeValues *Value // free Values linked by argstorage[0].  All other fields except ID are 0/nil.
 	freeBlocks *Block // free Blocks linked by succstorage[0].b.  All other fields except ID are 0/nil.
 

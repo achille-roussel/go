@@ -1,0 +1,167 @@
+# wasm3 M3 — Object-model breadth
+
+Started: 2026-05-16
+Branch: `wasm3-m2-cutover` (cumulative; will rename when M3 lands)
+Builds on: M2 (see `doc/wasm3-m2-cutover-notes.md`)
+
+## Goal
+
+Per the plan, M3 lands the *full object model* — strings, slices,
+arrays, interfaces, maps — represented as WasmGC heap objects rather
+than the linear-memory layouts the bump-allocator stand-in uses
+today. The deliverable: single-goroutine programs using strings,
+slices, interfaces, maps, and the standard runtime helpers around
+them run end-to-end on `wasmtime --features gc`.
+
+By the end of M3 the bump allocator (`newobject_wasm3.go`), the
+runtime-fork print shims (`printint_wasm3.go`, `gwrite_wasm3.go`,
+etc.), and the linear-memory pointer convention should all be gone:
+they were M2-cutover crutches that the actual ref-typed lowering
+replaces.
+
+## The architectural shift
+
+M2 kept the Go pointer convention — `*T` is an i64 linear-memory
+address — and worked around the lack of escape boxing by hoisting
+scratch buffers to globals. M3 inverts this:
+
+  - `*T` (and `unsafe.Pointer` for typed pointees) becomes
+    `(ref null $T)` at the SSA level.
+  - Heap allocation is `struct.new $T` directly, no runtime call.
+  - Field access is `struct.get $T n` / `struct.set $T n`, no
+    linear-memory load/store.
+  - Strings are `(ref $go.string)` headers pointing at
+    `(ref $go.bytes)` arrays — `string`'s in-register representation
+    becomes one ref + two i32s (offset, length).
+  - Slices are `(ref $go.backing<T>)` plus the three i32 metadata
+    fields.
+  - Interfaces are two refs (type descriptor + data).
+  - Maps and channels keep their logic but the underlying buckets/
+    queues become arrays of refs.
+
+This is the cutover the M2 plan deferred. The encoder already
+accepts the 0xFB GC opcodes; the linker already knows how to merge
+per-package type tables. What's missing is the SSA-level plumbing:
+ref-typed values flowing through registers, GC ops emitted from
+lowering rules, and runtime helpers rewritten in terms of
+struct.get/array.get rather than linear-memory loads.
+
+## Sequencing — what lands when
+
+**Stage A — encoder + linker plumbing for `struct.new`** (foundation)
+- Encoder: handle `AStructNew` with a type-index operand
+  (`0xFB 0x00 <typeIdx>`).
+- A new `R_WASMTYPE` relocation: the compiler emits a per-package
+  type index; the linker remaps to the module-global type index via
+  the per-package wasmgc.Table merge.
+- Verification: hand-written assembly that calls `struct.new`
+  validates and runs.
+
+**Stage B — `newobject` intrinsic** (kill the bump allocator)
+- New SSA op `OpWasm3LoweredStructNew`.
+- Intrinsify `runtime.newobject(typ)` calls at the SSA layer: if
+  `typ` is statically known, replace the call with the new op.
+- Drop `newobject_wasm3.go`; `new(T)` for known T emits a direct
+  `struct.new`.
+
+**Stage C — ref-typed SSA values** (the deep change)
+- New SSA value class for refs (separate from i64 GP regs).
+- New wasm3 register class for refs (`Ref0..Ref15`?).
+- Wasm3Ops.go: ref-typed Op definitions.
+- Wasm3.rules: lower `OpAddr`/`OpLoad`/`OpStore` on struct fields
+  to `struct.get`/`struct.set`.
+- wasm3Locals: declare wasm locals of `(ref null $T)` type.
+
+**Stage D — string and `[]byte` as `(array i8)`**
+- `string` in-register = `(ref $go.bytes, i32 offset, i32 length)`.
+- `[]byte` ditto + capacity.
+- Runtime helpers: `concatstring{2..7}`, `slicebytetostring`,
+  `stringtoslicebyte`, etc. rewritten to use `array.new_data`,
+  `array.copy`, `array.get_u`.
+- Drop the printstring/printint runtime-fork shims — the standard
+  print path works once `[]byte` and `string` are ref-backed.
+
+**Stage E — slice generalised over element type**
+- `[]T` for `T` a scalar: backing is `(array T)`, header carries
+  `(ref $backing, i32 offset, i32 length, i32 cap)`.
+- `[]T` for `T` composite: backing is `(array (ref $T))`.
+- `make([]T, n)`, slicing, indexing, range — all via `array.new`/
+  `array.get`/`array.set`/`array.len`.
+
+**Stage F — interface (`type, data`) as two refs**
+- Interface header: `(ref $go.type, ref $go.object)`.
+- Type-assertion via `ref.cast`/`ref.test`.
+- Method dispatch via the itab — itab itself becomes a struct of
+  function refs (depends on **Stage G**).
+
+**Stage G — indirect call via `call_ref`**
+- Function values are `(ref $funcType)`.
+- `Set CTXT` declares CTXT as a `(ref null $closureCtx)` local.
+- Indirect call site emits `call_ref $funcType`.
+- Closures: closure descriptor is a struct holding the function ref
+  + captured-variable refs.
+
+**Stage H — maps and channels (data structures only)**
+- Map buckets become `(array (ref $bucketEntry))`.
+- Channel buffer becomes `(array T)` or `(array (ref T))`.
+- The logic in `internal/runtime/maps`, `chan.go`, `select.go`
+  stays; the storage layer swaps from unsafe.Pointer arithmetic to
+  WasmGC array ops.
+
+**Stage I — wasmexport composite marshalling**
+- The wasmexport wrapper for a `*Point` / `string` / `[]byte` param
+  constructs the GC representation from the host's (ptr, len)
+  primitive args. Conversely, returning a string copies the GC
+  array contents into a host-visible linear-memory buffer.
+
+**Stage J — runtime fork retirement**
+- With ref types plumbed and write barriers eliminated, the
+  `*_wasm3.go` runtime shims should compile their standard
+  counterparts cleanly. Verify each one and retire it.
+
+Stages B and onward each have their own bring-up ladder; expect
+each stage to land as multiple commits with verification.
+
+## Acceptance criteria for M3 done
+
+A program like the following compiles and runs to completion on
+`wasmtime --features gc`, producing the expected output:
+
+```go
+package main
+
+import "strings"
+
+type Counter struct{ name string; count int }
+
+func (c *Counter) Inc() { c.count++ }
+
+func main() {
+    cs := []*Counter{
+        {"apples", 0},
+        {"bananas", 0},
+    }
+    for _, w := range strings.Fields("apples bananas apples apples bananas") {
+        for _, c := range cs {
+            if c.name == w {
+                c.Inc()
+                break
+            }
+        }
+    }
+    for _, c := range cs {
+        println(c.name, c.count)
+    }
+}
+```
+
+This exercises strings, slices, struct pointers, method calls (which
+on a pointer receiver are direct, not interface dispatch — interface
+dispatch is its own checkpoint).
+
+## Stretch — interfaces + closures
+
+`fmt.Println` (interface dispatch) + a higher-order `func` value
+(closure) running end-to-end is the M3 stretch goal. The plan groups
+these under M3 but they could slip to M3.5 / early M4 depending on
+how the ref-typed-call rung lands.

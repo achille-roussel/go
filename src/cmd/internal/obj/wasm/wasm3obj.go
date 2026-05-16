@@ -458,12 +458,13 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 			binary.LittleEndian.PutUint64(b[:], math.Float64bits(p.From.Val.(float64)))
 			w.Write(b[:])
 
-		case obj.ACALL, ACALLNORESUME:
+		case obj.ACALL, ACALLNORESUME, ACall:
 			// ACALLNORESUME is the wasm-specific "call without a resume
 			// point" used to bracket runtime functions that must not
-			// trigger goroutine switching. wasm3 has no resume points
-			// (no goroutine PC trampoline), so it lowers to a plain
-			// `call` like ACALL.
+			// trigger goroutine switching. ACall is the lower-level
+			// wasm-explicit call (used inside a structured block).
+			// wasm3 has no resume points (no goroutine PC trampoline),
+			// so all three lower to a plain `call`.
 			if p.To.Type != obj.TYPE_MEM || (p.To.Name != obj.NAME_EXTERN && p.To.Name != obj.NAME_STATIC) {
 				// An indirect call needs call_indirect plus the type
 				// table; that is a later rung.

@@ -2134,12 +2134,12 @@ func memclrNoHeapPointersChunked(size uintptr, x unsafe.Pointer) {
 	}
 }
 
-// implementation of new builtin
-// compiler (both frontend and SSA backend) knows the signature
-// of this function.
-func newobject(typ *_type) unsafe.Pointer {
-	return mallocgc(typ.Size_, typ, true)
-}
+// newobject lives in newobject.go (default !wasm3) and
+// newobject_wasm3.go (a bump-allocator stub the M2 cutover uses while
+// the runtime fork is in flight — mallocgc and its GC/page-cache
+// dependencies are not yet built for wasm3, but `new()` and escape-
+// analysis heap promotion need *something* to call). The wasm3
+// allocator is leak-forever within a fixed-size linear-memory region.
 
 //go:linkname maps_newobject internal/runtime/maps.newobject
 func maps_newobject(typ *_type) unsafe.Pointer {

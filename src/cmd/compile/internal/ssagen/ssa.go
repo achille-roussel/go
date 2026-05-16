@@ -8008,6 +8008,15 @@ func (e *ssafn) Debug_checknil() bool {
 }
 
 func (e *ssafn) UseWriteBarrier() bool {
+	// GOARCH=wasm3 has no GC — the host WasmGC runtime tracks pointer
+	// liveness via ref types, so the Go-side write barriers are dead
+	// weight. They also produce calls to runtime.gcWriteBarrier{1..8}
+	// whose asm stubs the wasm3 obj backend can't type-attach (assembly
+	// functions don't go through attachWasmType), so emitting them
+	// breaks the call-site type check. Suppress them outright.
+	if buildcfg.GOARCH == "wasm3" {
+		return false
+	}
 	return base.Flag.WB
 }
 

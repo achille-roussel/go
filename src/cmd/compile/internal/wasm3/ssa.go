@@ -814,6 +814,59 @@ func setReg(s *ssagen.State, reg int16) {
 	p.To = obj.Addr{Type: obj.TYPE_REG, Reg: reg}
 }
 
+// localGetIdx emits a wasm `local.get N` with the given absolute
+// wasm-local index N. M3 Phase 3 codegen helper: bypasses the
+// register-name → local-index translation in the obj backend.
+func localGetIdx(s *ssagen.State, idx uint32) {
+	p := s.Prog(wasm.ALocalGet)
+	p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(idx)}
+}
+
+// localSetIdx is the mirror of localGetIdx for `local.set`.
+func localSetIdx(s *ssagen.State, idx uint32) {
+	p := s.Prog(wasm.ALocalSet)
+	p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(idx)}
+}
+
+// wasm3ValueLocalIdx returns the absolute wasm-local index that holds
+// the SSA value v under the M3 regalloc-bypass scheme. Returns
+// (idx, true) if v has a placement; (0, false) for values the
+// wasm3PlaceValues pass skipped (Phi, void-result ops, etc.) or
+// for non-wasm3 builds. The base offset is the wasm function's
+// parameter count — per-value locals start right after the
+// signature's parameter locals.
+func wasm3ValueLocalIdx(s *ssagen.State, v *ssa.Value) (uint32, bool) {
+	locals := v.Block.Func.Wasm3ValueLocals
+	if locals == nil || int(v.ID) >= len(locals) {
+		return 0, false
+	}
+	const noLocal = ^uint32(0)
+	if locals[v.ID] == noLocal {
+		return 0, false
+	}
+	// Base offset: the wasm function's parameter count. Each
+	// parameter lives in locals 0..nparams-1; per-value locals
+	// start at nparams.
+	base := wasm3ParamLocalCount(v.Block.Func)
+	return base + locals[v.ID], true
+}
+
+// wasm3ParamLocalCount returns the number of wasm locals that the
+// function's parameters occupy (== the number of fields in the
+// declared WasmType signature's Params). Cached at the *Func level
+// via the LSym's WasmType aux.
+func wasm3ParamLocalCount(f *ssa.Func) uint32 {
+	ifn := f.Frontend().Func()
+	if ifn == nil || ifn.LSym == nil {
+		return 0
+	}
+	wt := ifn.LSym.Func().WasmType
+	if wt == nil {
+		return 0
+	}
+	return uint32(len(wt.Params))
+}
+
 func loadOp(t *types.Type) obj.As {
 	if t.IsFloat() {
 		switch t.Size() {

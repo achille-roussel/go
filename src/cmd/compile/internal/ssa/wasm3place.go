@@ -127,6 +127,13 @@ func wasm3HasOutput(v *Value) bool {
 }
 
 // wasm3ValueType returns the wasm value-type byte for v's Go type.
+//
+// All integer-class values lower to i64. The SSA backend works in
+// i64 GP registers; sub-word values are widened at boundaries
+// (parameter entry, comparison results, etc.) and stored as i64
+// internally. This matches the existing register-local convention
+// the obj backend's `regType` produces.
+//
 // Pointer-shaped values lower to i64 in the M2 backend; the M3
 // switch to ref types (Stage B onward) will revise this.
 func wasm3ValueType(v *Value) byte {
@@ -139,9 +146,6 @@ func wasm3ValueType(v *Value) byte {
 			return wasm3ValF64
 		}
 		return wasm3ValF64
-	}
-	if t.Size() <= 4 && (t.IsInteger() || t.IsBoolean()) {
-		return wasm3ValI32
 	}
 	return wasm3ValI64
 }

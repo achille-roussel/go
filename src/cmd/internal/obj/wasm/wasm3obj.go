@@ -401,6 +401,26 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 			}
 			writeUleb128(w, idx)
 
+		case ALocalGet:
+			// M3 Phase 3: the real wasm `local.get` opcode, emitted
+			// directly by ssaGenValue when it consults the per-value
+			// local map (f.Wasm3ValueLocals + the per-function base
+			// offset). The operand is a wasm local index, pre-
+			// computed at SSA-gen time; no register-name translation.
+			if p.From.Type != obj.TYPE_CONST {
+				return nil, false
+			}
+			writeOpcode(w, ALocalGet)
+			writeUleb128(w, uint64(p.From.Offset))
+
+		case ALocalSet, ALocalTee:
+			// M3 Phase 3 mirror of ALocalGet for the producer side.
+			if p.To.Type != obj.TYPE_CONST {
+				return nil, false
+			}
+			writeOpcode(w, p.As)
+			writeUleb128(w, uint64(p.To.Offset))
+
 		case AI32Store, AI64Store, AF32Store, AF64Store,
 			AI32Store8, AI32Store16, AI64Store8, AI64Store16, AI64Store32:
 			// Two flavours: a register spill (OpStoreReg) targets an

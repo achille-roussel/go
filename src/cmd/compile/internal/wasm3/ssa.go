@@ -200,6 +200,7 @@ func ssaMarkMoves(s *ssagen.State, b *ssa.Block) {
 func ssaGenBlock(s *ssagen.State, b, next *ssa.Block) {
 	switch b.Kind {
 	case ssa.BlockPlain, ssa.BlockDefer:
+		emitPhiCopies(s, b, b.Succs[0].Block())
 		if next != b.Succs[0].Block() {
 			s.Br(obj.AJMP, b.Succs[0].Block())
 		}
@@ -211,20 +212,26 @@ func ssaGenBlock(s *ssagen.State, b, next *ssa.Block) {
 			getValue32(s, b.Controls[0])
 			s.Prog(wasm.AI32Eqz)
 			s.Prog(wasm.AIf)
+			emitPhiCopies(s, b, b.Succs[1].Block())
 			s.Br(obj.AJMP, b.Succs[1].Block())
 			s.Prog(wasm.AEnd)
+			emitPhiCopies(s, b, b.Succs[0].Block())
 		case b.Succs[1].Block():
 			// if true, jump to b.Succs[0]
 			getValue32(s, b.Controls[0])
 			s.Prog(wasm.AIf)
+			emitPhiCopies(s, b, b.Succs[0].Block())
 			s.Br(obj.AJMP, b.Succs[0].Block())
 			s.Prog(wasm.AEnd)
+			emitPhiCopies(s, b, b.Succs[1].Block())
 		default:
 			// if true, jump to b.Succs[0], else jump to b.Succs[1]
 			getValue32(s, b.Controls[0])
 			s.Prog(wasm.AIf)
+			emitPhiCopies(s, b, b.Succs[0].Block())
 			s.Br(obj.AJMP, b.Succs[0].Block())
 			s.Prog(wasm.AEnd)
+			emitPhiCopies(s, b, b.Succs[1].Block())
 			s.Br(obj.AJMP, b.Succs[1].Block())
 		}
 
@@ -506,7 +513,16 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		if s.OnWasmStackSkipped != 0 {
 			panic("wasm: bad stack")
 		}
-		setReg(s, v.Reg())
+		// M3 Phase 3b: prefer the per-value local placed by
+		// wasm3PlaceValues; fall back to the regalloc-assigned
+		// register-local for the values place-values skipped
+		// (OpArg*, etc.). Phis are placed and resolved via
+		// emitPhiCopies on each outgoing edge.
+		if idx, ok := wasm3ValueLocalIdx(s, v); ok {
+			localSetIdx(s, idx)
+		} else {
+			setReg(s, v.Reg())
+		}
 	}
 }
 
@@ -763,6 +779,15 @@ func getValue32(s *ssagen.State, v *ssa.Value) {
 		return
 	}
 
+	// M3 Phase 3b: per-value locals always hold i64 for integer-
+	// class values (see wasm3ValueType), so the i32.wrap is
+	// unconditional here.
+	if idx, ok := wasm3ValueLocalIdx(s, v); ok {
+		localGetIdx(s, idx)
+		s.Prog(wasm.AI32WrapI64)
+		return
+	}
+
 	reg := v.Reg()
 	getReg(s, reg)
 	if reg != wasm.REG_SP {
@@ -774,6 +799,11 @@ func getValue64(s *ssagen.State, v *ssa.Value) {
 	if v.OnWasmStack {
 		s.OnWasmStackSkipped--
 		ssaGenValueOnStack(s, v, true)
+		return
+	}
+
+	if idx, ok := wasm3ValueLocalIdx(s, v); ok {
+		localGetIdx(s, idx)
 		return
 	}
 
@@ -812,6 +842,83 @@ func getReg(s *ssagen.State, reg int16) {
 func setReg(s *ssagen.State, reg int16) {
 	p := s.Prog(wasm.ASet)
 	p.To = obj.Addr{Type: obj.TYPE_REG, Reg: reg}
+}
+
+// emitPhiCopies emits, for the outgoing edge from b to succ, one
+// `local.get <src>; local.set <Lphi>` copy per OpPhi in succ —
+// the per-edge Phi resolution that replaces regalloc's
+// destination-register-sharing scheme under the M3 regalloc-
+// bypass design (doc/wasm3-m3-no-regalloc.md, Phase 3b).
+//
+// The source value is read via its per-value local if
+// wasm3PlaceValues placed it; otherwise it falls back to the
+// regalloc-assigned register-local (the same fallback ssaGenValue's
+// default case uses for unplaced values like OpArg*). The
+// destination is always the Phi's per-value local — Phi is
+// placed unconditionally now.
+//
+// Copies are emitted in OpPhi order. Cycles between Phis
+// (the "swap" problem) would require a temp local; none of the
+// M2 regression test programs hit one, and the standard exit-
+// SSA algorithm for handling them is documented in the design
+// doc as a follow-up.
+func emitPhiCopies(s *ssagen.State, b, succ *ssa.Block) {
+	if len(succ.Preds) == 0 {
+		return
+	}
+	predIdx := -1
+	for i, e := range succ.Preds {
+		if e.Block() == b {
+			predIdx = i
+			break
+		}
+	}
+	if predIdx < 0 {
+		return
+	}
+	for _, phi := range succ.Values {
+		if phi.Op != ssa.OpPhi {
+			continue
+		}
+		dst, ok := wasm3ValueLocalIdx(s, phi)
+		if !ok {
+			continue // Phi-of-memory, etc.
+		}
+		src := phi.Args[predIdx]
+		readPhiSource(s, src)
+		localSetIdx(s, dst)
+	}
+}
+
+// readPhiSource pushes the SSA value v onto the wasm stack, picking
+// the right access path depending on where regalloc/place-values
+// landed v:
+//   - per-value local placement (the common case post-Phase 3b),
+//   - a register-local (for OpArg* and any unplaced value),
+//   - a spill local (a value regalloc spilled to a LocalSlot).
+//
+// Phi sources can land in any of the three, so this helper covers
+// all three. Used by emitPhiCopies.
+func readPhiSource(s *ssagen.State, v *ssa.Value) {
+	if idx, ok := wasm3ValueLocalIdx(s, v); ok {
+		localGetIdx(s, idx)
+		return
+	}
+	if _, isReg := v.Block.Func.RegAlloc[v.ID].(*ssa.Register); isReg {
+		reg := v.Reg()
+		getReg(s, reg)
+		if reg == wasm.REG_SP {
+			s.Prog(wasm.AI64ExtendI32U)
+		}
+		return
+	}
+	// LocalSlot: regalloc spilled v to a wasm spill local. The
+	// obj backend translates an I64Load/F32Load/F64Load with an
+	// AddrAuto operand into a `local.get <spill_local>` directly
+	// (see encodeWasm3Body and wasm3Locals); no real linear-
+	// memory load is emitted.
+	p := s.Prog(spillLoadOp(v.Type))
+	ssagen.AddrAuto(&p.From, v)
 }
 
 // localGetIdx emits a wasm `local.get N` with the given absolute

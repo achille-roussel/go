@@ -217,26 +217,45 @@ locals 0..nparams-1, so the regalloc fallback (`getReg(v.Reg())`
 → `local.get <param>`) reads them in place. With these in
 place, the codegen flip becomes an isolated mechanical change.
 
-**Phase 3b (the codegen flip, BLOCKED on Phi resolution):**
+**Phase 3b (the codegen flip, LANDED):**
 
-A first attempt at flipping `setReg(v.Reg())` to
-`localSetIdx(nparams + Wasm3ValueLocals[v.ID])` (and the mirror
-for `getValue32`/`getValue64`) made empty `main` and
-straight-line functions pass but broke any function with a
-loop — `sum(10)` hung. Root cause: regalloc resolves Phi nodes
-by ensuring every Phi-input value lives in the Phi
-destination's *register-local*. When a Phi input takes the
-per-value-local path, the value lands in the wrong slot and
-the Phi reads stale data on each iteration.
+`setReg(v.Reg())` in `ssaGenValue`'s default case flips to
+`localSetIdx(nparams + Wasm3ValueLocals[v.ID])` whenever a per-
+value local exists; same for `getValue32`/`getValue64` on the
+read side. Values without a placement (`OpArg*`, `OpSelect*`,
+spilled values) still take the regalloc-managed register-local
+path.
 
-The fix needs a Phi resolution pass that runs alongside
-wasm3PlaceValues (or fused into it): allocate one wasm local
-per `OpPhi`, and on each incoming control-flow edge emit a
-copy from the predecessor's source per-value-local into the
-Phi's local immediately before the branch. Reads of the Phi
-value then become `local.get <phi_local>`. This is the same
-shape regalloc does for register reuse, just hung off the
-per-value-local scheme instead.
+Per-edge Phi resolution replaces regalloc's destination-
+register-sharing scheme. `wasm3PlaceValues` now assigns a per-
+value local to every `OpPhi`, and the wasm3 backend's
+`ssaGenBlock` invokes `emitPhiCopies` before each control
+transfer: for every Phi in the successor block, push the
+incoming value from this predecessor and `local.set` into the
+Phi's local. The source push is delegated to `readPhiSource`
+which handles the three places a Phi argument can live — per-
+value local, register-local (for unplaced values like `OpArg*`),
+or spill local via `spillLoadOp`+`AddrAuto` (for values
+regalloc decided to spill).
+
+`OpSelect0`/`OpSelect1`/`OpSelectN` are intentionally left
+unplaced. Regalloc assigns them the same register as the
+underlying tuple element (`regalloc.go` ~1519), and the call
+result placement loop populates that register-local. Routing
+selectors through the register-local path (rather than giving
+them their own per-value local that nothing populates) lets
+calls work without modifying the call-result placement loop.
+
+The cycle case for parallel Phi copies (the classic "swap"
+problem — Phi1 reads Phi2 while Phi2 reads Phi1) is not yet
+handled. The M2 regression test programs don't hit it; the
+standard fix is to detect cycles in `emitPhiCopies` and break
+them with a per-cycle temp local.
+
+Binary cost so far: ~60 bytes per wasm3 binary against the
+Phase 3a baseline. Both regalloc-managed register-locals *and*
+per-value locals are declared while both schemes coexist; the
+size win arrives in Phase 4 when regalloc is skipped entirely.
 
 **Phase 4 — skip regalloc for wasm3.**
 

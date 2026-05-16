@@ -5,22 +5,26 @@
 package ssa
 
 // wasm3place.go is the wasm3-specific value-placement pass for the M3
-// regalloc-bypass restructure (doc/wasm3-m3-no-regalloc.md, Phase 1).
+// regalloc-bypass restructure (doc/wasm3-m3-no-regalloc.md).
 //
-// Phase 1 scope: the pass runs as a scaffold alongside the normal
-// regalloc pass (it does *not* skip regalloc). It computes the
-// value-ID → wasm-local-index map and the per-local wasm value-type
-// vector, storing both on f.Wasm3ValueLocals / f.Wasm3LocalTypes.
-// Codegen does not yet consume these — that's Phase 2. The scaffold
-// exists so the harder later phases have something to verify
-// against and so a buggy place-values pass surfaces before genssa
-// depends on it.
+// The pass runs *alongside* regalloc (between flagalloc and regalloc
+// in the SSA pipeline), populating f.Wasm3ValueLocals and
+// f.Wasm3LocalTypes for the wasm3 backend's genssa path. Codegen
+// reads a value's per-value local via wasm3ValueLocalIdx; values the
+// pass skips (OpArg*, OpSelect*, OpPhi-of-memory, statement-mark
+// pseudo-ops) fall back to regalloc's register-local assignment.
 //
-// The placement strategy is the simplest correct one: every value
-// gets its own wasm local in schedule order, typed by its Go type
-// width. Function parameters (OpArgIntReg, OpArgFloatReg) consume
-// the first N local slots (matching wasm's "params are locals 0..N-1"
-// convention); the rest of the values get fresh locals afterward.
+// Phi resolution: OpPhi *is* placed (gets its own per-value local).
+// The wasm3 backend's ssaGenBlock emits a `local.get src; local.set
+// Lphi` copy on each incoming control-flow edge before the branch,
+// taking the role regalloc's destination-register-sharing scheme
+// plays for the register-local path.
+//
+// Placement strategy: every value that survives wasm3HasOutput gets
+// a fresh local in schedule order, typed via wasm3ValueType. The obj
+// backend declares them in fn.Wasm3LocalTypes order immediately
+// after the wasm function's parameter locals, so the absolute wasm-
+// local index is len(WasmType.Params) + Wasm3ValueLocals[v.ID].
 
 // Wasm value-type bytes from the binary format. Kept private to
 // avoid a circular import with cmd/internal/obj/wasm — when the obj
@@ -106,13 +110,20 @@ func wasm3HasOutput(v *Value) bool {
 		// fallback path (getReg(v.Reg()) → local.get <param>)
 		// reads them in place; no per-value-local copy needed.
 		return false
-	case OpPhi:
-		// Phi resolution (merging incoming locals into one) is a
-		// separate concern handled by a later phase. Phase 1 leaves
-		// them unplaced; the codegen path still uses v.Reg() so
-		// nothing breaks.
+	case OpSelect0, OpSelect1, OpSelectN:
+		// Tuple selectors get the same register as the underlying
+		// tuple element (regalloc.go line ~1519). The call
+		// placement loop already populates that register-local
+		// with the call result; the selector emits nothing on
+		// its own. Consumers reach it via getReg(v.Reg()) /
+		// register-local path, not a per-value local.
 		return false
 	}
+	// OpPhi is intentionally allowed through: a Phi gets its own
+	// per-value local, and the wasm3 backend emits explicit
+	// per-edge `local.get src; local.set Lphi` copies in
+	// ssaGenBlock before each control transfer, taking the place
+	// of regalloc's destination-register-sharing scheme.
 	return true
 }
 

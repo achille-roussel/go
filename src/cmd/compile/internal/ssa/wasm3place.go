@@ -90,6 +90,15 @@ func wasm3PlaceValues(f *Func) {
 
 	f.Wasm3ValueLocals = locals
 	f.Wasm3LocalTypes = types
+
+	// Publish to the underlying LSym's FuncInfo so the wasm3 obj
+	// backend (which runs after genssa in the same process) can read
+	// the placement without going through SSA-private data structures.
+	if ifn := f.Frontend().Func(); ifn != nil && ifn.LSym != nil {
+		fi := ifn.LSym.Func()
+		fi.Wasm3ValueLocals = locals
+		fi.Wasm3LocalTypes = types
+	}
 }
 
 // wasm3HasOutput reports whether v produces a value that needs a

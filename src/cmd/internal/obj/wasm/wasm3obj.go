@@ -859,6 +859,19 @@ func wasm3Locals(s *obj.LSym) (localOf map[int16]uint64, spillOf map[wasm3SpillK
 			declareSpill(&p.From, f64)
 		}
 	}
+
+	// M3 Phase 2: append per-value locals from the wasm3PlaceValues
+	// pass. Their wasm-local indices start at the current `next`
+	// counter (i.e. after all params, register-locals, and spill
+	// locals). Codegen does not yet reference these — Phase 3 flips
+	// ssaGenValue to consume the placement. Declaring them now is
+	// harmless (wasm allows unused locals) and proves the
+	// SSA-pass → obj-backend channel works.
+	for _, t := range fn.Wasm3LocalTypes {
+		decls = append(decls, wasm3LocalDecl{count: 1, typ: t})
+		next++
+	}
+
 	return localOf, spillOf, decls, prologue, next, true
 }
 

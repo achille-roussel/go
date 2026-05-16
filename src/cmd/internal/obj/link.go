@@ -506,6 +506,19 @@ type FuncInfo struct {
 	WasmExport *WasmExport
 	WasmType   *WasmType
 
+	// Wasm3ValueLocals is the SSA-value-ID-keyed wasm-local-index
+	// table the M3 regalloc-bypass pass (wasm3PlaceValues, see
+	// doc/wasm3-m3-no-regalloc.md) produces in-process. The wasm3
+	// obj backend reads it to allocate per-value wasm locals
+	// alongside the existing per-register and per-spill locals.
+	// Not serialised — both producer and consumer live in the same
+	// compiler invocation.
+	Wasm3ValueLocals []uint32
+	// Wasm3LocalTypes is parallel to Wasm3ValueLocals' indices:
+	// entry N gives the wasm value-type byte (0x7F=i32, 0x7E=i64,
+	// 0x7D=f32, 0x7C=f64) of the Nth per-value local.
+	Wasm3LocalTypes []byte
+
 	sehUnwindInfoSym *LSym
 }
 

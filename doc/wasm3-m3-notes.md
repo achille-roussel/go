@@ -159,6 +159,28 @@ This exercises strings, slices, struct pointers, method calls (which
 on a pointer receiver are direct, not interface dispatch — interface
 dispatch is its own checkpoint).
 
+## Progress
+
+**Stage A — encoder + linker plumbing for `struct.new`: ✅ DONE**
+(commit `250312fafb`). `objabi.R_WASMTYPE` relocation defined;
+`encodeWasm3Body` handles `AStructNew`/`AStructNewDefault` with a
+type-index operand; asm3.go's main loop merges the per-function
+wasmgc.Table *before* writing the body, then passes the remap to
+`writeWasm3FuncBody` so R_WASMTYPE relocations resolve to module-
+global type indices. The plumbing is exercised the moment Stage B
+emits the first AStructNew prog. Regression sweep still passes 14/14
+— nothing was broken by adding the plumbing.
+
+**Stage B — `newobject` intrinsic + ref-typed SSA values**: NEXT.
+The SSA op `Wasm3LoweredStructNew` needs to land alongside an SSA
+intrinsic that replaces `runtime.newobject(typ)` with a direct
+struct.new at the call site (no runtime call). The harder pre-req
+is plumbing ref-typed values through the SSA register allocator: a
+struct.new returns a `(ref $T)`, which can't be stored in an i64
+register. Either a new ref register class or a redesign of wasm3's
+register model is needed. Once that lands, the bump-allocator
+`runtime.newobject` shim can retire.
+
 ## Stretch — interfaces + closures
 
 `fmt.Println` (interface dispatch) + a higher-order `func` value

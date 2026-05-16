@@ -774,6 +774,29 @@ composite-typed exports needs the wrapper-side struct.new construction
 intrinsics (`newobject` → `struct.new`), interior pointers (§7), and
 the runtime fork (§3).
 
+### M2 heap allocation — ✅ `new(T)` works on a bump allocator
+
+The runtime fork now includes a transitional bump-allocator
+`newobject` (`src/runtime/newobject_wasm3.go`) so escape-promoted
+allocations and explicit `new(T)` calls have a body that doesn't
+trap. 1 MiB of static linear-memory backing, leak-forever, single-
+goroutine. Until the design's WasmGC `struct.new` intrinsic lands —
+the SSA backend will replace these runtime.newobject calls with
+direct struct.new opcodes — the bump allocator is the stand-in.
+
+Two related fixes:
+- `UseWriteBarrier()` returns false for GOARCH=wasm3, suppressing
+  `gcWriteBarrier{1..8}` emission. wasm3 has no GC; the assembly
+  stubs carry no typed wasm signatures so emitting calls to them
+  would fail validation.
+- The encoder now accepts `ACall` (wasm-explicit call, distinct
+  from `obj.ACALL`) — same lowering, both write `call` + R_CALL.
+
+End-to-end: a Go program with `makePoint(3,4) *Point`, a `makeList`
+linked list of 100 nodes, and recursive `fib(20)` compiles,
+validates, and runs to completion. A 14-case Node.js sweep passes
+14/14 including `listSum(100) = 5050` (allocates 100 heap nodes).
+
 ### M2 milestone — ✅ a real Go program with print runs end-to-end
 
 A program with arithmetic, recursion, loops, struct-by-value, and

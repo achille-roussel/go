@@ -438,6 +438,14 @@ const (
 	R_DWTXTADDR_U3
 	R_DWTXTADDR_U4
 
+	// R_WASMTYPE (GOARCH=wasm3 only) resolves to the module-global wasm
+	// type index of a WasmGC type. The relocation's Add field carries
+	// the per-package type index that the linker remaps to the global
+	// index via the per-function wasmgc.Table merge (see
+	// cmd/link/internal/wasm/asm3.go). Used by the operand of
+	// 0xFB-prefixed instructions such as struct.new and struct.get.
+	R_WASMTYPE
+
 	// R_WEAK marks the relocation as a weak reference.
 	// A weak relocation does not make the symbol it refers to reachable,
 	// and is only honored by the linker if the symbol is in some other way

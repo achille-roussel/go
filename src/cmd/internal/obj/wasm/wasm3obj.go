@@ -500,6 +500,25 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 				// AIf/AElse/AEnd/ABr are handled above (the branches
 				// rung); the rest are still bailout cases.
 				return nil, false
+
+			case AStructNew, AStructNewDefault:
+				// 0xFB-prefixed GC opcodes with a single type-index
+				// operand. The per-package type index lives in
+				// p.From.Offset; the linker remaps it to a module-
+				// global index via the per-function wasmgc.Table's
+				// merge result, with the R_WASMTYPE reloc telling the
+				// linker which leb128 slot to patch.
+				if p.From.Type != obj.TYPE_CONST {
+					return nil, false
+				}
+				writeOpcode(w, p.As)
+				relocs = append(relocs, obj.Reloc{
+					Type: objabi.R_WASMTYPE,
+					Off:  int32(w.Len()),
+					Siz:  1, // variable-sized; the linker writes the type index
+					Add:  p.From.Offset,
+				})
+				continue
 			}
 			writeOpcode(w, p.As)
 		}

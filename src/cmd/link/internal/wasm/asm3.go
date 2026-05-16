@@ -268,38 +268,43 @@ func asmb2_3(ctxt *ld.Link, ldr *loader.Loader) {
 	// assembleWasm3ImportWrapper) forwards directly to the host import,
 	// matching the wasm linker's convention. Their type comes from the
 	// WasmImport aux rather than WasmType.
+	//
+	// Order matters: the per-function wasmgc.Table is merged into the
+	// module table *before* writeWasm3FuncBody runs, so the resulting
+	// per-package→global remap is available when the body's
+	// R_WASMTYPE relocations need to be resolved.
 	var buildid []byte
 	m.funcs = make([]*wasm3Func, len(ctxt.Textp))
 	for i, fn := range ctxt.Textp {
-		wfn := new(bytes.Buffer)
 		var typeIx uint32
-		if ldr.SymName(fn) == "go:buildid" {
-			writeUleb128(wfn, 0) // number of sets of locals
-			wfn.WriteByte(0x0b)  // end
-			buildid = ldr.Data(fn)
-			typeIx = m.internFuncType(nil, nil)
-		} else {
-			writeWasm3FuncBody(ctxt, ldr, fn, wfn, hostImportMap)
+		var remap []int
+		if ldr.SymName(fn) != "go:buildid" {
 			if wsym := ldr.WasmImportSym(fn); wsym != 0 {
 				wi := readWasmImport(ldr, wsym)
 				typeIx = m.internFuncType(objStorages(wi.Params), objStorages(wi.Results))
 			} else if s := ldr.WasmTypeSym(fn); s != 0 {
 				var wt obj.WasmType
 				wt.Read(ldr.Data(s))
-				// Merge the function's per-package wasmgc.Table into
-				// the module-wide table. The remap table maps each
-				// per-function type index to the merged module index;
-				// it then rewrites every WasmRef field's Offset in the
-				// function signature so internFuncType sees module-
-				// global indices.
-				remap := m.mergeTable(wt.Table)
+				remap = m.mergeTable(wt.Table)
 				params := objStoragesRemapped(wt.Params, remap)
 				results := objStoragesRemapped(wt.Results, remap)
 				typeIx = m.internFuncType(params, results)
 			} else {
 				typeIx = m.internFuncType(nil, nil)
 			}
+		} else {
+			typeIx = m.internFuncType(nil, nil)
 		}
+
+		wfn := new(bytes.Buffer)
+		if ldr.SymName(fn) == "go:buildid" {
+			writeUleb128(wfn, 0) // number of sets of locals
+			wfn.WriteByte(0x0b)  // end
+			buildid = ldr.Data(fn)
+		} else {
+			writeWasm3FuncBody(ctxt, ldr, fn, wfn, hostImportMap, remap)
+		}
+
 		name := nameRegexp.ReplaceAllString(ldr.SymName(fn), "_")
 		m.funcs[i] = &wasm3Func{Name: name, TypeIx: typeIx, Code: wfn.Bytes()}
 	}
@@ -328,7 +333,12 @@ func asmb2_3(ctxt *ld.Link, ldr *loader.Loader) {
 // writeWasm3FuncBody copies a function's machine code into wfn,
 // resolving relocations. Unlike GOARCH=wasm, an R_CALL becomes a direct
 // function index (no funcValueOffset / PC_F encoding).
-func writeWasm3FuncBody(ctxt *ld.Link, ldr *loader.Loader, fn loader.Sym, wfn *bytes.Buffer, hostImportMap map[loader.Sym]int64) {
+//
+// `remap`, if non-nil, is the per-package→global type-index translation
+// table for the function's wasmgc.Table — used by R_WASMTYPE
+// relocations on 0xFB-prefixed GC opcodes (struct.new, struct.get,
+// etc.). Empty for functions whose signature uses only primitive types.
+func writeWasm3FuncBody(ctxt *ld.Link, ldr *loader.Loader, fn loader.Sym, wfn *bytes.Buffer, hostImportMap map[loader.Sym]int64, remap []int) {
 	relocs := ldr.Relocs(fn)
 	P := ldr.Data(fn)
 	off := int32(0)
@@ -354,6 +364,18 @@ func writeWasm3FuncBody(ctxt *ld.Link, ldr *loader.Loader, fn loader.Sym, wfn *b
 			writeSleb128(wfn, int64(len(hostImportMap))+ldr.SymValue(rs)>>16-funcValueOffset)
 		case objabi.R_WASMIMPORT:
 			writeSleb128(wfn, hostImportMap[rs])
+		case objabi.R_WASMTYPE:
+			// The relocation's Add carries the per-package type
+			// index; remap to the module-global index using the
+			// function's merged-table remap. Emitted as uleb128 (not
+			// sleb128) — wasm type indices are unsigned in the binary
+			// format.
+			pkgIx := int(r.Add())
+			if pkgIx < 0 || pkgIx >= len(remap) {
+				ldr.Errorf(fn, "R_WASMTYPE per-package index %d out of range for remap len %d", pkgIx, len(remap))
+				continue
+			}
+			writeUleb128(wfn, uint64(remap[pkgIx]))
 		default:
 			ldr.Errorf(fn, "bad reloc type %d for wasm3", r.Type())
 		}

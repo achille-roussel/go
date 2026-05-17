@@ -198,6 +198,13 @@ func ssaMarkMoves(s *ssagen.State, b *ssa.Block) {
 }
 
 func ssaGenBlock(s *ssagen.State, b, next *ssa.Block) {
+	// Trigger the relooper analysis on the first block of each
+	// function; the cached plan is the foundation later commits will
+	// drive scope-aware emission from. Shadow run for now — the plan
+	// is computed and stashed but does not affect codegen.
+	if b == b.Func.Entry {
+		planForFunc(b.Func)
+	}
 	switch b.Kind {
 	case ssa.BlockPlain, ssa.BlockDefer:
 		emitPhiCopies(s, b, b.Succs[0].Block())

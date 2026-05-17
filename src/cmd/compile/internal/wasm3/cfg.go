@@ -19,8 +19,13 @@ package wasm3
 // See doc/wasm3-m3-relooper-design.md for the overall plan.
 
 import (
+	"fmt"
+	"os"
 	"slices"
 	"sort"
+	"sync"
+
+	"cmd/compile/internal/ssa"
 )
 
 // cfgGraph is the minimal block-graph abstraction the relooper needs.
@@ -242,4 +247,171 @@ func (s *blockSet) len() int {
 		}
 	}
 	return n
+}
+
+// ssaCFGGraph wraps an *ssa.Func as a cfgGraph for the relooper. The
+// adapter holds a precomputed []*ssa.Block keyed by ID for O(1)
+// successor / predecessor lookups, since *ssa.Block already carries
+// its Succs / Preds slices.
+type ssaCFGGraph struct {
+	f      *ssa.Func
+	sdom   ssa.SparseTree
+	byID   []*ssa.Block // byID[id] == block with that ID; nil for dead/recycled IDs
+	bIDs   []int32      // every live block's ID in f.Blocks order (deterministic)
+}
+
+func newSSACFGGraph(f *ssa.Func) *ssaCFGGraph {
+	g := &ssaCFGGraph{f: f, sdom: f.Sdom()}
+	maxID := int32(0)
+	for _, b := range f.Blocks {
+		if int32(b.ID) > maxID {
+			maxID = int32(b.ID)
+		}
+	}
+	g.byID = make([]*ssa.Block, maxID+1)
+	g.bIDs = make([]int32, 0, len(f.Blocks))
+	for _, b := range f.Blocks {
+		g.byID[b.ID] = b
+		g.bIDs = append(g.bIDs, int32(b.ID))
+	}
+	return g
+}
+
+func (g *ssaCFGGraph) Entry() int32 { return int32(g.f.Entry.ID) }
+
+func (g *ssaCFGGraph) Blocks() []int32 { return g.bIDs }
+
+func (g *ssaCFGGraph) Succs(b int32) []int32 {
+	blk := g.byID[b]
+	if blk == nil {
+		return nil
+	}
+	out := make([]int32, len(blk.Succs))
+	for i, e := range blk.Succs {
+		out[i] = int32(e.Block().ID)
+	}
+	return out
+}
+
+func (g *ssaCFGGraph) Preds(b int32) []int32 {
+	blk := g.byID[b]
+	if blk == nil {
+		return nil
+	}
+	out := make([]int32, len(blk.Preds))
+	for i, e := range blk.Preds {
+		out[i] = int32(e.Block().ID)
+	}
+	return out
+}
+
+func (g *ssaCFGGraph) Dominates(dom, b int32) bool {
+	d := g.byID[dom]
+	x := g.byID[b]
+	if d == nil || x == nil {
+		return false
+	}
+	// SparseTree.IsAncestorEq(a, b) is true iff a dominates b
+	// (a block dominates itself).
+	return g.sdom.IsAncestorEq(d, x)
+}
+
+// reloopPlan is the result of running the structural analysis on a
+// function. Later commits will extend it with per-block scope
+// open/close decisions; for now it carries only the loop tree, which
+// is enough to validate the analysis runs against real compiled
+// functions without crashes.
+type reloopPlan struct {
+	loops          []*naturalLoop
+	hasIrreducible bool
+}
+
+// computeReloopPlan runs the full structural analysis on f. Safe to
+// call on any *ssa.Func, including ones with no back-edges (returns
+// an empty plan).
+//
+// Irreducibility detection is approximate at this stage — we flag a
+// function as irreducible if any block in a back-edge target's
+// natural loop has predecessors outside the body (typically a
+// multi-entry SCC). The dispatch-fallback wiring lands in a later
+// commit; for now the flag is informational only.
+func computeReloopPlan(f *ssa.Func) *reloopPlan {
+	g := newSSACFGGraph(f)
+	backs := findBackEdges(g)
+	loops := findNaturalLoops(g, backs)
+	nestLoops(loops)
+
+	// Approximate irreducibility check: for each loop, walk its body
+	// and look for a non-header block whose predecessor set includes
+	// at least one block outside the body. That is the canonical
+	// signature of a multi-entry SCC (e.g. goto into a loop body).
+	hasIrreducible := false
+	for _, l := range loops {
+		for _, id := range g.Blocks() {
+			if id == l.header || !l.body.has(id) {
+				continue
+			}
+			for _, p := range g.Preds(id) {
+				if !l.body.has(p) {
+					hasIrreducible = true
+					break
+				}
+			}
+			if hasIrreducible {
+				break
+			}
+		}
+		if hasIrreducible {
+			break
+		}
+	}
+
+	return &reloopPlan{loops: loops, hasIrreducible: hasIrreducible}
+}
+
+// reloopPlans caches the computed plan per *ssa.Func so the analysis
+// runs at most once per function. The map is populated lazily on
+// first call to planForFunc; subsequent calls in the same compilation
+// reuse the cached result.
+var reloopPlans sync.Map // *ssa.Func -> *reloopPlan
+
+// planForFunc returns the relooper plan for f, computing it the
+// first time and caching the result. Safe for concurrent use from
+// multiple compilation goroutines.
+func planForFunc(f *ssa.Func) *reloopPlan {
+	if cached, ok := reloopPlans.Load(f); ok {
+		return cached.(*reloopPlan)
+	}
+	plan := computeReloopPlan(f)
+	actual, loaded := reloopPlans.LoadOrStore(f, plan)
+	if !loaded && reloopDebug {
+		dumpReloopPlan(f.Name, newSSACFGGraph(f), plan)
+	}
+	return actual.(*reloopPlan)
+}
+
+// reloopDebug is enabled by GOWASM3_RELOOPER_DEBUG=1 in the
+// environment. When set, every function the compiler processes gets
+// its loop tree dumped to stderr — the early-stage validation that
+// the analysis behaves the same on real compiled functions as on the
+// unit-test CFGs.
+var reloopDebug = os.Getenv("GOWASM3_RELOOPER_DEBUG") == "1"
+
+// dumpReloopPlan prints a human-readable summary of plan to stderr.
+// Format: one line per function ("name: N loops, irreducible=Y/N"),
+// followed by one line per loop ("  loop header=bK depth=D
+// body=bA,bB,..."). Used only when reloopDebug is set.
+func dumpReloopPlan(funcName string, g cfgGraph, plan *reloopPlan) {
+	fmt.Fprintf(os.Stderr, "wasm3-relooper: %s: %d loops, irreducible=%v\n",
+		funcName, len(plan.loops), plan.hasIrreducible)
+	for _, l := range plan.loops {
+		var members []int32
+		for _, id := range g.Blocks() {
+			if l.body.has(id) {
+				members = append(members, id)
+			}
+		}
+		fmt.Fprintf(os.Stderr, "wasm3-relooper:   loop header=b%d depth=%d body=%v\n",
+			l.header, l.depth, members)
+	}
 }

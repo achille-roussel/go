@@ -6,10 +6,12 @@ package wasm3
 
 import (
 	"bytes"
+	"cmd/compile/internal/base"
 	"cmd/compile/internal/ir"
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
 	"cmd/internal/wasmgc"
+	"sync"
 )
 
 // wasmabi.go lowers Go function signatures to the typed-function
@@ -169,8 +171,12 @@ func attachWasmType(fn *ir.Func) {
 		fn.LSym.Func().WasmType = &obj.WasmType{WasmFuncType: sig}
 		return
 	}
-	if wt, ok := tryCollectorAttach(ft); ok {
+	if wt, c, ok := tryCollectorAttach(ft); ok {
 		fn.LSym.Func().WasmType = wt
+		// Hand the live collector to wasm3LiveCollector so codegen
+		// (ssaGenValue → wasm3RegisterStruct) can extend the table
+		// with body-emitted types and reserialise wt.Table.
+		wasm3StashCollector(fn.LSym.Func(), c)
 		return
 	}
 }
@@ -214,24 +220,84 @@ func tryPrimitiveAttach(ft *types.Type) (obj.WasmFuncType, bool) {
 // 3) and interfaces (collector: 2 refs; regabi: 2 ints — same count
 // but ref/i64 type mismatch). Structs by value generally match because
 // both lowerings flatten field-by-field.
-func tryCollectorAttach(ft *types.Type) (wt *obj.WasmType, ok bool) {
+// wasm3LiveCollector maps the FuncInfo of every wasm3 function under
+// compilation to the typeCollector that built its signature table.
+// Codegen (ssaGenValue) uses it to register additional types
+// referenced by struct.new / struct.get / etc. that aren't part of
+// the function's signature, and reserialise the resulting table back
+// to fi.WasmType.Table so the linker sees the union.
+//
+// Stash is keyed on the FuncInfo pointer (the *obj.FuncInfo is
+// reachable from ssagen.State via FuncInfo()); entries live for the
+// lifetime of the compilation. Cleanup-on-finish isn't critical
+// because the compiler is short-lived, but a future maybe-leak-fix
+// could clear each entry in a PostGenssa hook.
+var wasm3LiveCollector sync.Map // map[*obj.FuncInfo]*typeCollector
+
+// wasm3RegisterStruct registers the Go struct type t with fi's
+// per-function wasmgc.Table, returning its module-internal type
+// index. Idempotent — repeated calls for the same t return the same
+// index. Used by wasm3 SSA codegen to plumb R_WASMTYPE relocations
+// on body-emitted GC ops (struct.new, struct.get, ref.cast, ...) the
+// way the signature lowering already plumbs them for the WasmType
+// signature's ref fields.
+//
+// If fi has no live collector (typically a function whose signature
+// lowering used tryPrimitiveAttach rather than tryCollectorAttach),
+// this allocates a fresh one and attaches its bytes to a freshly-
+// created WasmType — so any wasm3 function can register types
+// without needing the typeCollector path to have run first.
+func wasm3RegisterStruct(fi *obj.FuncInfo, t *types.Type) uint32 {
+	if fi == nil {
+		base.Fatalf("wasm3RegisterStruct: fi is nil")
+	}
+	cAny, ok := wasm3LiveCollector.Load(fi)
+	var c *typeCollector
+	if ok {
+		c = cAny.(*typeCollector)
+	} else {
+		c = newTypeCollector()
+		wasm3LiveCollector.Store(fi, c)
+		if fi.WasmType == nil {
+			fi.WasmType = &obj.WasmType{}
+		}
+	}
+	idx := c.collectBox(t)
+	var b bytes.Buffer
+	c.table.Write(&b)
+	fi.WasmType.Table = b.Bytes()
+	return uint32(idx)
+}
+
+// wasm3StashCollector hands off c to the wasm3LiveCollector map so
+// codegen can register additional types into it. Called from
+// tryCollectorAttach once the signature collector is built — the
+// signature already populated the table with all ref fields, so
+// codegen starts from there rather than from a fresh prelude-only
+// collector.
+func wasm3StashCollector(fi *obj.FuncInfo, c *typeCollector) {
+	wasm3LiveCollector.Store(fi, c)
+}
+
+func tryCollectorAttach(ft *types.Type) (wt *obj.WasmType, c *typeCollector, ok bool) {
 	for _, p := range ft.RecvParams() {
 		if !collectorMatchesRegabi(p.Type) {
-			return nil, false
+			return nil, nil, false
 		}
 	}
 	for _, r := range ft.Results() {
 		if !collectorMatchesRegabi(r.Type) {
-			return nil, false
+			return nil, nil, false
 		}
 	}
 	defer func() {
 		if r := recover(); r != nil {
 			wt = nil
+			c = nil
 			ok = false
 		}
 	}()
-	c := newTypeCollector()
+	c = newTypeCollector()
 	sig := c.loweredSignature(ft)
 	wt = &obj.WasmType{WasmFuncType: sig}
 	// Emit the per-function table whenever any field references a wasm
@@ -246,7 +312,8 @@ func tryCollectorAttach(ft *types.Type) (wt *obj.WasmType, ok bool) {
 		c.table.Write(&b)
 		wt.Table = b.Bytes()
 	}
-	return wt, true
+	ok = true
+	return
 }
 
 // collectorMatchesRegabi reports whether t's typeCollector lowering

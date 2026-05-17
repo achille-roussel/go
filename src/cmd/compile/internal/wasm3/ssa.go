@@ -729,15 +729,18 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		for _, a := range v.Args {
 			getValue64(s, a)
 		}
-		s.Prog(wasm.AStructNew)
+		p := s.Prog(wasm.AStructNew)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterStructAux(s, v))}
 
 	case ssa.OpWasm3StructNewDefault:
-		s.Prog(wasm.AStructNewDefault)
+		p := s.Prog(wasm.AStructNewDefault)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterStructAux(s, v))}
 
 	case ssa.OpWasm3StructGet:
 		getValue64(s, v.Args[0])
 		p := s.Prog(wasm.AStructGet)
-		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: v.AuxInt}
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterStructAux(s, v))}
+		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: v.AuxInt}
 
 	case ssa.OpWasm3ArrayNew:
 		getValue64(s, v.Args[0])
@@ -1041,6 +1044,20 @@ func emitPhiCopies(s *ssagen.State, b, succ *ssa.Block) {
 			}
 		}
 	}
+}
+
+// wasm3RegisterStructAux extracts the *types.Type from v.Aux and
+// registers it with the function's per-function wasmgc.Table,
+// returning its module-internal type index. Used by the codegen
+// path for OpWasm3StructNew / OpWasm3StructNewDefault /
+// OpWasm3StructGet / OpWasm3StructSet: the encoder needs a per-
+// package type index so the linker can emit the R_WASMTYPE reloc.
+func wasm3RegisterStructAux(s *ssagen.State, v *ssa.Value) uint32 {
+	t, ok := v.Aux.(*types.Type)
+	if !ok {
+		v.Fatalf("wasm3RegisterStructAux: v.Aux is not *types.Type: %T", v.Aux)
+	}
+	return wasm3RegisterStruct(s.FuncInfo(), t)
 }
 
 // wasm3AllocTempLocal appends a per-value local of the type

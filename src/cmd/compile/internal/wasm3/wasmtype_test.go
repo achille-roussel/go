@@ -301,6 +301,45 @@ func TestCollectMutuallyRecursiveStructs(t *testing.T) {
 	}
 }
 
+// TestCollectArrayField locks in the M3 Stage D representation:
+// a Go `[N]T` array field inside a struct lowers to a single
+// `(ref (array T))` field, regardless of N. The pre-Stage-D
+// representation unrolled into N*len(elem) flat fields, which
+// blew past wasmparser's ~10000-field engine limit for struct
+// types containing large buffers (the go-test wasip1 binary
+// blocker). One representation for all arrays — see
+// doc/wasm3-m3-notes.md.
+func TestCollectArrayField(t *testing.T) {
+	for _, n := range []int64{1, 4, 256, 65504} {
+		t.Run(typeName(types.Types[types.TINT32]), func(t *testing.T) {
+			st := types.NewStruct([]*types.Field{
+				field("buf", types.NewArray(types.Types[types.TINT32], n)),
+				field("tag", types.Types[types.TINT64]),
+			})
+			c := newTypeCollector()
+			idx := c.collectStruct(st)
+			got := c.table[idx]
+			if got.Kind != wasmgc.KindStruct {
+				t.Fatalf("collected struct kind=%d, want struct", got.Kind)
+			}
+			if len(got.Fields) != 2 {
+				t.Fatalf("collected struct for [%d]int32: got %d fields, want 2 (one ref to array + one i64 tag)", n, len(got.Fields))
+			}
+			refField := got.Fields[0]
+			if !refField.Storage.IsRef() {
+				t.Errorf("buf field storage = %+v, want a ref storage", refField.Storage)
+			}
+			if backing := c.table[refField.Storage.RefType]; backing.Kind != wasmgc.KindArray {
+				t.Errorf("buf field refers to type[%d] kind=%d, want array", refField.Storage.RefType, backing.Kind)
+			}
+			if got.Fields[1].Storage != (wasmgc.PrimStorage(wasmgc.I64)) {
+				t.Errorf("tag field storage = %+v, want i64", got.Fields[1].Storage)
+			}
+			checkDependencyOrder(t, c.table)
+		})
+	}
+}
+
 func TestEncodedCollectedTypesValidate(t *testing.T) {
 	// A program-like mix: a recursive struct, a struct with a string
 	// and a slice, mutually recursive structs, and a pointer to a

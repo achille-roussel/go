@@ -552,19 +552,29 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			// Instead, we delay the generation to when the value is used and then directly generate it on the WebAssembly stack.
 			return
 		}
-		ssaGenValueOnStack(s, v, true)
-		if s.OnWasmStackSkipped != 0 {
-			panic("wasm: bad stack")
-		}
-		// M3 Phase 3b: prefer the per-value local placed by
-		// wasm3PlaceValues; fall back to the regalloc-assigned
-		// register-local for the values place-values skipped
-		// (OpArg*, etc.). Phis are placed and resolved via
-		// emitPhiCopies on each outgoing edge.
-		if idx, ok := wasm3ValueLocalIdx(s, v); ok {
-			localSetIdx(s, idx)
-		} else {
+		if idx, ok := wasm3ValueLocalIdx(s, v); !ok {
+			switch v.Op {
+			case ssa.OpWasm3I64Const, ssa.OpWasm3F32Const, ssa.OpWasm3F64Const:
+				// Rematerialized const for register-share Phi
+				// resolution. emitPhiCopies / readPhiSource will
+				// recreate the const inline at each Phi edge that
+				// reads it. Skip the original emit + setReg
+				// entirely so the regalloc-assigned register-local
+				// stays unreferenced (and undeclared by the obj
+				// backend's wasm3Locals scan).
+				return
+			}
+			ssaGenValueOnStack(s, v, true)
+			if s.OnWasmStackSkipped != 0 {
+				panic("wasm: bad stack")
+			}
 			setReg(s, v.Reg())
+		} else {
+			ssaGenValueOnStack(s, v, true)
+			if s.OnWasmStackSkipped != 0 {
+				panic("wasm: bad stack")
+			}
+			localSetIdx(s, idx)
 		}
 	}
 }
@@ -957,6 +967,25 @@ func readPhiSource(s *ssagen.State, v *ssa.Value) {
 	}
 	if idx, ok := wasm3ValueLocalIdx(s, v); ok {
 		localGetIdx(s, idx)
+		return
+	}
+	// Rematerialized constants: regalloc duplicates rematerializable
+	// const values (one per use site under register-sharing Phi
+	// resolution). The duplicates land at value IDs past the place-
+	// values pass and have no per-value local. Recreate the const
+	// inline at the read site rather than going through getReg's
+	// register-local — the inline emit is smaller (1-2 bytes for
+	// the const opcode vs 2 bytes for `local.get N` + a wasted
+	// register-local declaration).
+	switch v.Op {
+	case ssa.OpWasm3I64Const:
+		i64Const(s, v.AuxInt)
+		return
+	case ssa.OpWasm3F32Const:
+		f32Const(s, v.AuxFloat())
+		return
+	case ssa.OpWasm3F64Const:
+		f64Const(s, v.AuxFloat())
 		return
 	}
 	if _, isReg := v.Block.Func.RegAlloc[v.ID].(*ssa.Register); isReg {

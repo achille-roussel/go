@@ -324,6 +324,30 @@ func init() {
 		// Indexing on a Wasm3MakeSlice-derived OpSlicePtr lowers via
 		// Wasm3.rules to ArrayGet / ArraySet on the ref.
 		{name: "MakeSlice", argLength: 3, reg: gp21, aux: "Typ", typ: "BytePtr"},
+
+		// M3 Stage E phase 3: sub-slicing `s[lo:hi:cap]` on a wasmgc-
+		// backed slice. The wasm3 backend cannot do pointer arithmetic
+		// on the backing ref, so the standard `rptr = ptr + lo*stride`
+		// path that ssagen.slice() emits would generate an invalid
+		// `i64.add anyref i64`. This op instead allocates a fresh
+		// backing of `cap` elements and array.copies `len` elements
+		// from orig_backing[lo..lo+len] into new[0..len]. The result
+		// is the new backing ref, sized correctly for both indexing
+		// and append-within-cap (the trailing cap-len slots stay zero
+		// from array.new_default).
+		//
+		// arg0=orig_backing (anyref), arg1=lo (i32), arg2=len (i32),
+		// arg3=cap (i32), arg4=mem. v.Aux is the slice's *types.Type
+		// — wasm3RegisterArrayAux resolves the elem backing index.
+		//
+		// SEMANTIC DIFFERENCE: writes to the sub-slice do not
+		// propagate to the parent, because the backings are
+		// physically distinct. The design-doc's (ref backing, off,
+		// len, cap) header would share backing and adjust offset
+		// instead; that's a deeper change blocked on an SSA-level
+		// slice representation rework. Documented in
+		// doc/wasm3-m3-notes.md "Stage E phase 3 — sub-slicing".
+		{name: "SubSlice", argLength: 5, reg: regInfo{inputs: []regMask{gp, gp, gp, gp}, outputs: []regMask{gp}}, aux: "Typ", typ: "BytePtr"},
 	}
 
 	archs = append(archs, arch{

@@ -673,6 +673,22 @@ func (b *Block) NewValue4I(pos src.XPos, op Op, t *types.Type, auxint int64, arg
 	return v
 }
 
+// NewValue5A returns a new value in the block with five arguments and an aux value.
+// Added for OpWasm3SubSlice (backing, lo, len, cap, mem) where the aux is the
+// slice's *types.Type.
+func (b *Block) NewValue5A(pos src.XPos, op Op, t *types.Type, aux Aux, arg0, arg1, arg2, arg3, arg4 *Value) *Value {
+	v := b.Func.newValue(op, t, b, pos)
+	v.AuxInt = 0
+	v.Aux = aux
+	v.Args = []*Value{arg0, arg1, arg2, arg3, arg4}
+	arg0.Uses++
+	arg1.Uses++
+	arg2.Uses++
+	arg3.Uses++
+	arg4.Uses++
+	return v
+}
+
 // constVal returns a constant value for c.
 func (f *Func) constVal(op Op, t *types.Type, c int64, setAuxInt bool) *Value {
 	if f.constants == nil {

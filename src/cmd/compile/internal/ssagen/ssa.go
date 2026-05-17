@@ -1354,6 +1354,13 @@ func (s *state) newValue4I(op ssa.Op, t *types.Type, aux int64, arg0, arg1, arg2
 	return s.curBlock.NewValue4I(s.peekPos(), op, t, aux, arg0, arg1, arg2, arg3)
 }
 
+// newValue5A adds a new value with five arguments and an aux value to the
+// current block. Used by Stage E phase 3 (wasm3) to build OpWasm3SubSlice
+// — see ssa.go's slice() handler.
+func (s *state) newValue5A(op ssa.Op, t *types.Type, aux ssa.Aux, arg0, arg1, arg2, arg3, arg4 *ssa.Value) *ssa.Value {
+	return s.curBlock.NewValue5A(s.peekPos(), op, t, aux, arg0, arg1, arg2, arg3, arg4)
+}
+
 func (s *state) entryBlock() *ssa.Block {
 	b := s.f.Entry
 	if base.Flag.N > 0 && s.curBlock != nil {
@@ -5868,6 +5875,42 @@ func (s *state) slice(v, i, j, k *ssa.Value, bounded bool) (p, l, c *ssa.Value) 
 	if (i.Op == ssa.OpConst64 || i.Op == ssa.OpConst32) && i.AuxInt == 0 {
 		// No pointer arithmetic necessary.
 		return ptr, rlen, rcap
+	}
+
+	// M3 Stage E phase 3 (wasm3): sub-slicing of a TSLICE-typed value
+	// can't do pointer arithmetic on the backing ref; emit an
+	// OpWasm3SubSlice that allocates a fresh backing of rcap elements
+	// and array.copies rlen elements from orig[i..i+rlen] into the
+	// new backing. The result is a new "ptr" the lowering rules
+	// treat the same way as a make-slice result. NOTE: this
+	// physically separates the new slice's backing from the parent
+	// — writes to the sub-slice do not propagate. See
+	// doc/wasm3-m3-notes.md "Stage E phase 3".
+	//
+	// String sub-slicing (t.IsString()) still goes through the
+	// standard OpAddPtr path; strings are linear-memory-pointer-
+	// backed in the current wasm3 wedge and don't need this. The
+	// (ptr-to-array) case (t.IsPtr) only fires for `s := a[i:]` on
+	// a Go array; arrays in wasm3 lower to (ref (array T)) too, and
+	// pointer arithmetic on them has the same problem — handled by
+	// the same OpWasm3SubSlice op (the input ptr is anyref, output
+	// is anyref).
+	if buildcfg.GOARCH == "wasm3" && (v.Type.IsSlice() || (v.Type.IsPtr() && v.Type.Elem().IsArray())) {
+		// SubSlice expects i32-sized lo/len/cap. The SSA passes them
+		// as TINT (i64 on wasm3) — codegen does the i32.wrap.
+		// Aux: the slice's *types.Type so wasm3RegisterArrayAux can
+		// recover the element backing index. For a (*[N]T) input
+		// the element type is t.Elem().Elem(); for a slice input
+		// it's t.Elem().
+		var auxTyp *types.Type
+		if v.Type.IsSlice() {
+			auxTyp = v.Type
+		} else {
+			// (*[N]T) input — synthesize a []ElemT for the helper.
+			auxTyp = types.NewSlice(v.Type.Elem().Elem())
+		}
+		rptr := s.newValue5A(ssa.OpWasm3SubSlice, ptr.Type, auxTyp, ptr, i, rlen, rcap, s.mem())
+		return rptr, rlen, rcap
 	}
 
 	// Calculate the base pointer (rptr) for the new slice.

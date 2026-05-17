@@ -617,6 +617,69 @@
 	&& off == 0 && t.Elem().Size() == 1 =>
 	(ArrayGet <typ.UInt8> {t} sm idx)
 
+// M3 Stage E phase 3: sub-slice element access. Same shape as MakeSlice
+// rules — SubSlice produces an anyref to a fresh deep-copied backing,
+// indexed identically to a make-slice backing.
+
+(I64Store [off] sm:(SubSlice {t} _ _ _ _ _) val mem) && t.Elem().Size() == 8 =>
+	(ArraySet {t} sm (I64Const <typ.Int> [off/8]) val mem)
+(I64Store32 [off] sm:(SubSlice {t} _ _ _ _ _) val mem) && t.Elem().Size() == 4 =>
+	(ArraySet {t} sm (I64Const <typ.Int> [off/4]) val mem)
+(I64Store16 [off] sm:(SubSlice {t} _ _ _ _ _) val mem) && t.Elem().Size() == 2 =>
+	(ArraySet {t} sm (I64Const <typ.Int> [off/2]) val mem)
+(I64Store8 [off] sm:(SubSlice {t} _ _ _ _ _) val mem) && t.Elem().Size() == 1 =>
+	(ArraySet {t} sm (I64Const <typ.Int> [off]) val mem)
+
+(I64Store [off] (I64Add sm:(SubSlice {t} _ _ _ _ _) (I64Shl idx (I64Const [k]))) val mem)
+	&& off == 0 && t.Elem().Size() == 8 && k == 3 =>
+	(ArraySet {t} sm idx val mem)
+(I64Store32 [off] (I64Add sm:(SubSlice {t} _ _ _ _ _) (I64Shl idx (I64Const [k]))) val mem)
+	&& off == 0 && t.Elem().Size() == 4 && k == 2 =>
+	(ArraySet {t} sm idx val mem)
+(I64Store16 [off] (I64Add sm:(SubSlice {t} _ _ _ _ _) (I64Shl idx (I64Const [k]))) val mem)
+	&& off == 0 && t.Elem().Size() == 2 && k == 1 =>
+	(ArraySet {t} sm idx val mem)
+(I64Store8 [off] (I64Add sm:(SubSlice {t} _ _ _ _ _) idx) val mem)
+	&& off == 0 && t.Elem().Size() == 1 =>
+	(ArraySet {t} sm idx val mem)
+
+(I64Load [off] sm:(SubSlice {t} _ _ _ _ _) _) && t.Elem().Size() == 8 =>
+	(ArrayGet <typ.Int64> {t} sm (I64Const <typ.Int> [off/8]))
+(I64Load32S [off] sm:(SubSlice {t} _ _ _ _ _) _) && t.Elem().Size() == 4 =>
+	(ArrayGet <typ.Int32> {t} sm (I64Const <typ.Int> [off/4]))
+(I64Load32U [off] sm:(SubSlice {t} _ _ _ _ _) _) && t.Elem().Size() == 4 =>
+	(ArrayGet <typ.UInt32> {t} sm (I64Const <typ.Int> [off/4]))
+(I64Load16S [off] sm:(SubSlice {t} _ _ _ _ _) _) && t.Elem().Size() == 2 =>
+	(ArrayGet <typ.Int16> {t} sm (I64Const <typ.Int> [off/2]))
+(I64Load16U [off] sm:(SubSlice {t} _ _ _ _ _) _) && t.Elem().Size() == 2 =>
+	(ArrayGet <typ.UInt16> {t} sm (I64Const <typ.Int> [off/2]))
+(I64Load8S [off] sm:(SubSlice {t} _ _ _ _ _) _) && t.Elem().Size() == 1 =>
+	(ArrayGet <typ.Int8> {t} sm (I64Const <typ.Int> [off]))
+(I64Load8U [off] sm:(SubSlice {t} _ _ _ _ _) _) && t.Elem().Size() == 1 =>
+	(ArrayGet <typ.UInt8> {t} sm (I64Const <typ.Int> [off]))
+
+(I64Load [off] (I64Add sm:(SubSlice {t} _ _ _ _ _) (I64Shl idx (I64Const [k]))) _)
+	&& off == 0 && t.Elem().Size() == 8 && k == 3 =>
+	(ArrayGet <typ.Int64> {t} sm idx)
+(I64Load32S [off] (I64Add sm:(SubSlice {t} _ _ _ _ _) (I64Shl idx (I64Const [k]))) _)
+	&& off == 0 && t.Elem().Size() == 4 && k == 2 =>
+	(ArrayGet <typ.Int32> {t} sm idx)
+(I64Load32U [off] (I64Add sm:(SubSlice {t} _ _ _ _ _) (I64Shl idx (I64Const [k]))) _)
+	&& off == 0 && t.Elem().Size() == 4 && k == 2 =>
+	(ArrayGet <typ.UInt32> {t} sm idx)
+(I64Load16S [off] (I64Add sm:(SubSlice {t} _ _ _ _ _) (I64Shl idx (I64Const [k]))) _)
+	&& off == 0 && t.Elem().Size() == 2 && k == 1 =>
+	(ArrayGet <typ.Int16> {t} sm idx)
+(I64Load16U [off] (I64Add sm:(SubSlice {t} _ _ _ _ _) (I64Shl idx (I64Const [k]))) _)
+	&& off == 0 && t.Elem().Size() == 2 && k == 1 =>
+	(ArrayGet <typ.UInt16> {t} sm idx)
+(I64Load8S [off] (I64Add sm:(SubSlice {t} _ _ _ _ _) idx) _)
+	&& off == 0 && t.Elem().Size() == 1 =>
+	(ArrayGet <typ.Int8> {t} sm idx)
+(I64Load8U [off] (I64Add sm:(SubSlice {t} _ _ _ _ _) idx) _)
+	&& off == 0 && t.Elem().Size() == 1 =>
+	(ArrayGet <typ.UInt8> {t} sm idx)
+
 // M3 Stage E phase 2.D: ref-backed slice element access on a slice
 // parameter. The slice's data pointer arrives as an OpArgIntReg whose
 // per-value local is anyref (because the wasm signature's matching

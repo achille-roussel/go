@@ -865,6 +865,74 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p := s.Prog(wasm.AArrayNewDefault)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterArrayAux(s, v))}
 
+	case ssa.OpWasm3SubSlice:
+		// M3 Stage E phase 3: sub-slicing via deep copy. arg0 =
+		// orig_backing (anyref), arg1 = lo (i64), arg2 = len (i64),
+		// arg3 = cap (i64), arg4 = mem. v.Aux is the slice type;
+		// the elem-keyed backing index resolves via
+		// wasm3RegisterArrayAux. The emitted sequence allocates a
+		// fresh backing of `cap` elements and array.copies `len`
+		// elements out of orig_backing starting at lo:
+		//
+		//     i32.wrap(cap); array.new_default $T_elem ;; new backing
+		//     local.tee $tmp                                 ;; stash + leave on stack
+		//     i32.const 0                                    ;; dst offset
+		//     ref.cast (ref $T_elem) orig_backing            ;; typed src
+		//     i32.wrap(lo)                                   ;; src offset
+		//     i32.wrap(len)                                  ;; element count
+		//     array.copy $T_elem $T_elem                     ;; dst already on stack
+		//     local.get $tmp                                 ;; result: new backing
+		//
+		// $tmp is a scratch anyref local allocated via
+		// wasm3AllocTempLocal. The default case's localSetIdx
+		// fall-through then stores the result in v's per-value
+		// local.
+		arrIdx := int64(wasm3RegisterArrayAux(s, v))
+		tmpLocal := wasm3AllocAnyrefTempLocal(s)
+
+		// Allocate new backing of `cap` elements.
+		getValue64(s, v.Args[3])
+		s.Prog(wasm.AI32WrapI64)
+		pNew := s.Prog(wasm.AArrayNewDefault)
+		pNew.From = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdx}
+
+		// Stash the new backing in $tmp and leave a copy on the stack
+		// (which will become array.copy's dst arg). The encoder for
+		// ALocalSet/Tee reads the local index from p.To, not p.From.
+		// $tmp is anyref-typed, so the value left on the stack after
+		// tee is anyref. array.copy's dst slot needs the typed
+		// (ref $T) — re-cast.
+		pTee := s.Prog(wasm.ALocalTee)
+		pTee.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(tmpLocal)}
+		pCastDst := s.Prog(wasm.ARefCast)
+		pCastDst.From = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdx}
+
+		// dst offset = 0
+		i32Const(s, 0)
+
+		// Push the typed src: ref.cast orig_backing to (ref $T_elem).
+		getValue64(s, v.Args[0])
+		pCastSrc := s.Prog(wasm.ARefCast)
+		pCastSrc.From = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdx}
+
+		// src offset = lo, count = len.
+		getValue64(s, v.Args[1])
+		s.Prog(wasm.AI32WrapI64)
+		getValue64(s, v.Args[2])
+		s.Prog(wasm.AI32WrapI64)
+
+		// array.copy $T_elem $T_elem. The encoder takes two
+		// type-index operands: dst-array type (From) and src-array
+		// type (To). Both are the same here — the new backing has
+		// the same elem-type as orig_backing.
+		pCopy := s.Prog(wasm.AArrayCopy)
+		pCopy.From = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdx}
+		pCopy.To = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdx}
+
+		// Push the new backing as the op result.
+		pGet := s.Prog(wasm.ALocalGet)
+		pGet.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(tmpLocal)}
+
 	case ssa.OpWasm3StackArray:
 		// M3 Stage D: stack-allocated `var buf [N]T` auto. The
 		// SSA-side replacement for the OpLocalAddr ssagen would
@@ -1172,6 +1240,24 @@ func wasm3RegisterArrayAux(s *ssagen.State, v *ssa.Value) uint32 {
 		v.Fatalf("wasm3RegisterArrayAux: v.Aux is not an array or slice type: %v", t)
 	}
 	return wasm3RegisterArrayBacking(s.FuncInfo(), t.Elem())
+}
+
+// wasm3AllocAnyrefTempLocal appends a fresh anyref scratch local to
+// the function's local-types vector and returns its absolute wasm
+// local index. Used by OpWasm3SubSlice (and any other op that
+// needs to stash a ref between intermediate wasm stack states).
+func wasm3AllocAnyrefTempLocal(s *ssagen.State) uint32 {
+	fi := s.FuncInfo()
+	if fi == nil {
+		panic("wasm3AllocAnyrefTempLocal: no FuncInfo")
+	}
+	idx := uint32(len(fi.Wasm3LocalTypes))
+	fi.Wasm3LocalTypes = append(fi.Wasm3LocalTypes, 0x6E) // anyref
+	base := uint32(0)
+	if wt := fi.WasmType; wt != nil {
+		base = uint32(len(wt.Params))
+	}
+	return base + idx
 }
 
 // wasm3AllocTempLocal appends a per-value local of the type

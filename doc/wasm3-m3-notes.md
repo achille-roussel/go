@@ -674,6 +674,20 @@ What still breaks (the next session's gate):
     validation with "expected i64, found anyref" on every
     `copy()` of a wasmgc-backed slice.
 
+    **Update (attempted, reverted):** the obvious SSA intrinsic
+    on `runtime.memmove` blows up: there are THREE distinct
+    walk-side memmove emission sites (walkCopy inline,
+    assign.go's append-many path, builtin.go's makeslicecopy),
+    plus inlining can clone the call into a different
+    `*ir.CallExpr` than the one walkCopy stashed against.
+    Stashing the elem type by CallExpr identity fails when
+    the post-inline call is a clone. The right shape is
+    probably a NEW dedicated runtime symbol
+    (`runtime.wasm3SliceCopy`) that walkCopy on wasm3 emits
+    instead of memmove — runtime-internal memmove callers
+    don't trigger the intrinsic, and the elem-type can ride
+    along as an explicit rtype arg (like makeslice's pattern).
+
     **Hunch: take the SSA-time intrinsification route.** Two
     paths considered:
 

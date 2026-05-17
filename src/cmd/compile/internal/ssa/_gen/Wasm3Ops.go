@@ -293,7 +293,7 @@ func init() {
 		{name: "StructSet", argLength: 2, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "Typ", typ: "Mem"},    // struct.set $Aux AuxInt; arg0=struct, arg1=value
 		{name: "ArrayNew", argLength: 2, reg: gp21, aux: "Typ"},                                               // array.new $Aux; arg0=element value, arg1=length
 		{name: "ArrayNewDefault", argLength: 1, reg: gp11, aux: "Typ"},                                        // array.new_default $Aux; arg0=length
-		{name: "ArrayGet", argLength: 2, reg: gp21, aux: "Typ"},                                               // array.get $Aux; arg0=array, arg1=index
+		{name: "ArrayGet", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}, outputs: []regMask{gp}}, aux: "Typ"}, // array.get $Aux; arg0=array, arg1=index, arg2=mem (ordering only — array elements are mutable, so reads must order against ArraySet writes)
 		{name: "ArraySet", argLength: 4, reg: regInfo{inputs: []regMask{gp, gp, gp}}, aux: "Typ", typ: "Mem"}, // array.set $Aux; arg0=array, arg1=index, arg2=value, arg3=mem; returns mem
 		{name: "ArrayLen", argLength: 1, reg: gp11, typ: "Int64"},                                             // array.len; arg0=array
 		{name: "RefNull", argLength: 0, reg: gp01, aux: "Typ", rematerializeable: true},                       // ref.null $Aux

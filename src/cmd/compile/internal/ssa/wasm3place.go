@@ -250,6 +250,16 @@ func wasm3ValueType(v *Value) byte {
 	return wasm3ValI64
 }
 
+// Wasm3IsAnyrefValue reports whether v's per-value wasm local is
+// declared as anyref (per wasm3ValueType). Used by the wasm3 obj
+// backend to special-case comparisons on ref-typed values — an
+// I64Ne between two anyref locals must lower to `ref.eq; i32.eqz`
+// (and I64Eqz on an anyref to `ref.is_null`), since `i64.ne` is
+// invalid against anyref operands.
+func Wasm3IsAnyrefValue(v *Value) bool {
+	return wasm3ValueType(v) == wasm3ValAnyref
+}
+
 // Wasm3SliceArgElemType reports the slice element *types.Type for v
 // when v is an OpArgIntReg corresponding to a TSLICE parameter's
 // data-pointer field. Returns nil if v is not a slice-ptr OpArg

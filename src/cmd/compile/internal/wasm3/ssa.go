@@ -669,13 +669,40 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: v.AuxInt}
 
 	case ssa.OpWasm3I64Eqz:
+		// Stage E phase 2.D follow-up: when arg0's per-value local
+		// is anyref (the slice-ptr / ref-typed case), `i64.eqz` is
+		// invalid. Emit `ref.is_null` instead — same boolean
+		// semantics (true when the ref is null).
 		getValue64(s, v.Args[0])
-		s.Prog(v.Op.Asm())
+		if ssa.Wasm3IsAnyrefValue(v.Args[0]) {
+			s.Prog(wasm.ARefIsNull)
+		} else {
+			s.Prog(v.Op.Asm())
+		}
 		if extend {
 			s.Prog(wasm.AI64ExtendI32U)
 		}
 
-	case ssa.OpWasm3I64Eq, ssa.OpWasm3I64Ne, ssa.OpWasm3I64LtS, ssa.OpWasm3I64LtU, ssa.OpWasm3I64GtS, ssa.OpWasm3I64GtU, ssa.OpWasm3I64LeS, ssa.OpWasm3I64LeU, ssa.OpWasm3I64GeS, ssa.OpWasm3I64GeU,
+	case ssa.OpWasm3I64Eq, ssa.OpWasm3I64Ne:
+		// Stage E phase 2.D follow-up: ref-typed equality. When both
+		// operands' per-value locals are anyref, lower to `ref.eq`
+		// (i32 result, same boolean semantics as i64.eq). For I64Ne
+		// flip with `i32.eqz`.
+		getValue64(s, v.Args[0])
+		getValue64(s, v.Args[1])
+		if ssa.Wasm3IsAnyrefValue(v.Args[0]) && ssa.Wasm3IsAnyrefValue(v.Args[1]) {
+			s.Prog(wasm.ARefEq)
+			if v.Op == ssa.OpWasm3I64Ne {
+				s.Prog(wasm.AI32Eqz)
+			}
+		} else {
+			s.Prog(v.Op.Asm())
+		}
+		if extend {
+			s.Prog(wasm.AI64ExtendI32U)
+		}
+
+	case ssa.OpWasm3I64LtS, ssa.OpWasm3I64LtU, ssa.OpWasm3I64GtS, ssa.OpWasm3I64GtU, ssa.OpWasm3I64LeS, ssa.OpWasm3I64LeU, ssa.OpWasm3I64GeS, ssa.OpWasm3I64GeU,
 		ssa.OpWasm3F32Eq, ssa.OpWasm3F32Ne, ssa.OpWasm3F32Lt, ssa.OpWasm3F32Gt, ssa.OpWasm3F32Le, ssa.OpWasm3F32Ge,
 		ssa.OpWasm3F64Eq, ssa.OpWasm3F64Ne, ssa.OpWasm3F64Lt, ssa.OpWasm3F64Gt, ssa.OpWasm3F64Le, ssa.OpWasm3F64Ge:
 		getValue64(s, v.Args[0])

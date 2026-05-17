@@ -528,16 +528,18 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 			writeOpcode(w, AI32Eqz)
 
 		default:
-			// The operand-less wasm stack instructions — the
-			// arithmetic, comparison and conversion opcodes the SSA
-			// backend emits with no From/To — encode as a single
-			// opcode byte. Anything carrying an operand (control-flow
-			// structure, loads, stores, memory ops) needs immediate
-			// encoding this rung does not do.
-			if p.From.Type != obj.TYPE_NONE || p.To.Type != obj.TYPE_NONE {
-				return nil, false
-			}
-			if p.As < AUnreachable || p.As >= ALast {
+			// Specific operand-carrying ops (wasmgc struct.* / array.* /
+			// ref.*) need their operand encoding handled BEFORE the
+			// generic "operand-less bail" check. Try the inner switch
+			// first; only ops that don't match it fall through to the
+			// operand-less encoder, where having operands signals an
+			// unhandled case.
+			if p.As < AUnreachable {
+				// Pseudo-op (ATEXT, AFUNCDATA, etc.) — those have
+				// outer-switch cases earlier; if one reaches here it's
+				// not encodable. The post-ALast range (exception
+				// handling + GC opcodes) IS allowed: writeOpcode
+				// handles the 0xFB / 0xD0+ / 0x08+0x0A+0x1F prefixes.
 				return nil, false
 			}
 			switch p.As {
@@ -664,6 +666,12 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 					Add:  p.To.Offset,
 				})
 				continue
+			}
+			// Operand-less wasm stack instructions only. If an
+			// operand-carrying op landed here, it's an unhandled
+			// case — bail.
+			if p.From.Type != obj.TYPE_NONE || p.To.Type != obj.TYPE_NONE {
+				return nil, false
 			}
 			writeOpcode(w, p.As)
 		}

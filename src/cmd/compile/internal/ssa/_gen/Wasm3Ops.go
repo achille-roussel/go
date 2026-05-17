@@ -294,12 +294,22 @@ func init() {
 		{name: "ArrayNew", argLength: 2, reg: gp21, aux: "Typ"},                                               // array.new $Aux; arg0=element value, arg1=length
 		{name: "ArrayNewDefault", argLength: 1, reg: gp11, aux: "Typ"},                                        // array.new_default $Aux; arg0=length
 		{name: "ArrayGet", argLength: 2, reg: gp21, aux: "Typ"},                                               // array.get $Aux; arg0=array, arg1=index
-		{name: "ArraySet", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp, gp}}, aux: "Typ", typ: "Mem"}, // array.set $Aux; arg0=array, arg1=index, arg2=value
+		{name: "ArraySet", argLength: 4, reg: regInfo{inputs: []regMask{gp, gp, gp}}, aux: "Typ", typ: "Mem"}, // array.set $Aux; arg0=array, arg1=index, arg2=value, arg3=mem; returns mem
 		{name: "ArrayLen", argLength: 1, reg: gp11, typ: "Int64"},                                             // array.len; arg0=array
 		{name: "RefNull", argLength: 0, reg: gp01, aux: "Typ", rematerializeable: true},                       // ref.null $Aux
 		{name: "RefIsNull", argLength: 1, reg: gp11, typ: "Bool"},                                             // ref.is_null; arg0=ref
 		{name: "RefCast", argLength: 1, reg: gp11, aux: "Typ"},                                                // ref.cast (ref $Aux); arg0=ref
 		{name: "RefTest", argLength: 1, reg: gp11, aux: "Typ", typ: "Bool"},                                   // ref.test (ref $Aux); arg0=ref
+
+		// M3 Stage D: stack-allocated `var buf [N]T` autos lower to a
+		// wasmgc `(ref (array T))` allocated at function entry, replacing
+		// the SP-relative address SSA would otherwise produce via
+		// OpLocalAddr. arg0 is the entry memory; v.Aux is the *ir.Name
+		// of the auto (the Name's type is *[N]T). Returned value is
+		// typed as a pointer in SSA but stored in an anyref local at
+		// the wasm level. Later Wasm3.rules rewrite (Load (OffPtr [off]
+		// (StackArray ...)) _) into Wasm3ArrayGet ops on this ref.
+		{name: "StackArray", argLength: 1, reg: gp01, aux: "Sym", symEffect: "Addr"},
 	}
 
 	archs = append(archs, arch{

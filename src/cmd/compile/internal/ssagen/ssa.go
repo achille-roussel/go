@@ -1053,6 +1053,11 @@ type state struct {
 	// addresses of PPARAM and PPARAMOUT variables on the stack.
 	decladdrs map[*ir.Name]*ssa.Value
 
+	// wasm3StackArrays caches the Wasm3StackArray SSA value for each
+	// PAUTO TARRAY name so that &buf in different uses returns the
+	// same allocation. Populated lazily by addr(). Nil for other arches.
+	wasm3StackArrays map[*ir.Name]*ssa.Value
+
 	// starting values. Memory, stack pointer, and globals pointer
 	startmem *ssa.Value
 	sp       *ssa.Value
@@ -5291,6 +5296,24 @@ func (s *state) addr(n ir.Node) *ssa.Value {
 			s.Fatalf("addr of undeclared ONAME %v. declared: %v", n, s.decladdrs)
 			return nil
 		case ir.PAUTO:
+			// M3 Stage D (wasm3 only): a stack-allocated array `var
+			// buf [N]T` lowers to a wasmgc `(ref (array T))`
+			// allocated *once* at function entry. Cache the first
+			// alloc in s.wasm3StackArrays and return it for every
+			// subsequent addr(buf) call — otherwise each access
+			// would allocate a fresh array and observed reads
+			// wouldn't see prior writes.
+			if buildcfg.GOARCH == "wasm3" && n.Type().IsArray() {
+				if s.wasm3StackArrays == nil {
+					s.wasm3StackArrays = map[*ir.Name]*ssa.Value{}
+				}
+				if v, ok := s.wasm3StackArrays[n]; ok {
+					return v
+				}
+				v := s.entryNewValue1A(ssa.OpWasm3StackArray, t, n, s.startmem)
+				s.wasm3StackArrays[n] = v
+				return v
+			}
 			return s.newValue2Apos(ssa.OpLocalAddr, t, n, s.sp, s.mem(), !ir.IsAutoTmp(n))
 
 		case ir.PPARAMOUT: // Same as PAUTO -- cannot generate LEA early.

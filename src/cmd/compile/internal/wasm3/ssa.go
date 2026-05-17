@@ -502,11 +502,20 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: v.AuxInt}
 
 	case ssa.OpWasm3ArraySet:
-		// array.set $type. Not yet emitted by any rule.
+		// M3 Stage D: array.set $arr_T (ref idx val).
+		// arg0 is the array ref (anyref local) — cast to typed
+		// ref. arg1 is the i64 index — narrow to i32. arg2 is
+		// the i64 element value. The type-index operand goes via
+		// R_WASMTYPE on the array backing's typeidx.
+		idx := int64(wasm3RegisterArrayAux(s, v))
 		getValue64(s, v.Args[0])
+		pCast := s.Prog(wasm.ARefCast)
+		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: idx}
 		getValue64(s, v.Args[1])
+		s.Prog(wasm.AI32WrapI64)
 		getValue64(s, v.Args[2])
-		s.Prog(wasm.AArraySet)
+		p := s.Prog(wasm.AArraySet)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: idx}
 
 	case ssa.OpArgIntReg, ssa.OpArgFloatReg:
 		// M3 Phase 3b: copy the wasm function parameter into v's
@@ -754,10 +763,17 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterArrayAux(s, v))}
 
 	case ssa.OpWasm3ArrayGet:
+		// M3 Stage D: array.get $arr_T (ref idx). Same shape as
+		// ArraySet: ref.cast the anyref to typed ref, narrow idx
+		// to i32, then array.get with the type-index immediate.
+		idx := int64(wasm3RegisterArrayAux(s, v))
 		getValue64(s, v.Args[0])
+		pCast := s.Prog(wasm.ARefCast)
+		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: idx}
 		getValue64(s, v.Args[1])
+		s.Prog(wasm.AI32WrapI64)
 		p := s.Prog(wasm.AArrayGet)
-		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterArrayAux(s, v))}
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: idx}
 
 	case ssa.OpWasm3ArrayLen:
 		getValue64(s, v.Args[0])
@@ -766,6 +782,10 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 	case ssa.OpWasm3RefNull:
 		p := s.Prog(wasm.ARefNull)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterStructAux(s, v))}
+
+	// OpWasm3StackArray emits via ssaGenValueOnStack so the default
+	// case's localSetIdx fall-through lands the (ref (array T))
+	// result in v's per-value local.
 
 	case ssa.OpWasm3RefIsNull:
 		getValue64(s, v.Args[0])
@@ -793,6 +813,29 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 
 	case ssa.OpCopy:
 		getValue64(s, v.Args[0])
+
+	case ssa.OpWasm3StackArray:
+		// M3 Stage D: stack-allocated `var buf [N]T` auto. The
+		// SSA-side replacement for the OpLocalAddr ssagen would
+		// emit on PAUTO with TARRAY type. v.Aux is the *ir.Name;
+		// the Name's type is *[N]T. Emit:
+		//     i32.const <N>
+		//     array.new_default $arr_T_elem
+		// The default case's localSetIdx fall-through then stores
+		// the resulting ref in v's per-value local (typed
+		// `(ref null any)`, per wasm3ValueType's OpWasm3StackArray
+		// case).
+		name, ok := v.Aux.(*ir.Name)
+		if !ok {
+			v.Fatalf("OpWasm3StackArray: v.Aux is not *ir.Name: %T", v.Aux)
+		}
+		arrType := name.Type() // [N]T
+		if !arrType.IsArray() {
+			v.Fatalf("OpWasm3StackArray: Name type is not array: %v", arrType)
+		}
+		i32Const(s, int32(arrType.NumElem()))
+		p := s.Prog(wasm.AArrayNewDefault)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterArrayBacking(s.FuncInfo(), arrType.Elem()))}
 
 	default:
 		v.Fatalf("unexpected op: %s", v.Op)

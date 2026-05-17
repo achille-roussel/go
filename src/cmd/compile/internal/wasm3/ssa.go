@@ -913,11 +913,18 @@ func setReg(s *ssagen.State, reg int16) {
 // destination is always the Phi's per-value local — Phi is
 // placed unconditionally now.
 //
-// Copies are emitted in OpPhi order. Cycles between Phis
-// (the "swap" problem) would require a temp local; none of the
-// M2 regression test programs hit one, and the standard exit-
-// SSA algorithm for handling them is documented in the design
-// doc as a follow-up.
+// Copies are emitted in dependency order: a copy whose source is
+// another Phi's destination is held until the reader runs.
+// Cycles between Phis (the classic "swap" problem in a loop where
+// `a, b = b, f(a, b)` shares a Phi destination across reads and
+// writes) are broken by stashing the cycle-edge source into a
+// fresh temp local before the writers run, then emitting the
+// readers against the temp.
+//
+// Triggered for example by runtime/algos `gcd(a, b)`'s
+// `a, b = b, a%b`: without dependency ordering Phi_a would read
+// Phi_b's local *after* Phi_b's copy already overwrote it with
+// the new value (a%b), producing gcd(48, 18) = 0.
 func emitPhiCopies(s *ssagen.State, b, succ *ssa.Block) {
 	if len(succ.Preds) == 0 {
 		return
@@ -932,18 +939,141 @@ func emitPhiCopies(s *ssagen.State, b, succ *ssa.Block) {
 	if predIdx < 0 {
 		return
 	}
+
+	// Collect the per-Phi copy descriptors.
+	type phiCopy struct {
+		dst uint32
+		src *ssa.Value
+	}
+	var copies []phiCopy
+	dsts := make(map[uint32]bool)
 	for _, phi := range succ.Values {
 		if phi.Op != ssa.OpPhi {
 			continue
 		}
 		dst, ok := wasm3ValueLocalIdx(s, phi)
 		if !ok {
-			continue // Phi-of-memory, etc.
+			continue
 		}
-		src := phi.Args[predIdx]
-		readPhiSource(s, src)
-		localSetIdx(s, dst)
+		copies = append(copies, phiCopy{dst: dst, src: phi.Args[predIdx]})
+		dsts[dst] = true
 	}
+	if len(copies) == 0 {
+		return
+	}
+
+	// Topological emit: pick a copy whose dst is not read by any
+	// other still-pending copy. If none exist (cycle), break by
+	// copying one cycle source to a temp local and rewriting
+	// future reads of that source to read the temp.
+	emitOne := func(c phiCopy) {
+		readPhiSource(s, c.src)
+		localSetIdx(s, c.dst)
+	}
+	srcReadsDst := func(c phiCopy, dst uint32) bool {
+		// Source reads dst when src is a Phi placed at dst (the
+		// "cycle source" case in parallel copies). Trace through
+		// OpCopy chains the same way readPhiSource does.
+		v := c.src
+		for v.Op == ssa.OpCopy {
+			if _, ok := wasm3ValueLocalIdx(s, v); ok {
+				break
+			}
+			v = v.Args[0]
+		}
+		if v.Op != ssa.OpPhi {
+			return false
+		}
+		idx, ok := wasm3ValueLocalIdx(s, v)
+		return ok && idx == dst
+	}
+	for len(copies) > 0 {
+		// Find a safe copy: dst is not read by any other pending copy.
+		picked := -1
+		for i := range copies {
+			safe := true
+			for j := range copies {
+				if i == j {
+					continue
+				}
+				if srcReadsDst(copies[j], copies[i].dst) {
+					safe = false
+					break
+				}
+			}
+			if safe {
+				picked = i
+				break
+			}
+		}
+		if picked >= 0 {
+			emitOne(copies[picked])
+			copies = append(copies[:picked], copies[picked+1:]...)
+			continue
+		}
+		// All remaining copies form a cycle. Break by stashing
+		// copies[0].dst's current value into a fresh wasm local
+		// allocated after the placed ones, then rewrite any copy
+		// whose source reads copies[0].dst to read the temp.
+		tempIdx := wasm3AllocTempLocal(s, copies[0].src.Type)
+		// Push the current value of copies[0].dst onto the stack
+		// (it's the Phi value, not the per-value local of the
+		// source — they share the same local). local.tee writes
+		// to temp and leaves on stack, then local.set into the
+		// final dst.
+		brokenDst := copies[0].dst
+		p := s.Prog(wasm.ALocalGet)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(brokenDst)}
+		p2 := s.Prog(wasm.ALocalSet)
+		p2.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(tempIdx)}
+		// Replace future reads of brokenDst with reads from tempIdx
+		// by rewriting cycle-source Phi values: substitute src with
+		// a synthetic marker pointing at tempIdx. The simplest
+		// implementation: emit those copies inline now, using
+		// tempIdx as the source.
+		for i := 0; i < len(copies); i++ {
+			if srcReadsDst(copies[i], brokenDst) {
+				pg := s.Prog(wasm.ALocalGet)
+				pg.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(tempIdx)}
+				localSetIdx(s, copies[i].dst)
+				copies = append(copies[:i], copies[i+1:]...)
+				i--
+			}
+		}
+	}
+}
+
+// wasm3AllocTempLocal appends a per-value local of the type
+// appropriate for t to the function's local-types vector and
+// returns its absolute wasm local index. Used by emitPhiCopies
+// to break Phi-cycle ordering hazards.
+func wasm3AllocTempLocal(s *ssagen.State, t *types.Type) uint32 {
+	fi := s.FuncInfo()
+	if fi == nil {
+		panic("wasm3AllocTempLocal: no FuncInfo")
+	}
+	var typ byte
+	if t.IsFloat() {
+		switch t.Size() {
+		case 4:
+			typ = 0x7D // f32
+		case 8:
+			typ = 0x7C // f64
+		default:
+			typ = 0x7C
+		}
+	} else {
+		typ = 0x7E // i64
+	}
+	idx := uint32(len(fi.Wasm3LocalTypes))
+	fi.Wasm3LocalTypes = append(fi.Wasm3LocalTypes, typ)
+	// Translate placement-index to absolute wasm-local index:
+	// per-value locals start right after the wasm parameter locals.
+	base := uint32(0)
+	if wt := fi.WasmType; wt != nil {
+		base = uint32(len(wt.Params))
+	}
+	return base + idx
 }
 
 // readPhiSource pushes the SSA value v onto the wasm stack, picking

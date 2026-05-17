@@ -337,7 +337,20 @@
 (IsNonNil p) => (I64Eqz (I64Eqz p))
 (IsInBounds ...) => (I64LtU ...)
 (IsSliceInBounds ...) => (I64LeU ...)
-(NilCheck ...) => (LoweredNilCheck ...)
+// M3 Stage E phase 4 (wasm3): forward NilCheck through wasmgc-
+// backed values. Refs produced by array.new_default / struct.new_-
+// default are guaranteed non-null by the wasmgc allocator — the
+// runtime panic path is unreachable. Replacing the NilCheck with
+// its underlying ptr lets the Stage D/E load/store rules
+// pattern-match the StackArray / MakeSlice / SubSlice base
+// directly, instead of needing NilCheck-aware variants of every
+// load/store rule. The check itself is dropped; downstream
+// dead-store-elim cleans it up.
+(NilCheck sa:(StackArray _) _) => sa
+(NilCheck mk:(MakeSlice _ _ _) _) => mk
+(NilCheck ss:(SubSlice _ _ _ _ _) _) => ss
+
+(NilCheck p mem) => (LoweredNilCheck p mem)
 (GetClosurePtr ...) => (LoweredGetClosurePtr ...)
 (GetCallerPC ...) => (LoweredGetCallerPC ...)
 (GetCallerSP ...) => (LoweredGetCallerSP ...)

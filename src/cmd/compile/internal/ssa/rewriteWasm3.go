@@ -407,8 +407,7 @@ func rewriteValueWasm3(v *Value) bool {
 		v.Op = OpWasm3I64Ne
 		return true
 	case OpNilCheck:
-		v.Op = OpWasm3LoweredNilCheck
-		return true
+		return rewriteValueWasm3_OpNilCheck(v)
 	case OpNot:
 		v.Op = OpWasm3I64Eqz
 		return true
@@ -2504,6 +2503,49 @@ func rewriteValueWasm3_OpNeq8(v *Value) bool {
 		v1 := b.NewValue0(v.Pos, OpZeroExt8to64, typ.UInt64)
 		v1.AddArg(y)
 		v.AddArg2(v0, v1)
+		return true
+	}
+}
+func rewriteValueWasm3_OpNilCheck(v *Value) bool {
+	v_1 := v.Args[1]
+	v_0 := v.Args[0]
+	// match: (NilCheck sa:(StackArray _) _)
+	// result: sa
+	for {
+		sa := v_0
+		if sa.Op != OpWasm3StackArray {
+			break
+		}
+		v.copyOf(sa)
+		return true
+	}
+	// match: (NilCheck mk:(MakeSlice _ _ _) _)
+	// result: mk
+	for {
+		mk := v_0
+		if mk.Op != OpWasm3MakeSlice {
+			break
+		}
+		v.copyOf(mk)
+		return true
+	}
+	// match: (NilCheck ss:(SubSlice _ _ _ _ _) _)
+	// result: ss
+	for {
+		ss := v_0
+		if ss.Op != OpWasm3SubSlice {
+			break
+		}
+		v.copyOf(ss)
+		return true
+	}
+	// match: (NilCheck p mem)
+	// result: (LoweredNilCheck p mem)
+	for {
+		p := v_0
+		mem := v_1
+		v.reset(OpWasm3LoweredNilCheck)
+		v.AddArg2(p, mem)
 		return true
 	}
 }

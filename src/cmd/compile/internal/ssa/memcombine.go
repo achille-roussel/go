@@ -491,9 +491,16 @@ func combineStores(root *Value) {
 	// byte-stored, so combining adjacent element stores into a wider
 	// linear-memory I64Store leaves a shape no Wasm3.rules pattern
 	// matches.
-	if rbase.ptr.Op == OpWasm3StackArray ||
-		rbase.ptr.Op == OpWasm3MakeSlice ||
-		rbase.ptr.Op == OpWasm3SubSlice {
+	// Peel a NilCheck wrapper to find the underlying source. The slice
+	// literal init path emits `NilCheck stackArrPtr` and stores
+	// through the checked pointer, which splitPtr returns unchanged.
+	rbasePtr := rbase.ptr
+	if rbasePtr.Op == OpNilCheck {
+		rbasePtr = rbasePtr.Args[0]
+	}
+	if rbasePtr.Op == OpWasm3StackArray ||
+		rbasePtr.Op == OpWasm3MakeSlice ||
+		rbasePtr.Op == OpWasm3SubSlice {
 		return
 	}
 	allMergeable = append(allMergeable, StoreRecord{root, roff, root.Aux.(*types.Type).Size()})

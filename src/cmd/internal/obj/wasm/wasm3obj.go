@@ -432,6 +432,18 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 			if p.To.Type != obj.TYPE_CONST {
 				return nil, false
 			}
+			// Peephole: ALocalSet idx; ALocalGet idx -> ALocalTee idx.
+			// The two-byte saving (one opcode + repeated leb128 index)
+			// shows up most in Phi resolution and load-into-register
+			// patterns. Only ALocalSet is rewritable; ALocalTee already
+			// leaves the value on the stack.
+			if p.As == ALocalSet && p.Link != nil && p.Link.As == ALocalGet &&
+				p.Link.From.Type == obj.TYPE_CONST && p.Link.From.Offset == p.To.Offset {
+				writeOpcode(w, ALocalTee)
+				writeUleb128(w, uint64(p.To.Offset))
+				p = p.Link // skip the consumed ALocalGet
+				break
+			}
 			writeOpcode(w, p.As)
 			writeUleb128(w, uint64(p.To.Offset))
 

@@ -314,17 +314,65 @@ Net binary impact (M2 14-case regression): 12141 (pre-flip) →
 overhead for the regalloc-bypass machinery while regalloc itself
 is still running.
 
-**Phase 4 — skip regalloc for wasm3.**
+**Phase 4 — skip regalloc for wasm3. ✅ LANDED.**
 
-Once nothing reads `v.Reg()` for wasm3, gate the regalloc pass in
-`ssa/compile.go` to skip when `GOARCH == "wasm3"`. Drop the
-register-class infrastructure from Wasm3Ops.go.
+`regalloc()` early-returns on `f.Config.arch == "wasm3"`, leaving
+`f.RegAlloc` nil. The places that previously consulted regalloc's
+output now handle the empty case:
 
-**Phase 5 — OnWasmStack as a peephole pass.**
+- `value.AutoVar` returns `(nil, 0)` when both the RegAlloc
+  location and `v.Aux` are absent; the liveness machinery's
+  `n == nil` short-circuit then skips the entry. Triggered by
+  OpKeepAlive on values that previously got LocalSlot.
+- `liveness.epilogue` and the post-compact "recorded as live on
+  entry" sanity check both early-`continue` on wasm3 when an
+  output param remains live at function entry. Without
+  regalloc-inserted OpStoreReg kills, output variables can
+  stay live; the wasm engine scans declared locals directly so
+  an over-conservative liveness map is harmless. Triggered by
+  vendor/golang.org/x/net/dns/dnsmessage.NewBuilder.
+- `ssagen.CheckLoweredPhi` early-returns when `RegAlloc` is
+  empty — the Phi-arg-register-equivalence assertion it does
+  has nothing to check when there are no registers.
+- The wasm3 backend's `OpWasm3LoweredAddr` `*ir.Name` case
+  names `REG_SP` directly instead of reading `v.Args[0].Reg()`
+  (args[0] is always OpSP in this case).
 
-Replace the regalloc-side OnWasmStack computation with the
-standalone wasm3 peephole. Verify the same set of values get
-stack-stayed.
+**Phase 4b — OnWasmStack analysis ported to wasm3PlaceValues. ✅ LANDED.**
+
+The OnWasmStack analysis used to live inside regalloc setup; with
+regalloc gone, `wasm3MarkOnStack` runs as the first step of
+wasm3PlaceValues. It mirrors `regalloc.go` ~850's eligibility
+check with one extra constraint: skip the v.Args scan when `v`
+itself is generic. Without that constraint, generic consumers like
+OpConvert — which `ssagen` handles via `nothing to do` and never
+call into the wasm3 backend — leak OnWasmStackSkipped. Triggered
+by runtime.SetFinalizer.func1.
+
+readPhiSource also gained an OnWasmStack branch that decrements
+Skipped and re-emits the value inline via `ssaGenValueOnStack`, so
+a Phi source flagged OnWasmStack lands on the wasm stack at the
+Phi resolution point.
+
+**Phase 4 final state:** M2 14-case regression passes 14/14;
+`go build std` succeeds clean for `GOOS=wasip1 GOARCH=wasm3`;
+binary 12141 (pre-flip Phase 3a) → 12240 (post-Phase 4b) — within
++99 bytes of baseline while running fully through the per-value
+local scheme.
+
+**Phase 5 — drop register-class infrastructure from Wasm3Ops.go.**
+
+Now that nothing reads regalloc's output, the `reg: gp01 / gp11 /
+gp21 / fp32_01 / fp64_01 / regInfo{...}` annotations on every
+Wasm3Op are bookkeeping for an unused subsystem. Strip them and
+the gp/fp register-mask vars in Wasm3Ops.go's local scope.
+
+**Phase 5b — OnWasmStack as a peephole pass (deferred).**
+
+Optional refinement: replace the regalloc-style backward-walk
+analysis with a more aggressive peephole that catches additional
+inline-eligible patterns the current heuristic misses. Verify the
+14-case regression still passes and measure.
 
 **Phase 6 — retire the runtime-fork shims.**
 

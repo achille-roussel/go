@@ -284,11 +284,35 @@ resolution copies (regalloc's traditional Phi scheme); giving
 them per-value locals doesn't eliminate them — it just renames
 their backing store from a register-local to a per-value local
 of equal size. Net result was +62 bytes on the M2 regression
-binary, not bytes saved. The real win requires either skipping
-the regalloc OpCopy insertion for wasm3 (modifying regalloc) or
-having readPhiSource trace through OpCopy.Args[0] to the
-original value (eliminating OpCopy as a load-bearing
-intermediate). Both are larger changes deferred to Phase 4.
+binary, not bytes saved.
+
+Landed instead, two smaller wins that recover most of the size
+overhead from running both schemes side by side:
+
+- `readPhiSource` now traces through OpCopy chains
+  (regalloc.go's Phi-resolution copies) to read the original
+  value's per-value local directly. Reaches an OpCopy that
+  *is* placed only if a future pass started giving them per-
+  value locals; otherwise traces to the non-OpCopy source.
+- For rematerialized constants (`OpWasm3I64Const`,
+  `OpWasm3F32Const`, `OpWasm3F64Const`) that regalloc
+  duplicated, `ssaGenValue`'s default case suppresses the
+  original emit + setReg, and `readPhiSource` recreates the
+  const inline at each Phi edge that consumes it. The dead
+  register-local no longer gets declared by the obj backend's
+  wasm3Locals scan.
+- `wasm3HasOutput` skips placement for `Uses == 1` non-generic
+  non-memory values — the same condition regalloc uses to flag
+  OnWasmStack candidates. If the value really is consumed
+  inline on the wasm stack, the per-value local would have
+  been declared but never written; if it ends up needing a
+  local, genssa's fallback declares a register-local on
+  demand — same cost as the old register-local scheme.
+
+Net binary impact (M2 14-case regression): 12141 (pre-flip) →
+12179 (post-flip with all Phase 3c followups), a +38 byte
+overhead for the regalloc-bypass machinery while regalloc itself
+is still running.
 
 **Phase 4 — skip regalloc for wasm3.**
 

@@ -565,6 +565,58 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 					Add:  p.From.Offset,
 				})
 				continue
+
+			case AStructGet, AStructGetS, AStructGetU, AStructSet:
+				// struct.get / struct.set: two operands — a type
+				// index (R_WASMTYPE-relocated from p.From.Offset)
+				// followed by a field index immediate
+				// (p.To.Offset). The wasm encoding is
+				// 0xFB <subop> <typeidx leb128> <fieldidx leb128>.
+				if p.From.Type != obj.TYPE_CONST || p.To.Type != obj.TYPE_CONST {
+					return nil, false
+				}
+				writeOpcode(w, p.As)
+				relocs = append(relocs, obj.Reloc{
+					Type: objabi.R_WASMTYPE,
+					Off:  int32(w.Len()),
+					Siz:  1,
+					Add:  p.From.Offset,
+				})
+				writeUleb128(w, uint64(p.To.Offset))
+				continue
+
+			case ARefCast, ARefTest:
+				// ref.cast / ref.test: type-index immediate. Encoded
+				// like struct.new — one R_WASMTYPE-relocated leb128.
+				if p.From.Type != obj.TYPE_CONST {
+					return nil, false
+				}
+				writeOpcode(w, p.As)
+				relocs = append(relocs, obj.Reloc{
+					Type: objabi.R_WASMTYPE,
+					Off:  int32(w.Len()),
+					Siz:  1,
+					Add:  p.From.Offset,
+				})
+				continue
+
+			case ARefNull:
+				// ref.null heaptype — single byte heap-type immediate
+				// for abstract heap types, or a sleb128 typeidx for
+				// typed refs. The wasm3 backend only emits ref.null
+				// against typed refs today, so route through
+				// R_WASMTYPE the way StructNew does.
+				if p.From.Type != obj.TYPE_CONST {
+					return nil, false
+				}
+				writeOpcode(w, p.As)
+				relocs = append(relocs, obj.Reloc{
+					Type: objabi.R_WASMTYPE,
+					Off:  int32(w.Len()),
+					Siz:  1,
+					Add:  p.From.Offset,
+				})
+				continue
 			}
 			writeOpcode(w, p.As)
 		}

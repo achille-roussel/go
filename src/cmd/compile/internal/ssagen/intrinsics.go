@@ -168,6 +168,34 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	}
 	add("runtime", "makeslice", wasm3MakeSliceIntrinsic, sys.ArchWasm3)
 	add("runtime", "makeslice64", wasm3MakeSliceIntrinsic, sys.ArchWasm3)
+
+	// M3 Stage E phase 4 (wasm3): walkCopy emits this in place of
+	// runtime.memmove for `copy(dst, src)`. The first arg is the
+	// elem rtype; args[1]=dst, args[2]=src, args[3]=n_elements.
+	// Lower to OpWasm3ArrayCopy — `array.copy` on the two wasmgc
+	// backings. The dedicated symbol name (vs intrinsifying
+	// memmove) avoids triggering on runtime-internal memmove
+	// callers and lets the elem type ride as an explicit arg
+	// instead of a CallExpr-keyed stash.
+	wasm3SliceCopyIntrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		if len(n.Args) < 4 {
+			s.Fatalf("wasm3SliceCopy intrinsic: expected 4 args, got %d", len(n.Args))
+		}
+		// Recover the elem type from the dst pointer's IR type
+		// (n.Args[1] is the &dst[0] expression; its type is *Elem).
+		dstPtrType := n.Args[1].Type()
+		if dstPtrType == nil || !dstPtrType.IsPtr() {
+			s.Fatalf("wasm3SliceCopy intrinsic: dst ptr type is not pointer: %v", dstPtrType)
+		}
+		elem := dstPtrType.Elem()
+		sliceType := types.NewSlice(elem)
+		v := s.newValue4(ssa.OpWasm3ArrayCopy, types.TypeMem, args[1], args[2], args[3], s.mem())
+		v.Aux = sliceType
+		s.vars[memVar] = v
+		return nil
+	}
+	add("runtime", "wasm3SliceCopy", wasm3SliceCopyIntrinsic, sys.ArchWasm3)
+
 	addF("internal/runtime/math", "MulUintptr",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			if s.config.PtrSize == 4 {

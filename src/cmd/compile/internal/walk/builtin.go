@@ -222,13 +222,33 @@ func walkCopy(n *ir.BinaryExpr, init *ir.Nodes, runtimecall bool) ir.Node {
 	ne.Likely = true
 	l = append(l, ne)
 
-	fn := typecheck.LookupRuntime("memmove", nl.Type().Elem(), nl.Type().Elem())
-	nwid := ir.Node(typecheck.TempAt(base.Pos, ir.CurFunc, types.Types[types.TUINTPTR]))
-	setwid := ir.NewAssignStmt(base.Pos, nwid, typecheck.Conv(nlen, types.Types[types.TUINTPTR]))
-	ne.Body.Append(setwid)
-	nwid = ir.NewBinaryExpr(base.Pos, ir.OMUL, nwid, ir.NewInt(base.Pos, nl.Type().Elem().Size()))
-	call := mkcall1(fn, nil, init, nto, nfrm, nwid)
-	ne.Body.Append(call)
+	// Stage E phase 4 (wasm3): emit `runtime.wasm3SliceCopy(et, dst,
+	// src, n_elements)` instead of `runtime.memmove(dst, src,
+	// n_bytes)`. The SSA-time intrinsic for wasm3SliceCopy lifts
+	// the call into OpWasm3ArrayCopy (a wasmgc `array.copy` on the
+	// two anyref backings). Renaming the runtime symbol — vs
+	// intrinsifying memmove itself — sidesteps two pitfalls:
+	//   - the elem type rides as an explicit rtype arg, so the
+	//     intrinsic doesn't need a CallExpr-keyed side channel
+	//     (the makeslice-style stash that doesn't survive
+	//     inlining clones);
+	//   - runtime-internal memmove callers (struct copies, scratch
+	//     buffer packing, etc.) keep their existing linear-memory
+	//     path untouched.
+	if buildcfg.GOARCH == "wasm3" {
+		fn := typecheck.LookupRuntime("wasm3SliceCopy", nl.Type().Elem(), nl.Type().Elem())
+		rtype := reflectdata.CopyElemRType(base.Pos, n)
+		call := mkcall1(fn, nil, init, rtype, nto, nfrm, nlen)
+		ne.Body.Append(call)
+	} else {
+		fn := typecheck.LookupRuntime("memmove", nl.Type().Elem(), nl.Type().Elem())
+		nwid := ir.Node(typecheck.TempAt(base.Pos, ir.CurFunc, types.Types[types.TUINTPTR]))
+		setwid := ir.NewAssignStmt(base.Pos, nwid, typecheck.Conv(nlen, types.Types[types.TUINTPTR]))
+		ne.Body.Append(setwid)
+		nwid = ir.NewBinaryExpr(base.Pos, ir.OMUL, nwid, ir.NewInt(base.Pos, nl.Type().Elem().Size()))
+		call := mkcall1(fn, nil, init, nto, nfrm, nwid)
+		ne.Body.Append(call)
+	}
 
 	typecheck.Stmts(l)
 	walkStmtList(l)

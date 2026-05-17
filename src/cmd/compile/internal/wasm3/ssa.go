@@ -501,6 +501,34 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		p := s.Prog(wasm.AStructSet)
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: v.AuxInt}
 
+	case ssa.OpWasm3ArrayCopy:
+		// M3 Stage E phase 4: copy(dst, src) lowered to `array.copy`
+		// on two wasmgc backings. arg0=dst (anyref), arg1=src
+		// (anyref), arg2=n (i64 element count), arg3=mem. v.Aux is
+		// the slice's *types.Type; the elem-keyed backing index
+		// resolves via wasm3RegisterArrayAux. Both refs need
+		// ref.cast (ref $T_elem) before array.copy.
+		//
+		// Wasm stack discipline (5 inputs to array.copy):
+		//   dst_ref; dst_off=0; src_ref; src_off=0; count
+		// Result is Mem (void) — must be handled in ssaGenValue
+		// (not ssaGenValueOnStack) because the dispatcher's default
+		// early-returns for Mem-typed values.
+		arrIdxC := int64(wasm3RegisterArrayAux(s, v))
+		getValue64(s, v.Args[0])
+		pCastDst := s.Prog(wasm.ARefCast)
+		pCastDst.From = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdxC}
+		i32Const(s, 0)
+		getValue64(s, v.Args[1])
+		pCastSrc := s.Prog(wasm.ARefCast)
+		pCastSrc.From = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdxC}
+		i32Const(s, 0)
+		getValue64(s, v.Args[2])
+		s.Prog(wasm.AI32WrapI64)
+		pCopyC := s.Prog(wasm.AArrayCopy)
+		pCopyC.From = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdxC}
+		pCopyC.To = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdxC}
+
 	case ssa.OpWasm3ArraySet:
 		// M3 Stage D: array.set $arr_T (ref idx val).
 		// arg0 is the array ref (anyref local) — cast to typed

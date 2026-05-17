@@ -348,6 +348,19 @@ func init() {
 		// slice representation rework. Documented in
 		// doc/wasm3-m3-notes.md "Stage E phase 3 — sub-slicing".
 		{name: "SubSlice", argLength: 5, reg: regInfo{inputs: []regMask{gp, gp, gp, gp}, outputs: []regMask{gp}}, aux: "Typ", typ: "BytePtr"},
+
+		// M3 Stage E phase 4: copy() builtin lowered via array.copy
+		// instead of runtime.memmove. arg0=dst (anyref), arg1=src
+		// (anyref), arg2=n (i64 element count), arg3=mem. v.Aux is
+		// the slice's *types.Type so wasm3RegisterArrayAux resolves
+		// the elem backing index. Result is Mem (void op).
+		//
+		// walkCopy on wasm3 emits `runtime.wasm3SliceCopy(et, dst,
+		// src, n)` instead of `runtime.memmove(dst, src, n_bytes)`;
+		// the SSA intrinsic for wasm3SliceCopy lifts to this op.
+		// Renamed-runtime-symbol avoids the inlining-clone-key
+		// pitfall the direct-memmove-intrinsic attempt hit.
+		{name: "ArrayCopy", argLength: 4, reg: regInfo{inputs: []regMask{gp, gp, gp}}, aux: "Typ", typ: "Mem"},
 	}
 
 	archs = append(archs, arch{

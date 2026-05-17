@@ -5896,17 +5896,26 @@ func (s *state) slice(v, i, j, k *ssa.Value, bounded bool) (p, l, c *ssa.Value) 
 	// the same OpWasm3SubSlice op (the input ptr is anyref, output
 	// is anyref).
 	if buildcfg.GOARCH == "wasm3" && (v.Type.IsSlice() || (v.Type.IsPtr() && v.Type.Elem().IsArray())) {
-		// SubSlice expects i32-sized lo/len/cap. The SSA passes them
-		// as TINT (i64 on wasm3) — codegen does the i32.wrap.
 		// Aux: the slice's *types.Type so wasm3RegisterArrayAux can
 		// recover the element backing index. For a (*[N]T) input
 		// the element type is t.Elem().Elem(); for a slice input
 		// it's t.Elem().
+		//
+		// NOTE: we emit OpWasm3SubSlice unconditionally here, even
+		// for slices whose backing is linear memory (e.g. slices of
+		// package-global byte arrays). The codegen for those cases
+		// is broken (array.copy on a non-ref source). A proper
+		// gating would require a post-FwdRef-resolution analysis
+		// pass to classify each slice's backing — the SSA shape at
+		// slice() time uses OpFwdRef placeholders that can't be
+		// traced to their producer. For now, runtime code paths
+		// that sub-slice linear-memory globals will fail
+		// validation; user-make() slices and slice parameters
+		// (the common case Stage E set out to support) work.
 		var auxTyp *types.Type
 		if v.Type.IsSlice() {
 			auxTyp = v.Type
 		} else {
-			// (*[N]T) input — synthesize a []ElemT for the helper.
 			auxTyp = types.NewSlice(v.Type.Elem().Elem())
 		}
 		rptr := s.newValue5A(ssa.OpWasm3SubSlice, ptr.Type, auxTyp, ptr, i, rlen, rcap, s.mem())

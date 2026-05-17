@@ -667,6 +667,40 @@ What still breaks (the next session's gate):
     naturally; slice was the first user, the others retire when
     a string-handling test program demands it.
 
+  - **`copy(dst, src)` slice-to-slice.** Lowers to
+    `runtime.memmove(dst.ptr, src.ptr, n)`. memmove's signature
+    is `(i64 dst, i64 src, i64 n)` — linear-memory pointers —
+    but on wasm3 both ptrs are anyref. Calls fail wasm
+    validation with "expected i64, found anyref" on every
+    `copy()` of a wasmgc-backed slice.
+
+    **Hunch: take the SSA-time intrinsification route.** Two
+    paths considered:
+
+    1. *Runtime-side wasm3 memmove.* Add a `memmove_wasm3.go`
+       that takes `(anyref dst, anyref src, int)` and uses
+       `array.copy` internally. The signature change cascades
+       through every memmove caller (ABI-incompatible with
+       linear-memory uses elsewhere in the runtime, e.g.
+       packing scratch buffers, struct copies, gc bitmap moves).
+       Would also need a parallel linear-memory memmove for
+       the i64 cases.
+
+    2. *SSA-time intrinsic for the `copy()` builtin.* The
+       compiler already intrinsifies `runtime.makeslice` on
+       wasm3 (see commit 5296610763); the same hook point
+       applies to `copy()`. Add an entry to
+       `ssagen.initIntrinsics` for the slice-to-slice copy
+       lowering that emits `OpWasm3ArrayCopy` directly. No
+       runtime ABI change, no parallel implementations, and
+       it dovetails with how Stage E phase 3 already uses
+       `array.copy` in `OpWasm3SubSlice`'s codegen.
+
+    The intrinsic path is the recommended one — keeps the
+    wasm3 deviation contained to the compiler, leaves the
+    runtime fork's memmove footprint unchanged, and reuses
+    the wasmgc `array.copy` emission we already exercise.
+
 The original phase-2 work breakdown (kept for reference):
 
 1. SSA representation change: `OpSliceMake`'s ptr arg

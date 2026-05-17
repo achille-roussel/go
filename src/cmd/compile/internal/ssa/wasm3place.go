@@ -115,12 +115,14 @@ func wasm3HasOutput(v *Value) bool {
 	// emitPhiCopies sources) independent of regalloc's
 	// register-local assignment, paving the way for Phase 4.
 	case OpSelect0, OpSelect1, OpSelectN:
-		// Tuple selectors get the same register as the underlying
-		// tuple element (regalloc.go line ~1519). The call
-		// placement loop already populates that register-local
-		// with the call result; the selector emits nothing on
-		// its own. Consumers reach it via getReg(v.Reg()) /
-		// register-local path, not a per-value local.
+		// Selectors get the same register as their tuple element
+		// via regalloc (regalloc.go ~1519), and the call result
+		// placement loop already populates that register-local.
+		// genssa's outer loop in ssagen/ssa.go skips Arch.
+		// SSAGenValue for Select{0,1,N} ("nothing to do"), so a
+		// per-value local for a selector can never be populated
+		// from the backend — leave them on the register-local
+		// path, the same fallback OpArg-less programs use.
 		return false
 	}
 	// OpPhi is intentionally allowed through: a Phi gets its own

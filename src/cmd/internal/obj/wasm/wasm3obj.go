@@ -179,9 +179,23 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 		decls = append(decls, wasm3LocalDecl{count: 1, typ: 0x7F /* i32 */})
 	}
 
-	w := new(bytes.Buffer)
-	writeUleb128(w, uint64(len(decls)))
+	// Run-length encode the locals vector: consecutive entries
+	// with the same type collapse into a single (count, type) pair.
+	// wasm3Locals emits one wasm3LocalDecl per local; the SSA-side
+	// wasm3PlaceValues output is largely all-i64 runs, so the
+	// grouping saves several bytes per function (a 20-local run
+	// drops from 40 declaration bytes to 3).
+	groups := decls[:0:0]
 	for _, d := range decls {
+		if n := len(groups); n > 0 && groups[n-1].typ == d.typ {
+			groups[n-1].count += d.count
+			continue
+		}
+		groups = append(groups, d)
+	}
+	w := new(bytes.Buffer)
+	writeUleb128(w, uint64(len(groups)))
+	for _, d := range groups {
 		writeUleb128(w, d.count)
 		w.WriteByte(d.typ)
 	}

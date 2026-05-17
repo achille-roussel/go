@@ -371,3 +371,59 @@ trampoline residue forward.
 The Stage G arc currently in flight (function values + `call_ref`)
 can land in parallel — it touches the call ABI and obj encoder, not
 the CFG reconstruction. The two arcs are orthogonal.
+
+## Implementation status (2026-05-17)
+
+Landed:
+
+- `08ed73b1ce` — back-edge detection, natural-loop discovery, loop
+  nesting (`cmd/compile/internal/wasm3/cfg.go`) + 9 unit tests on
+  synthetic graphs.
+- `c2a28e2f35` — `*ssa.Func` adapter, `computeReloopPlan`, shadow-
+  run wiring in `ssaGenBlock` (GOWASM3_RELOOPER_DEBUG-gated dump).
+- `c1f646edb1` — full per-boundary scope planner with branch-depth
+  computation + 5 planner unit tests; plan is stashed per-LSym for
+  the obj-side consumer.
+- `14215294b7` — obj-encoder integration. `Wasm3StructuredPlan`
+  surfaced in `cmd/internal/obj/wasm`; `encodeWasm3Body` consumes
+  the plan when present and emits structured `block`/`loop`/`br`
+  ops, falling back to the legacy `wasm3AnalyzeCFG` dispatch path
+  when the plan is absent.
+- `a0c812e70f` — skip `loopRotate` for the wasm3 backend (a
+  header-at-end layout is not expressible as structured wasm CF).
+- `1d537acc07` — block-scope open position respects loop nesting
+  (open at the start of the smallest containing loop, or at
+  function start). Eliminates the partial-overlap "stack not empty
+  at end" bail.
+
+Coverage as of `1d537acc07` on a full `hello.wasm` build:
+
+  4684 / 5087 functions take the relooper path (92%)
+   403 / 5087 functions bail to legacy
+
+Size + br_table impact on the three audit programs:
+
+  hello.wasm: 1 br_table → 0, 7015 → 6924 bytes (−1.3%)
+  algos.wasm: 4 br_tables → 1, 8401 → 8254 bytes (−1.7%)
+  run.wasm:   2 br_tables → 1, 7940 → 7845 bytes (−1.2%)
+
+`runtime.printint` — the function that motivated the arc — now
+takes the planned path. All M2 14/14 regression cases pass; the
+audit programs produce correct output and pass `wasm-tools
+validate`.
+
+Remaining future work:
+
+- **Bail-rate reduction.** The remaining 8% of functions hit one
+  of the conservative bails (typically a branch with no recorded
+  depth at trust-but-verify, in a complex nested-loop shape). Each
+  pattern is its own analysis and fix; expanding coverage is
+  incremental.
+- **SCC-scoped dispatch fallback.** Today the bail path uses
+  `wasm3AnalyzeCFG`'s whole-function dispatch trampoline. Per the
+  design above, a properly-scoped fallback would emit dispatch
+  only for the affected irreducible SCC, leaving the rest of the
+  function structured. The Step 4 of the implementation sequence.
+- **AST hints (Approach C).** Pure additive layer on top of the
+  current relooper for disassembly fidelity. Deferred until the
+  bail-rate work has stabilised the algorithm.

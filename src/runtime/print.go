@@ -17,13 +17,17 @@ type hex uint64
 // printquoted instead of printstring.
 type quoted string
 
-func bytes(s string) (ret []byte) {
-	rp := (*slice)(unsafe.Pointer(&ret))
-	sp := stringStructOf(&s)
-	rp.array = sp.str
-	rp.len = sp.len
-	rp.cap = sp.len
-	return
+func bytes(s string) []byte {
+	// unsafe.Slice builds the slice header from the string's
+	// underlying pointer and length without first writing through
+	// `(*slice)(unsafe.Pointer(&ret))` to a stack-allocated slice
+	// header. The original reflection-based version emitted
+	// `Get $ret(SP)` which the wasm3 obj backend can't address
+	// (no Go stack frame in linear memory), and the new form is
+	// equally zero-allocation on every other arch — both lower to
+	// a build-the-3-word-header instruction sequence with no heap
+	// or stack-storage involvement.
+	return unsafe.Slice(unsafe.StringData(s), len(s))
 }
 
 var (

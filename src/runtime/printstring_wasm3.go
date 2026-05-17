@@ -9,11 +9,11 @@ package runtime
 import "unsafe"
 
 // printstring for GOARCH=wasm3 calls write1 directly with the
-// string's underlying pointer and length, bypassing the bytes()
-// helper. bytes() reflects on a goroutine-stack-allocated slice
-// header and would emit `Get $name(SP)` — the wasm3 obj backend
-// bails on SP-relative addressing, and boxing the slice through
-// WasmGC is a later rung.
+// string's underlying pointer and length, bypassing the slice
+// header gwrite path — recordForPanic + the gwrite writebuf
+// check both run code that the wasm3 obj backend hasn't grown
+// support for yet (live g.m fields, slice-on-stack-array via
+// Stage C). Retiring this shim is gated on those.
 func printstring(s string) {
 	if len(s) == 0 {
 		return

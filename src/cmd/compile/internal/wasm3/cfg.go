@@ -633,8 +633,11 @@ func computeEmitPlanFor(g cfgGraph, layout []int32, rp *reloopPlan) *emitPlan {
 	}
 
 	if len(stack) != 0 {
-		// Some scope was not properly closed — algorithm bug. Bail
-		// to legacy rather than emit broken wasm.
+		// Some scope was not properly closed — typically because a
+		// block scope opened inside a loop ends past the loop's end
+		// (improper nesting). Bail to legacy; the nesting-fix is
+		// future work (open the block scope outside the loop when
+		// the target is outside the loop too).
 		return nil
 	}
 

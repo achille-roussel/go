@@ -26,6 +26,20 @@ import (
 //	  CMPQ ...
 //	  JLT loop
 func loopRotate(f *Func) {
+	if f.Config.arch == "wasm3" {
+		// The wasm3 backend's relooper (cmd/compile/internal/wasm3/cfg.go)
+		// reconstructs structured wasm control flow (block / loop / br)
+		// from the natural-loop tree, and requires the loop header to be
+		// at the start of its body's layout extent. loopRotate moves the
+		// header to the end to enable check-at-bottom fall-through, which
+		// is the wrong shape for the relooper: a header-at-end layout
+		// cannot be expressed in structured wasm without code duplication
+		// or block reordering. Skip the rotation so the relooper sees the
+		// pre-rotation header-at-start shape; the size win from
+		// structured-CF reconstruction outweighs the one extra wasm
+		// branch loopRotate would have eliminated.
+		return
+	}
 	loopnest := f.loopnest()
 	if loopnest.hasIrreducible {
 		return

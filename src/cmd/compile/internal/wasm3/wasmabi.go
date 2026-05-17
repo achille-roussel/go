@@ -279,6 +279,33 @@ func wasm3StashCollector(fi *obj.FuncInfo, c *typeCollector) {
 	wasm3LiveCollector.Store(fi, c)
 }
 
+// wasm3RegisterArrayBacking is the array.* counterpart of
+// wasm3RegisterStruct: it registers the wasmgc array type that
+// backs a Go slice or array of `elem`, returning its module-
+// internal type index. Like wasm3RegisterStruct it lazily
+// initialises the function's typeCollector on first use.
+func wasm3RegisterArrayBacking(fi *obj.FuncInfo, elem *types.Type) uint32 {
+	if fi == nil {
+		base.Fatalf("wasm3RegisterArrayBacking: fi is nil")
+	}
+	cAny, ok := wasm3LiveCollector.Load(fi)
+	var c *typeCollector
+	if ok {
+		c = cAny.(*typeCollector)
+	} else {
+		c = newTypeCollector()
+		wasm3LiveCollector.Store(fi, c)
+		if fi.WasmType == nil {
+			fi.WasmType = &obj.WasmType{}
+		}
+	}
+	idx := c.collectBacking(elem)
+	var b bytes.Buffer
+	c.table.Write(&b)
+	fi.WasmType.Table = b.Bytes()
+	return uint32(idx)
+}
+
 func tryCollectorAttach(ft *types.Type) (wt *obj.WasmType, c *typeCollector, ok bool) {
 	for _, p := range ft.RecvParams() {
 		if !collectorMatchesRegabi(p.Type) {

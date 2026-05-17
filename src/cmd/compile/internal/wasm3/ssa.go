@@ -745,23 +745,27 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 	case ssa.OpWasm3ArrayNew:
 		getValue64(s, v.Args[0])
 		getValue64(s, v.Args[1])
-		s.Prog(wasm.AArrayNew)
+		p := s.Prog(wasm.AArrayNew)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterArrayAux(s, v))}
 
 	case ssa.OpWasm3ArrayNewDefault:
 		getValue64(s, v.Args[0])
-		s.Prog(wasm.AArrayNewDefault)
+		p := s.Prog(wasm.AArrayNewDefault)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterArrayAux(s, v))}
 
 	case ssa.OpWasm3ArrayGet:
 		getValue64(s, v.Args[0])
 		getValue64(s, v.Args[1])
-		s.Prog(wasm.AArrayGet)
+		p := s.Prog(wasm.AArrayGet)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterArrayAux(s, v))}
 
 	case ssa.OpWasm3ArrayLen:
 		getValue64(s, v.Args[0])
-		s.Prog(wasm.AArrayLen)
+		s.Prog(wasm.AArrayLen) // no type-index operand
 
 	case ssa.OpWasm3RefNull:
-		s.Prog(wasm.ARefNull)
+		p := s.Prog(wasm.ARefNull)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterStructAux(s, v))}
 
 	case ssa.OpWasm3RefIsNull:
 		getValue64(s, v.Args[0])
@@ -1058,6 +1062,22 @@ func wasm3RegisterStructAux(s *ssagen.State, v *ssa.Value) uint32 {
 		v.Fatalf("wasm3RegisterStructAux: v.Aux is not *types.Type: %T", v.Aux)
 	}
 	return wasm3RegisterStruct(s.FuncInfo(), t)
+}
+
+// wasm3RegisterArrayAux is the array.* counterpart of
+// wasm3RegisterStructAux. v.Aux is the *types.Type of the whole
+// array (`[N]T`); the wasm array type is the backing — keyed on
+// the element type T — that wasmgc.Table.collectBacking already
+// produces for slice backings.
+func wasm3RegisterArrayAux(s *ssagen.State, v *ssa.Value) uint32 {
+	t, ok := v.Aux.(*types.Type)
+	if !ok {
+		v.Fatalf("wasm3RegisterArrayAux: v.Aux is not *types.Type: %T", v.Aux)
+	}
+	if !t.IsArray() && !t.IsSlice() {
+		v.Fatalf("wasm3RegisterArrayAux: v.Aux is not an array or slice type: %v", t)
+	}
+	return wasm3RegisterArrayBacking(s.FuncInfo(), t.Elem())
 }
 
 // wasm3AllocTempLocal appends a per-value local of the type

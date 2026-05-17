@@ -19,6 +19,16 @@ import (
 )
 
 func cheapComputableIndex(width int64) bool {
+	// Stage E phase 3 (wasm3): the pointer-walk range fallback below
+	// does unsafe.Pointer + uintptr arithmetic on the slice's data
+	// pointer, which is anyref on wasm3 (per OpWasm3MakeSlice's
+	// lowering). Pointer arithmetic on anyref is invalid wasm —
+	// force the indexed range path on wasm3 for every elem width so
+	// `for _, v := range s` lowers to `for i := 0; i < len(s); i++ {
+	// v = s[i] }`, which hits the wasmgc array.get lowering rules.
+	if ssagen.Arch.LinkArch.Name == "wasm3" {
+		return true
+	}
 	switch ssagen.Arch.LinkArch.Family {
 	// MIPS does not have R+R addressing
 	// Arm64 may lack ability to generate this code in our assembler,

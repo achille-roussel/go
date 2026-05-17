@@ -395,35 +395,50 @@ Landed:
   (open at the start of the smallest containing loop, or at
   function start). Eliminates the partial-overlap "stack not empty
   at end" bail.
+- `2218ffaeec` — bail-category survey infrastructure plus a fix
+  to the loop-anchored open rule: skip the loop where the target
+  is the header (otherwise the scope opens at the same boundary
+  it ends, producing an empty scope that never closes).
+- `02e8148875` — `wasm3RelayoutForRelooper` SSA pass. Replaces
+  the wasm3 loopRotate no-op with a re-layout that pulls every
+  natural loop's body into one contiguous run starting at the
+  header, processed innermost-first. Eliminates the non-
+  contiguous-body bail category entirely.
 
-Coverage as of `1d537acc07` on a full `hello.wasm` build:
+Coverage after `02e8148875` on a full `hello.wasm` build:
 
-  4684 / 5087 functions take the relooper path (92%)
-   403 / 5087 functions bail to legacy
+  4912 / 5087 functions take the relooper path (96.6%)
+   175 / 5087 functions bail to legacy
+
+The remaining 175 bails are all of category "missing-branch-depth"
+— a CFG edge whose source is layout-later than its target but
+where the target does not dominate the source, the canonical
+signature of an irreducible SCC the approximate `hasIrreducible`
+check misses (it only detects irreducibility via natural-loop
+body intrusion).
 
 Size + br_table impact on the three audit programs:
 
   hello.wasm: 1 br_table → 0, 7015 → 6924 bytes (−1.3%)
-  algos.wasm: 4 br_tables → 1, 8401 → 8254 bytes (−1.7%)
-  run.wasm:   2 br_tables → 1, 7940 → 7845 bytes (−1.2%)
+  algos.wasm: 4 br_tables → 0, 8401 → 8194 bytes (−2.5%)
+  run.wasm:   2 br_tables → 0, 7940 → 7702 bytes (−3.0%)
 
-`runtime.printint` — the function that motivated the arc — now
-takes the planned path. All M2 14/14 regression cases pass; the
-audit programs produce correct output and pass `wasm-tools
-validate`.
+**Zero br_tables remain anywhere in any audit binary.** Every
+loop-bearing function now takes the structured path. The M2 14/14
+regression passes; the audit programs produce correct output and
+pass `wasm-tools validate`; the relooper unit tests (now 14 total
+covering back-edges, natural loops, nesting, planner, and the
+blockSet primitive) all pass.
 
 Remaining future work:
 
-- **Bail-rate reduction.** The remaining 8% of functions hit one
-  of the conservative bails (typically a branch with no recorded
-  depth at trust-but-verify, in a complex nested-loop shape). Each
-  pattern is its own analysis and fix; expanding coverage is
-  incremental.
-- **SCC-scoped dispatch fallback.** Today the bail path uses
-  `wasm3AnalyzeCFG`'s whole-function dispatch trampoline. Per the
-  design above, a properly-scoped fallback would emit dispatch
-  only for the affected irreducible SCC, leaving the rest of the
-  function structured. The Step 4 of the implementation sequence.
+- **Proper irreducibility detection + SCC-scoped dispatch
+  fallback.** The remaining 175 bails all signal an irreducible
+  SCC the approximate check missed. Implementing Tarjan's SCC
+  algorithm would classify them correctly, and the design-doc
+  Step 4 (dispatch nest scoped to the affected SCC only, rest of
+  the function structured) would push coverage further.
 - **AST hints (Approach C).** Pure additive layer on top of the
-  current relooper for disassembly fidelity. Deferred until the
-  bail-rate work has stabilised the algorithm.
+  current relooper for disassembly fidelity. Deferred — the
+  current depth-counted disassembly is functional even if not
+  source-matching.

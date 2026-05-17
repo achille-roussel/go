@@ -29,15 +29,19 @@ func loopRotate(f *Func) {
 	if f.Config.arch == "wasm3" {
 		// The wasm3 backend's relooper (cmd/compile/internal/wasm3/cfg.go)
 		// reconstructs structured wasm control flow (block / loop / br)
-		// from the natural-loop tree, and requires the loop header to be
-		// at the start of its body's layout extent. loopRotate moves the
-		// header to the end to enable check-at-bottom fall-through, which
-		// is the wrong shape for the relooper: a header-at-end layout
-		// cannot be expressed in structured wasm without code duplication
-		// or block reordering. Skip the rotation so the relooper sees the
-		// pre-rotation header-at-start shape; the size win from
-		// structured-CF reconstruction outweighs the one extra wasm
-		// branch loopRotate would have eliminated.
+		// from the natural-loop tree, and requires (a) the loop header at
+		// the start of its body's layout extent and (b) the body
+		// contiguous in layout. loopRotate's check-at-bottom rotation
+		// violates (a); the default layout pass can also produce non-
+		// contiguous bodies (a non-body block interleaved among body
+		// blocks) which violates (b). The wasm3-only re-layout below
+		// fixes both by pulling each loop's body together right after
+		// its header, processing nested loops innermost-first so the
+		// outer loop sees the inner as one contiguous block run. The
+		// one extra wasm branch loopRotate would have eliminated does
+		// not matter at the wasm IR level — engines fuse the branch
+		// into the loop's natural CF at JIT time.
+		wasm3RelayoutForRelooper(f)
 		return
 	}
 	loopnest := f.loopnest()

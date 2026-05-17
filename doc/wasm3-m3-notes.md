@@ -217,6 +217,23 @@ progress.
   10000-field engine cap that blocked `go test -c` for any package
   linking `testing` is gone. /tmp/audit.test drops from 2.2MB to
   410KB and now passes type-section validation.
+- `740e1964ce`: obj encoders for `AArrayNew/Default`,
+  `AArrayGet[SU]`, `AArraySet`, `AArrayFill`, `AArrayLen`,
+  `AArrayCopy` — the byte layouts for the 0xFB-prefixed array GC
+  opcodes; R_WASMTYPE relocations on each type-index operand.
+- `dc8b06568a`: `OpWasm3ArrayNew/Default/Get` codegen now sets
+  `p.From.Offset` via a new `wasm3RegisterArrayAux` helper that
+  resolves the array's element type to a `collectBacking` index in
+  the function's per-package wasmgc.Table — same pattern as the
+  struct codegen wired in `38c4ae1366`.
+- `58751f7f28`: `TestCollectArrayField` locks in the array-field
+  lowering for sizes 1 / 4 / 256 / 65504 (the size that produced
+  the original blocker).
+- `8d47cbf50d`: retire `runtime/gwrite_wasm3.go`. The standard
+  gwrite's `recordForPanic` writes to a package-global byte array
+  and the `gp.writebuf` check naturally takes the `writeErr →
+  write1` path when wasm3's minimal proc stub leaves writebuf nil.
+  One of Stage J's print-shim retirements landed early.
 
 Still needed for Stage D to actually fix the test harness:
 - SSA-side lowering for struct-field array accesses. The SSA

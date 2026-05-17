@@ -244,24 +244,76 @@ Still needed for Stage D to actually fix the test harness:
 - Stack-allocated arrays (`var buf [N]T`) need a separate
   treatment. The SSA backend addresses them via SP-relative
   `Get $auto-off(SP)`, an op the wasm3 obj backend doesn't
-  encode; it bails out and the linker stubs the function. To fix:
-  allocate an `array.new_default $T N` ref at function entry,
-  rewrite `&buf` to a local.get of the ref, and translate the
-  resulting load/store pattern to `array.get_u` / `array.set`.
-  Sketches three avenues:
-    1. New SSA op `OpWasm3StackArrayAlloc` that ssagen emits in
-       place of OpVarDef for TARRAY autos; the wasm3 backend
-       lowers it to array.new_default.
-    2. Late-SSA pass that rewrites pointer arithmetic on TARRAY
-       autos into `array.get_u` / `array.set` ops on a new ref
-       local — bigger change, no new generic ops.
-    3. obj-backend pattern-matching of `Get $auto(SP)` + load/
-       store on the auto, with type info carried via a new
-       FuncInfo aux. Smallest SSA-side touch but the obj backend
-       needs to know the auto's element type and length.
+  encode; it bails out and the linker stubs the function.
 
-Option 1 (new generic op) is cleanest; option 3 keeps the
-change localised. Pick when starting the SSA-side work.
+### Implementation guide for the SSA-side stack-array work
+
+Goal: a function like
+
+    func sumBuf(n int32) int32 {
+        var buf [4]int32
+        for i := int32(0); i < n; i++ { buf[i] = i + 1 }
+        var s int32
+        for i := int32(0); i < n; i++ { s += buf[i] }
+        return s
+    }
+
+compiles to:
+
+    array.new_default $arr_i32; local.set $buf
+    ... loop emitting array.set $arr_i32 $buf (i) (i+1) ...
+    ... loop emitting array.get_s $arr_i32 $buf (i) ...
+
+Recommended path (option 1 — cleanest, mirrors how decimal/strconv
+already extends genericOps):
+
+1. **New generic SSA op `OpWasm3StackArray`**. Aux: `*types.Type`
+   (the Go `[N]T` array type). Result: a `(ref null any)`-typed
+   SSA value (in Go-type terms: a `*[N]T` but flagged for the
+   wasm3 backend to lower as `(ref (array T))`). argLength: 1
+   (memory). Lives in genericOps.go but is only ever emitted by
+   wasm3.
+
+2. **ssagen patch in `Compile` (just before `genssa`)**: walk
+   `fn.Dcl` for TARRAY autos that are address-taken. For each,
+   replace the `s.decladdrs[n]` entry from `OpLocalAddr` →
+   `OpWasm3StackArray`. The resulting SSA value flows through the
+   existing call sites unchanged at the SSA level — Go's type
+   system still sees `*[N]T`.
+
+3. **Wasm3.rules pattern-match the `load(OffPtr(stackArrayRef))`
+   shape**:
+
+       (I64Load32U [off] (Wasm3StackArray <t> {sym}) _)
+           && t.Elem().Elem().Size() == 4
+           => (Wasm3ArrayGet {sym} (Wasm3StackArray <t> {sym}) (I32Const [int32(off/4)]))
+
+   One rule per element-size variant (i8/i16/i32/i64) and signed
+   vs unsigned. Symmetric rules for store → Wasm3ArraySet. The
+   element index is `off / element_size`; the rule must reject
+   non-aligned offsets (won't happen for legitimate Go array
+   access).
+
+4. **wasm3 backend codegen for `OpWasm3StackArray`**: emit
+   `i32.const <NumElem>; array.new_default $T_elem; local.set
+   <ref_local>` at first use, then `local.get <ref_local>` to push
+   the ref. The "first use" lives in the entry block by design
+   (step 2 puts it in `s.decladdrs`, which is materialised at
+   function start). Per-value local is anyref-typed (already
+   handled by `wasm3ValueType` since `8269aaec7e`).
+
+Alternative path (option 3 — smallest SSA-side change, biggest
+obj-backend change): keep the SSA flowing i64 pointers, but
+thread a new FuncInfo aux `Wasm3AutoArrays []AutoArrayInfo`
+populated by ssagen with `(NameOffset, ElemType, NumElems)`
+tuples. The wasm3 obj backend reads it, emits array.new_default
+at entry, and pattern-matches the `Get $auto(SP)` + arithmetic
++ load/store sequence to translate. Avoids generic-op churn but
+the pattern matching is fragile (different optimisation levels
+produce different prog shapes).
+
+Option 1 is recommended once a session can dedicate the focused
+SSA-rules + ssagen work.
 
 ## Stretch — interfaces + closures
 

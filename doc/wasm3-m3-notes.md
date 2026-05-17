@@ -507,11 +507,26 @@ These are the operations that still fail on phase 1's bump-heap
 slice — each has its own blocker independent of the wasmgc
 representation change:
 
-- `append(s, v)` — the SSA backend bails on the function (the
-  obj backend emits an `unreachable` stub for `main.sumAppend`).
-  growslice's call path pulls in fast-path SSA shapes the wasm3
-  backend hasn't grown a case for; needs a focused trace of
-  which obj pattern triggers the bail.
+- `append(s, v)` — the obj backend emits an `unreachable` stub
+  for `main.sumAppend`. Traced via `GOWASM3DEBUG=bail:<sym>` to:
+
+  `Get $main..autotmp_7-32(SP)` — a TYPE_ADDR / NAME_AUTO
+  reference to an SP-relative compiler-internal temp at
+  offset -32. The walk pass for `s = append(s, v)` materialises
+  a small stack scratch (likely an `[8]int32` for the typical
+  fast-path) and the SSA backend addresses it via SP. The
+  wasm3 obj backend rejects this on principle (no Go stack
+  frame); Stage D's `OpWasm3StackArray` hook in `ssagen.addr()`
+  only intercepts named TARRAY autos that flow through `addr()`,
+  not compiler-internal autotmps the walker creates via
+  `typecheck.TempAt`.
+
+  Fixing this means routing the autotmp path through the same
+  hook — either by intercepting `typecheck.TempAt` for TARRAY
+  types on wasm3, or by extending the SSA `addr()` PAUTO branch
+  to also catch TSTRUCT autos wrapping a single TARRAY field
+  (the shape walkMakeSlice used and the append fast-path also
+  uses).
 
 - `copy(dst, src)` slice-to-slice copy — reaches `runtime.memmove`
   which in `memmove_wasm3.s` reads its args via `MOVD .+N(FP)` on

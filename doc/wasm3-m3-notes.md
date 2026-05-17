@@ -207,8 +207,56 @@ Still needed for Stage B to actually trigger end-to-end:
 Once both pieces are in place, the bump-allocator `runtime.newobject`
 shim can retire.
 
-**Stage D — strings/[]byte/arrays as `(ref (array T))`**: in
-progress.
+**Stage D — strings/[]byte/arrays as `(ref (array T))`**: ✅
+core landed.
+
+- `670f621f91`: stack-allocated `var buf [N]T` lowers to a
+  wasmgc `(ref (array T))`. New `OpWasm3StackArray` generic-
+  pattern op + 14 lowering rules in Wasm3.rules covering
+  const-offset and `base + idx * elemSize` loads/stores for
+  i8/i16/i32/i64 element sizes (signed and unsigned). The
+  ssagen.addr() hook caches per-name so subsequent &buf
+  references share the allocation. Verified end-to-end:
+  `var buf [4]int64; for i { buf[i] = i+1 }; for i { sum += buf[i] }`
+  produces the expected sumBuf(N)=1+...+N.
+
+What's still on the shim path (Stage J retirement scope):
+runtime/printnum_wasm3, printstring_wasm3,
+write1_wasip1_wasm3, printlock_wasm3.
+
+The print shims hit the same root cause: WASI's fd_write takes
+a linear-memory pointer. Once `var buf [N]byte` is a wasmgc
+`(ref (array i8))`, `unsafe.Pointer(&buf[i])` can't materialise
+that pointer — there's no way to get a raw pointer into a
+wasmgc array. The shims sidestep by either hoisting the buffer
+to a package global (lives in linear memory via the data
+section) or computing only with refs that never need to cross
+into linear memory. Retiring them needs a wasmgc ↔ linear-
+memory bridge:
+
+  - `array.copy` from the wasmgc buffer into a known scratch
+    region of linear memory, call fd_write against that region,
+    then drop. One alloc per write.
+  - Or WASI 0.3 / component-model fd_write that takes an array
+    ref directly (waiting on engine support).
+
+Bridging cleanly is its own piece (sketched in Stage I —
+wasmexport composite marshalling — which has the same
+host-i32-pointer ↔ wasmgc-ref translation problem).
+
+`printlock_wasm3` is the odd one out: not a buffer issue,
+it's the goroutine lock subsystem. The standard `lock(&debuglock)`
+reaches `gopark` on contention; wasm3's proc stub leaves
+`gopark` as an `unreachable` trap, so even uncontested calls
+that touch the parking path crash. M4's scheduler bring-up
+is the retirement gate.
+
+Smaller Stage J piece landed in this arc (commit `ed124f76fe`):
+`runtime.bytes()` rewritten to use `unsafe.Slice(unsafe.StringData,
+len)` instead of the reflection-based `(*slice)(unsafe.Pointer(
+&ret))` shape. The `&ret` was the only thing keeping the
+standard `gwrite(bytes(s))` path off-limits to wasm3; bytes()
+no longer takes the address of a stack slice header.
 
 - `2a3c74ca4b`: `typeCollector.lowerFields` lowers TARRAY as a
   single `(ref (array T_elem))` field via the existing

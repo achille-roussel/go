@@ -6,19 +6,16 @@
 
 package runtime
 
-// printlock and printunlock are no-ops for GOARCH=wasm3 during the M2
-// cutover. The standard implementations dereference getg().m and call
-// lock(&debuglock); both g0/m0 and the runtime lock subsystem are not
-// initialized at this stage of the cutover (no schedinit, no g/m
-// wiring in the wasip1 entry), so the standard versions trap
-// immediately. Print is single-goroutine for now — there is nothing
-// to lock against.
+// printlock and printunlock are no-ops for GOARCH=wasm3.
 //
-// When the runtime fork lands (proc_wasm3.go with a real g0/m0
-// setup, schedinit_wasm3.go with the lock subsystem online), these
-// stubs can either gain a body or fall through to the default
-// implementation in printlock.go.
-
+// The standard implementation increments getg().m.printlock and,
+// on the first acquisition, calls lock(&debuglock). lock() reaches
+// gopark on contention — wasm3's proc stub leaves gopark as an
+// `unreachable` trap, so any uncontended-but-contested call into
+// the lock subsystem crashes. Until the goroutine machinery's own
+// milestone (M4) brings up a real scheduler with a working park /
+// goready pair, wasm3 stays single-goroutine; printlock has
+// nothing to lock against.
 func printlock() {}
 
 func printunlock() {}

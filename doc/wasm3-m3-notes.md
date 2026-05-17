@@ -600,7 +600,7 @@ representation change:
   growslice's zero-the-tail path. Once the call-lowering fix
   lands, both retire.
 
-**Stage E phase 2 — wasmgc backing (in progress, sub-slicing TODO).**
+**Stage E phase 2 + 3 — wasmgc backing for slices (LANDED).**
 
 Three commits this session landed phase 2.A / 2.B / 2.C / 2.D:
 
@@ -617,6 +617,12 @@ Three commits this session landed phase 2.A / 2.B / 2.C / 2.D:
   `OpArgIntReg` of a TSLICE param's data field, and 26 more
   Wasm3.rules patterns lower the resulting
   `(I64Add OpArgIntReg ...)` shape to ArrayGet / ArraySet.
+- `3b965d40c9` (Stage E phase 3): `OpWasm3SubSlice` op +
+  ssagen.slice() hook that intercepts the OpAddPtr step on
+  wasm3 to instead emit a deep-copy via array.new_default +
+  array.copy. New 5-arg-with-aux NewValue5A in ssa/func.go.
+  26 more Wasm3.rules patterns mirror the MakeSlice rules with
+  SubSlice as base.
 
 End-to-end verified:
 
@@ -629,19 +635,26 @@ End-to-end verified:
     `ref.cast (ref $arr_i32); array.get $arr_i32` on its
     anyref slice-ptr parameter, no linear-memory load anywhere
     on the slice path.
+  - `/tmp/wasm3-slice/main.go` sumSub(n,lo,hi) — sub-slicing
+    via OpWasm3SubSlice: 25, 4040, 15, 40 for the four test
+    cases. The sub-slice has a fresh backing populated via
+    array.copy from the parent — semantically a deep copy.
+
+SEMANTIC LIMITATION: writes to a sub-slice do not propagate to
+the parent's backing under phase 3's deep-copy scheme. Reads of
+sub-slices are exact. The design-doc's (ref backing, off, len,
+cap) header would share backing and adjust offset to avoid the
+copy; that's a generic SSA slice-representation rework
+(broader blast radius across all arches) deferred for now.
 
 What still breaks (the next session's gate):
 
-  - **Sub-slicing `s[lo:hi]`.** The SSA decomposition of slice
-    expressions computes a new data ptr as
-    `I64Add(original_ptr, lo*elemSize)` — pointer arithmetic
-    that's meaningless on a wasmgc ref. The wasmgc design's
-    `(ref backing, off, len, cap)` slice header with an
-    explicit offset field is what's needed: sub-slicing then
-    becomes `(s.backing, s.offset + lo, hi - lo, s.cap - lo)`
-    with no allocation. This requires touching the generic SSA
-    slice representation (currently 3 components everywhere),
-    not just lowering rules.
+  - **Sub-slice aliasing semantics.** Phase 3's deep-copy
+    backing means a write to a sub-slice doesn't propagate to
+    the parent. Fixing this needs the design's (ref backing,
+    off, len, cap) header — a generic SSA slice representation
+    change that ripples across all arches. Deferred until a
+    test program demands shared-backing semantics.
 
   - **append(s, v).** The append-fast-path skip from
     `09f64d7dc9` still routes the call to `runtime.growslice` /

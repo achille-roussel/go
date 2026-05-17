@@ -188,6 +188,11 @@ value locals can be any wasm type). Foundation commits landed:
   wasm type without an R_WASMTYPE relocation in the locals
   section — the abstract heap type accepts every typed-ref subtype
   by wasmgc subtyping.
+- `0d7f359e84`: obj encoder cases for `AStructGet[SU]` /
+  `AStructSet` (two-operand: type index + field index) and
+  `ARefCast` / `ARefTest` / `ARefNull` (single type-index
+  operand). The codegen-to-bytes pipeline is now complete for
+  the wasmgc op family.
 
 Still needed for Stage B to actually trigger end-to-end:
 - An SSA-level intrinsic (or rewrite rule) that replaces
@@ -201,6 +206,45 @@ Still needed for Stage B to actually trigger end-to-end:
 
 Once both pieces are in place, the bump-allocator `runtime.newobject`
 shim can retire.
+
+**Stage D — strings/[]byte/arrays as `(ref (array T))`**: in
+progress.
+
+- `2a3c74ca4b`: `typeCollector.lowerFields` lowers TARRAY as a
+  single `(ref (array T_elem))` field via the existing
+  collectBacking path (already in place for the TSLICE case). The
+  type section becomes valid regardless of array length — the
+  10000-field engine cap that blocked `go test -c` for any package
+  linking `testing` is gone. /tmp/audit.test drops from 2.2MB to
+  410KB and now passes type-section validation.
+
+Still needed for Stage D to actually fix the test harness:
+- SSA-side lowering for struct-field array accesses. The SSA
+  backend still emits `i64Load(struct_base + array_offset + i *
+  elem_size)` for `s.buf[i]`, which doesn't match the new
+  ref-typed field. wasm validation now fails one step later —
+  on the function body — with "expected i64, found (ref $type)".
+- Stack-allocated arrays (`var buf [N]T`) need a separate
+  treatment. The SSA backend addresses them via SP-relative
+  `Get $auto-off(SP)`, an op the wasm3 obj backend doesn't
+  encode; it bails out and the linker stubs the function. To fix:
+  allocate an `array.new_default $T N` ref at function entry,
+  rewrite `&buf` to a local.get of the ref, and translate the
+  resulting load/store pattern to `array.get_u` / `array.set`.
+  Sketches three avenues:
+    1. New SSA op `OpWasm3StackArrayAlloc` that ssagen emits in
+       place of OpVarDef for TARRAY autos; the wasm3 backend
+       lowers it to array.new_default.
+    2. Late-SSA pass that rewrites pointer arithmetic on TARRAY
+       autos into `array.get_u` / `array.set` ops on a new ref
+       local — bigger change, no new generic ops.
+    3. obj-backend pattern-matching of `Get $auto(SP)` + load/
+       store on the auto, with type info carried via a new
+       FuncInfo aux. Smallest SSA-side touch but the obj backend
+       needs to know the auto's element type and length.
+
+Option 1 (new generic op) is cleanest; option 3 keeps the
+change localised. Pick when starting the SSA-side work.
 
 ## Stretch — interfaces + closures
 

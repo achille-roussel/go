@@ -58,14 +58,17 @@ func wasm3MarkOnStack(f *Func) {
 			} else {
 				canLiveOnStack.clear()
 			}
-			// Generic consumers (OpConvert, OpPhi, etc.) don't call
-			// getValue on their args in the wasm3 backend — most go
-			// through ssagen's `nothing to do` short-circuit. With
-			// regalloc skipped there's no spill-driven materialization
-			// to absorb their args, so an OnWasmStack value flowing
-			// into a generic op would leak (Skipped++ with no matching
-			// decrement). Skip adding args when v itself is generic.
-			if opcodeTable[v.Op].generic {
+			// Generic consumers (OpConvert, OpPhi, OpKeepAlive, etc.)
+			// don't call getValue on their args in the wasm3 backend —
+			// most go through ssagen's `nothing to do` short-circuit.
+			// With regalloc skipped there's no spill-driven
+			// materialization to absorb their args, so an OnWasmStack
+			// value flowing into a generic op would leak (Skipped++
+			// with no matching decrement). Skip adding args when v is
+			// generic — except for OpMakeResult, whose args are
+			// consumed by BlockRet's getValue calls and therefore do
+			// honor the OnWasmStack contract.
+			if opcodeTable[v.Op].generic && v.Op != OpMakeResult {
 				continue
 			}
 			for _, arg := range v.Args {

@@ -131,15 +131,20 @@ func (c *typeCollector) lowerFields(t *types.Type) []wasmgc.Field {
 		return fields
 
 	case types.TARRAY:
-		// A fixed-length array value flattens element-by-element (rule
-		// 3). Large arrays are expected to be addressed through a slice;
-		// the value form is kept simple here.
-		var fields []wasmgc.Field
-		elem := c.lowerFields(t.Elem())
-		for i := int64(0); i < t.NumElem(); i++ {
-			fields = append(fields, elem...)
-		}
-		return fields
+		// Stage D: every Go array — small or large — lowers to a
+		// single `(ref (array T_elem))` field. The wasm engine's
+		// 10 000-field cap on struct types rules out a threshold-
+		// based "unroll if small, ref if large" lowering (see
+		// doc/wasm3-m3-notes.md "Blocker for the wasip1 test
+		// harness"), and a single representation keeps the SSA
+		// backend and runtime helpers from having to handle two
+		// shapes. Element accesses go through array.get / array.set
+		// on the ref once Stage C's lowering rules emit those ops;
+		// until then, struct fields containing arrays are typed
+		// correctly but accessed through the i64-pointer path the
+		// SSA backend still emits, which will mismatch and force
+		// the function to fall back to the encodeWasm3Body stub.
+		return []wasmgc.Field{{Storage: wasmgc.RefStorage(c.collectBacking(t.Elem()), true), Mutable: true}}
 
 	case types.TMAP, types.TCHAN, types.TFUNC:
 		// Pointer-shaped runtime types. Their concrete representation is

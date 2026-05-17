@@ -535,22 +535,37 @@ func computeEmitPlanFor(g cfgGraph, layout []int32, rp *reloopPlan) *emitPlan {
 	}
 
 	// For each block T needing a block scope, compute the open
-	// position: the layout index of T's immediate dominator (the
-	// latest block before T in layout that dominates T). All forward
-	// predecessors of T are dominated by T.idom (definition of
-	// dominators), so they are all at or after the idom in layout
-	// for reducible CFGs.
+	// position. Conservative rule that guarantees proper nesting:
+	//   - If T is inside a loop, open the scope at the SMALLEST
+	//     containing loop's first layout position (so the block
+	//     scope is fully inside the loop scope).
+	//   - Otherwise, open the scope at boundary 0 (function start).
+	// Pairs of block scopes then either share an open position
+	// (sort-by-endsAt-descending decides nesting) or open at
+	// different loop levels (the outer-loop scope's range fully
+	// contains the inner-loop scope's range).
+	//
+	// This produces deeper nesting than an idom-based open would,
+	// but the depth is bounded by the loop nest level + the block-
+	// scope count per nest level, and avoids the partial-overlap
+	// failure mode where a scope opened inside a loop ends past the
+	// loop's end.
 	blockScopeOpenAt := make(map[int32]int, len(needsBlockScope))
 	for T := range needsBlockScope {
 		ti := layoutIdx[T]
-		idomPos := 0
-		for j := ti - 1; j >= 0; j-- {
-			if g.Dominates(layout[j], T) {
-				idomPos = j
-				break
+		openPos := 0
+		smallestSpan := len(layout) + 1
+		for _, ext := range loopExtents {
+			if ti < ext.first || ti > ext.last {
+				continue
+			}
+			span := ext.last - ext.first
+			if span < smallestSpan {
+				smallestSpan = span
+				openPos = ext.first
 			}
 		}
-		blockScopeOpenAt[T] = idomPos
+		blockScopeOpenAt[T] = openPos
 	}
 
 	// Walk boundaries and build the plan.
@@ -638,6 +653,12 @@ func computeEmitPlanFor(g cfgGraph, layout []int32, rp *reloopPlan) *emitPlan {
 		// (improper nesting). Bail to legacy; the nesting-fix is
 		// future work (open the block scope outside the loop when
 		// the target is outside the loop too).
+		if reloopDebug {
+			fmt.Fprintf(os.Stderr, "wasm3-relooper:   BAIL: stack not empty at end (len=%d)\n", len(stack))
+			for i, s := range stack {
+				fmt.Fprintf(os.Stderr, "wasm3-relooper:     stack[%d] kind=%d target=b%d endsAt=%d\n", i, s.kind, s.target, s.endsAt)
+			}
+		}
 		return nil
 	}
 

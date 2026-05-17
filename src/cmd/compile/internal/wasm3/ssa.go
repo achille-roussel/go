@@ -477,13 +477,24 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		s.Prog(wasm.AArraySet)
 
 	case ssa.OpArgIntReg, ssa.OpArgFloatReg:
-		// M2 cutover, Stage C.2: the argument is already in its
-		// assigned register, which for wasm3 is a wasm function
-		// parameter local — there is nothing to emit. Unlike the
-		// register architectures, wasm3 has no morestack prologue, so
-		// there is no entry spill/unspill wrapper to feed RegArgs into.
+		// M3 Phase 3b: copy the wasm function parameter into v's
+		// per-value local. The SSA backend works in i64 GP
+		// "registers" so a narrow integer param (i32 in the wasm
+		// signature) is widened with i64.extend_i32_u on the way
+		// in. Float params and i64 params are copied verbatim.
 		v.Block.Func.RegArgs = nil
 		ssagen.CheckArgReg(v)
+		dst, dstOk := wasm3ValueLocalIdx(s, v)
+		if !dstOk {
+			break // OpArg not placed; original no-op path.
+		}
+		idx, narrow := wasm3OpArgParamInfo(v)
+		p := s.Prog(wasm.ALocalGet)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(idx)}
+		if narrow {
+			s.Prog(wasm.AI64ExtendI32U)
+		}
+		localSetIdx(s, dst)
 
 	case ssa.OpStoreReg:
 		// M2 cutover, Stage C.2: a register spill targets a wasm local,
@@ -956,6 +967,48 @@ func wasm3ValueLocalIdx(s *ssagen.State, v *ssa.Value) (uint32, bool) {
 	// start at nparams.
 	base := wasm3ParamLocalCount(v.Block.Func)
 	return base + locals[v.ID], true
+}
+
+// wasm3OpArgParamInfo returns the wasm parameter local index for an
+// OpArgIntReg or OpArgFloatReg value, plus whether that parameter's
+// wasm type is narrow (i32-class in the wasm signature: WasmI32,
+// WasmPtr, or WasmBool) and therefore needs i64.extend_i32_u on the
+// way into the SSA i64 register width.
+//
+// v.AuxInt is the per-class index — for OpArgIntReg it counts only
+// int params before v in declaration order; OpArgFloatReg counts
+// only float params. The wasm signature interleaves the two classes
+// by declaration order, so the absolute wasm param index is found
+// by walking WasmType.Params and counting until the per-class N-th
+// param of the right class is reached.
+func wasm3OpArgParamInfo(v *ssa.Value) (paramIdx uint32, narrow bool) {
+	isFloat := v.Op == ssa.OpArgFloatReg
+	wantIdx := v.AuxInt
+	ifn := v.Block.Func.Frontend().Func()
+	if ifn == nil || ifn.LSym == nil {
+		return 0, false
+	}
+	wt := ifn.LSym.Func().WasmType
+	if wt == nil {
+		return 0, false
+	}
+	var intCount, floatCount int64
+	for i, f := range wt.Params {
+		switch f.Type {
+		case obj.WasmF32, obj.WasmF64:
+			if isFloat && floatCount == wantIdx {
+				return uint32(i), false
+			}
+			floatCount++
+		default: // WasmI32, WasmI64, WasmPtr, WasmBool, WasmRef
+			if !isFloat && intCount == wantIdx {
+				narrow = f.Type == obj.WasmI32 || f.Type == obj.WasmPtr || f.Type == obj.WasmBool
+				return uint32(i), narrow
+			}
+			intCount++
+		}
+	}
+	return 0, false
 }
 
 // wasm3ParamLocalCount returns the number of wasm locals that the

@@ -104,12 +104,16 @@ func wasm3HasOutput(v *Value) bool {
 	switch v.Op {
 	case OpInlMark, OpInvalid, OpUnknown, OpVarDef, OpVarLive, OpKeepAlive:
 		return false
-	case OpArgIntReg, OpArgFloatReg:
-		// Parameters already live in wasm parameter locals
-		// 0..nparams-1 by the wasm function signature. genssa's
-		// fallback path (getReg(v.Reg()) → local.get <param>)
-		// reads them in place; no per-value-local copy needed.
-		return false
+	// OpArgIntReg / OpArgFloatReg ARE placed. A wasm function
+	// parameter lives in wasm local 0..nparams-1 by the function
+	// signature, but the SSA backend uses i64 internally even for
+	// narrow params (int32, etc.) — so OpArg gets its own per-
+	// value local of the SSA type, and the wasm3 backend emits an
+	// entry-prologue copy (`local.get <param>; widen?; local.set
+	// <Larg>`) at each OpArg's codegen site. Routing OpArg through
+	// a per-value local makes its consumers (and especially
+	// emitPhiCopies sources) independent of regalloc's
+	// register-local assignment, paving the way for Phase 4.
 	case OpSelect0, OpSelect1, OpSelectN:
 		// Tuple selectors get the same register as the underlying
 		// tuple element (regalloc.go line ~1519). The call

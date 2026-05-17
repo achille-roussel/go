@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"go/constant"
 	"internal/abi"
+	"internal/buildcfg"
 
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/ir"
@@ -433,6 +434,16 @@ func (o *orderState) stmtList(l ir.Nodes) {
 //	m = OMAKESLICECOPY([]T, x, s); nil
 func orderMakeSliceCopy(s []ir.Node) {
 	if base.Flag.N != 0 || base.Flag.Cfg.Instrumenting {
+		return
+	}
+	// Stage E phase 4 (wasm3): the make+copy → makeslicecopy
+	// optimization condenses two operations the wasm3 compiler
+	// handles separately (make → OpWasm3MakeSlice; copy → wasm3
+	// array.copy intrinsic) into one runtime.makeslicecopy call
+	// that returns an unsafe.Pointer the wasm3 backend can't
+	// interpret as anyref. Disable the optimization on wasm3 —
+	// the slower two-step path is what works.
+	if buildcfg.GOARCH == "wasm3" {
 		return
 	}
 	if len(s) < 2 || s[0] == nil || s[0].Op() != ir.OAS || s[1] == nil || s[1].Op() != ir.OCOPY {

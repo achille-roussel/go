@@ -577,6 +577,23 @@ func appendSlice(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 		nwid = ir.NewBinaryExpr(base.Pos, ir.OMUL, nwid, ir.NewInt(base.Pos, elemtype.Size()))
 
 		// instantiate func memmove(to *any, frm *any, length uintptr)
+		// Stage E phase 4 (wasm3): this memmove call passes
+		// addr = `&s[idx]` (anyref + i64 pointer arithmetic) and
+		// sptr = `l2.ptr` (anyref). On wasm3 the call would fail
+		// wasm validation because runtime.memmove's signature is
+		// (i64 dst, i64 src, i64 n_bytes). Unlike the walkCopy
+		// path (handled by wasm3SliceCopy with a 0 dst offset),
+		// here the dst is `&s[idx]` — a non-zero index into a
+		// wasmgc backing. Supporting it needs either a sliced-
+		// dst variant of wasm3SliceCopy (passing dst slice + idx
+		// + n separately so the SSA intrinsic can emit
+		// array.copy with a non-zero dst_offset) or routing
+		// through a runtime helper. Documented as a Stage E
+		// phase 4 gap; user programs that bare-append-many
+		// non-pointer-elem slices will hit a validator error.
+		// The pointer-elem case goes through typedslicecopy
+		// (unaffected); the instrumenting case goes through
+		// runtime.slicecopy (also unaffected by anyref).
 		fn := typecheck.LookupRuntime("memmove", elemtype, elemtype)
 		ncopy = mkcall1(fn, nil, &nodes, addr, sptr, nwid)
 	}

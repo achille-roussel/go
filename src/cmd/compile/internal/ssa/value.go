@@ -599,14 +599,25 @@ func (v *Value) removeable() bool {
 // AutoVar returns a *Name and int64 representing the auto variable and offset within it
 // where v should be spilled.
 func AutoVar(v *Value) (*ir.Name, int64) {
-	if loc, ok := v.Block.Func.RegAlloc[v.ID].(LocalSlot); ok {
-		if v.Type.Size() > loc.Type.Size() {
-			v.Fatalf("v%d: spill/restore type %v doesn't fit in slot type %v", v.ID, v.Type, loc.Type)
+	if ra := v.Block.Func.RegAlloc; int(v.ID) < len(ra) {
+		if loc, ok := ra[v.ID].(LocalSlot); ok {
+			if v.Type.Size() > loc.Type.Size() {
+				v.Fatalf("v%d: spill/restore type %v doesn't fit in slot type %v", v.ID, v.Type, loc.Type)
+			}
+			return loc.N, loc.Off
 		}
-		return loc.N, loc.Off
 	}
-	// Assume it is a register, return its spill slot, which needs to be live
-	nameOff := v.Aux.(*AuxNameOffset)
+	// Assume it is a register, return its spill slot, which needs to be live.
+	// On GOARCH=wasm3 (regalloc skipped), some values that the liveness
+	// machinery probes via AutoVar — notably OpArgIntReg / OpArgFloatReg
+	// in functions with no result params — can have a nil Aux. There's no
+	// spill slot to point at because wasm3 doesn't use linear-memory
+	// frames; returning a nil *ir.Name lets affectedVar's downstream
+	// `n == nil` check skip the entry.
+	nameOff, _ := v.Aux.(*AuxNameOffset)
+	if nameOff == nil {
+		return nil, 0
+	}
 	return nameOff.Name, nameOff.Offset
 }
 

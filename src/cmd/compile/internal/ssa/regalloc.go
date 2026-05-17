@@ -145,7 +145,17 @@ const (
 
 // regalloc performs register allocation on f. It sets f.RegAlloc
 // to the resulting allocation.
+//
+// For GOARCH=wasm3, regalloc is skipped: wasm3PlaceValues already
+// gave every SSA value its own wasm local, and the wasm3 backend's
+// genssa path reads/writes them by local index rather than through
+// regalloc-assigned registers. A nil RegAlloc slice means
+// f.getHome(id) returns nil for every value, which is what later
+// passes (stackalloc / genssa) expect to see for unspilled values.
 func regalloc(f *Func) {
+	if f.Config.arch == "wasm3" {
+		return
+	}
 	var s regAllocState
 	s.init(f)
 	s.regalloc(f)

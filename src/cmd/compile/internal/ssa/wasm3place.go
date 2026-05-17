@@ -136,20 +136,16 @@ func wasm3HasOutput(v *Value) bool {
 	// ssaGenBlock before each control transfer, taking the place
 	// of regalloc's destination-register-sharing scheme.
 
-	// Mirror regalloc's OnWasmStack heuristic (regalloc.go ~877):
-	// a single-use non-generic non-memory wasm op is a candidate
-	// for being consumed directly off the wasm stack at its
-	// use site, with no local needed. Skip placement for those;
-	// if the value does end up OnWasmStack, the per-value local
-	// is never written. If it ends up needing a local (because
-	// regalloc decided not to flag it OnWasmStack), genssa's
-	// fallback path goes through getReg(v.Reg()) and the obj
-	// backend declares a register-local on demand — same cost
-	// as the old register-local scheme rather than the per-value
-	// local declaration we'd otherwise burn.
-	if v.Uses == 1 && !opcodeTable[v.Op].generic {
-		return false
-	}
+	// Phase 4 (regalloc skipped for wasm3): every value-producing
+	// op needs a per-value local because there's no register-local
+	// fallback. The OnWasmStack-mirror skip (regalloc.go's `Uses
+	// == 1 && !generic`) trades cleanly only when something else
+	// is willing to materialize values to a register-local when
+	// the analysis is wrong — without regalloc that fallback
+	// path doesn't exist. Re-enabling the skip is possible but
+	// requires teaching emitPhiCopies and every getValue-less
+	// consumer path to honor OnWasmStack on its source values
+	// (see "wasm: bad stack" panic on runtime build attempt).
 	return true
 }
 

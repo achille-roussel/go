@@ -7785,6 +7785,11 @@ func CheckLoweredPhi(v *ssa.Value) {
 		return
 	}
 	f := v.Block.Func
+	if len(f.RegAlloc) == 0 {
+		// GOARCH=wasm3 skips regalloc; Phis are resolved by
+		// per-edge local copies in the wasm3 backend.
+		return
+	}
 	loc := f.RegAlloc[v.ID]
 	for _, a := range v.Args {
 		if aloc := f.RegAlloc[a.ID]; aloc != loc { // TODO: .Equal() instead?

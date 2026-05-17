@@ -616,7 +616,10 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		case *obj.LSym:
 			ssagen.AddAux(&p.From, v)
 		case *ir.Name:
-			p.From.Reg = v.Args[0].Reg()
+			// args[0] is always OpSP for a stack-relative ir.Name
+			// address; with regalloc skipped, v.Args[0].Reg() has
+			// no assignment, so name the SP register directly.
+			p.From.Reg = wasm.REG_SP
 			ssagen.AddAux(&p.From, v)
 		default:
 			panic("wasm: bad LoweredAddr")

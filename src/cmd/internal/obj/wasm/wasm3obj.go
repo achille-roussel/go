@@ -617,6 +617,53 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 					Add:  p.From.Offset,
 				})
 				continue
+
+			case AArrayNew, AArrayNewDefault, AArrayGet, AArrayGetS, AArrayGetU, AArraySet, AArrayFill:
+				// 0xFB-prefixed array GC opcodes with a single type-
+				// index operand. Stack on entry / exit varies per op
+				// (array.new: elem+len->ref, array.get: ref+idx->val,
+				// array.set: ref+idx+val->void, …) but the *encoding*
+				// is identical — opcode + R_WASMTYPE-relocated leb128.
+				if p.From.Type != obj.TYPE_CONST {
+					return nil, false
+				}
+				writeOpcode(w, p.As)
+				relocs = append(relocs, obj.Reloc{
+					Type: objabi.R_WASMTYPE,
+					Off:  int32(w.Len()),
+					Siz:  1,
+					Add:  p.From.Offset,
+				})
+				continue
+
+			case AArrayLen:
+				// array.len has no type-index immediate — it works
+				// on any array reference. Just the opcode byte (and
+				// the 0xFB prefix writeOpcode handles).
+				writeOpcode(w, p.As)
+				continue
+
+			case AArrayCopy:
+				// array.copy takes two type indices: dst-array type
+				// and src-array type. p.From.Offset = dst typeidx,
+				// p.To.Offset = src typeidx. Both R_WASMTYPE-relocated.
+				if p.From.Type != obj.TYPE_CONST || p.To.Type != obj.TYPE_CONST {
+					return nil, false
+				}
+				writeOpcode(w, p.As)
+				relocs = append(relocs, obj.Reloc{
+					Type: objabi.R_WASMTYPE,
+					Off:  int32(w.Len()),
+					Siz:  1,
+					Add:  p.From.Offset,
+				})
+				relocs = append(relocs, obj.Reloc{
+					Type: objabi.R_WASMTYPE,
+					Off:  int32(w.Len()),
+					Siz:  1,
+					Add:  p.To.Offset,
+				})
+				continue
 			}
 			writeOpcode(w, p.As)
 		}

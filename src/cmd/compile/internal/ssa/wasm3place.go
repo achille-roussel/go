@@ -135,6 +135,21 @@ func wasm3HasOutput(v *Value) bool {
 	// per-edge `local.get src; local.set Lphi` copies in
 	// ssaGenBlock before each control transfer, taking the place
 	// of regalloc's destination-register-sharing scheme.
+
+	// Mirror regalloc's OnWasmStack heuristic (regalloc.go ~877):
+	// a single-use non-generic non-memory wasm op is a candidate
+	// for being consumed directly off the wasm stack at its
+	// use site, with no local needed. Skip placement for those;
+	// if the value does end up OnWasmStack, the per-value local
+	// is never written. If it ends up needing a local (because
+	// regalloc decided not to flag it OnWasmStack), genssa's
+	// fallback path goes through getReg(v.Reg()) and the obj
+	// backend declares a register-local on demand — same cost
+	// as the old register-local scheme rather than the per-value
+	// local declaration we'd otherwise burn.
+	if v.Uses == 1 && !opcodeTable[v.Op].generic {
+		return false
+	}
 	return true
 }
 

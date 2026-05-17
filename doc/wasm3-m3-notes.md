@@ -518,16 +518,40 @@ representation change:
   a Go stack frame the wasm3 runtime doesn't have. A wrapper the
   backend auto-generates stores the wasm-level params to address
   0 (uninitialised "FP" local) and then calls into an
-  `unreachable` stub for the asm body. Investigated:
-  rewriting the asm to `Get R0/R1/R2` directly + extending
-  `enqueueFunc`'s bodyless branch to call `PrepareFunc` on the
-  runtime forward decl — but the forward-decl `*ir.Func` and the
-  asm-defined LSym are distinct enough that the WasmType
-  attachment doesn't reach `encodeWasm3Body`. The proper fix is
-  signature derivation in `assemble3` from the LSym's frame size
-  (or a runtime pragma carrying the WasmType for asm symbols).
-  Reverted. (Same shape blocks `runtime.memclrNoHeapPointers`,
-  used by growslice's zero-the-tail path.)
+  `unreachable` stub for the asm body.
+
+  Investigations in two carry-on rounds:
+
+  1. Rewrite the asm to `Get R0/R1/R2` directly + extend
+     `enqueueFunc`'s bodyless branch to call `PrepareFunc` on the
+     runtime forward decl. The forward-decl `*ir.Func` and the
+     asm-defined LSym are distinct enough that the WasmType
+     attachment doesn't reach `encodeWasm3Body`. Reverted.
+
+  2. Synthesise a flat `(N i64)` `WasmType` in `assemble3` by
+     scanning the prog stream's max `R{N}` reference (so memmove's
+     `Get R0/R1/R2` infers 3 i64 params) + add memory-index
+     immediates for `memory.copy` / `memory.fill` in
+     `encodeWasm3Body`'s operand-less switch. The asm body then
+     compiled to a correctly-typed wasm function. But the
+     auto-generated ABIInternal→ABI0 wrapper still emits the
+     standard frame-store sequence (param→spill, spill→`i64.store`
+     at "FP+N") and then issues a typed call with nothing on the
+     wasm stack — the wrapper's call lowering iterates
+     `call.ABIInfo().InParams()`, which for an ABI0 callee returns
+     empty (args go via the frame), so no register pushes happen.
+     Skipping wrapper generation on wasm3 broke linker symbol
+     resolution. Reverted.
+
+  The cleanest fix needs the wasm3 SSA call lowering to push args
+  for ABI0 callees too (since wasm3 has no Go-stack-frame ABI),
+  *plus* the asm synthesis + memory-index immediate from round 2.
+  Three pieces, one focused session — not fragile to attempt
+  out-of-order.
+
+  Same shape blocks `runtime.memclrNoHeapPointers`, used by
+  growslice's zero-the-tail path. Once the call-lowering fix
+  lands, both retire.
 
 **Stage E phase 2 — wasmgc backing (not yet started).**
 

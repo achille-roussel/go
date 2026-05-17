@@ -48,6 +48,22 @@ func newTypeCollector() *typeCollector {
 	}
 }
 
+// packedArrayPrim returns the packed wasm storage primitive an array
+// backing should use for sub-i32 element kinds. wasmgc allows i8 and
+// i16 packed storage inside arrays (and structs), exposed through
+// array.get_u / array.get_s on read. We pick it for byte / int16
+// arrays so a Go `[N]byte` lays out as a byte-tight (array (mut i8))
+// rather than wasting 3 bytes per element on i32 storage.
+func packedArrayPrim(k types.Kind) (wasmgc.Prim, bool) {
+	switch k {
+	case types.TBOOL, types.TINT8, types.TUINT8:
+		return wasmgc.I8, true
+	case types.TINT16, types.TUINT16:
+		return wasmgc.I16, true
+	}
+	return 0, false
+}
+
 // scalarPrim returns the primitive wasm storage type for a Go scalar
 // kind, and whether the kind is in fact a scalar. Integers narrower than
 // 64 bits use i32 storage (rule 1); 64-bit integers, int, uint and
@@ -212,7 +228,10 @@ func (c *typeCollector) collectStruct(t *types.Type) int {
 // collectBacking reserves and returns the table index of the array type
 // backing a []elem slice. A scalar or pointer element stores inline; a
 // composite element is stored as an array of boxed references, since a
-// wasm array element is a single storage slot (rule 5).
+// wasm array element is a single storage slot (rule 5). Sub-i32
+// integer / bool element kinds use packed i8 / i16 storage so the
+// backing array is byte-/halfword-tight — wasmgc allows packed
+// element storage on arrays even though field storage rounds up.
 func (c *typeCollector) collectBacking(elem *types.Type) int {
 	if idx, ok := c.backing[elem]; ok {
 		return idx
@@ -221,7 +240,9 @@ func (c *typeCollector) collectBacking(elem *types.Type) int {
 	c.backing[elem] = idx
 
 	var st wasmgc.Storage
-	if p, ok := scalarPrim(elem.Kind()); ok {
+	if p, ok := packedArrayPrim(elem.Kind()); ok {
+		st = wasmgc.PrimStorage(p)
+	} else if p, ok := scalarPrim(elem.Kind()); ok {
 		st = wasmgc.PrimStorage(p)
 	} else if elem.Kind() == types.TPTR {
 		st = c.pointerStorage(elem.Elem())

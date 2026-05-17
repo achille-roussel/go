@@ -269,6 +269,13 @@
 	(LoweredMove [s] dst src mem)
 
 // Lowering Zero instructions
+// A wasmgc stack array is zero-initialized by array.new_default already,
+// so the SSA-level zeroing pattern that ssagen emits at variable
+// declaration is redundant. Match it before the per-size Zero rules
+// below so we don't expand into linear-memory I64Stores against a
+// (ref (array T)) destination.
+(Zero [_] (StackArray _) mem) => mem
+
 (Zero [0] _ mem) => mem
 (Zero [1] destptr mem) => (I64Store8 destptr (I64Const [0]) mem)
 (Zero [2] destptr mem) => (I64Store16 destptr (I64Const [0]) mem)
@@ -489,43 +496,52 @@
 	(ArraySet {t.Elem()} sa idx val mem)
 
 // Constant-offset loads.
+//
+// The result type passed to ArrayGet drives the wasm3 codegen's
+// signedness choice: signed Go integer types → array.get_s / sign-
+// extend; unsigned → array.get_u / zero-extend. For non-packed elem
+// sizes (4, 8) the wasmgc spec uses plain array.get; the codegen
+// extends i32 → i64 according to v.Type.IsSigned() so a Load32U
+// stays zero-extended and a Load32S stays sign-extended.
 (I64Load [off] sa:(StackArray <t> _) _) && t.Elem().Elem().Size() == 8 =>
 	(ArrayGet <typ.Int64> {t.Elem()} sa (I64Const <typ.Int> [off/8]))
 (I64Load32S [off] sa:(StackArray <t> _) _) && t.Elem().Elem().Size() == 4 =>
-	(I64Extend32S (ArrayGet <typ.Int32> {t.Elem()} sa (I64Const <typ.Int> [off/4])))
-(I64Load32U [off] sa:(StackArray <t> _) _) && t.Elem().Elem().Size() == 4 =>
 	(ArrayGet <typ.Int32> {t.Elem()} sa (I64Const <typ.Int> [off/4]))
+(I64Load32U [off] sa:(StackArray <t> _) _) && t.Elem().Elem().Size() == 4 =>
+	(ArrayGet <typ.UInt32> {t.Elem()} sa (I64Const <typ.Int> [off/4]))
 (I64Load16S [off] sa:(StackArray <t> _) _) && t.Elem().Elem().Size() == 2 =>
 	(ArrayGet <typ.Int16> {t.Elem()} sa (I64Const <typ.Int> [off/2]))
 (I64Load16U [off] sa:(StackArray <t> _) _) && t.Elem().Elem().Size() == 2 =>
-	(ArrayGet <typ.Int16> {t.Elem()} sa (I64Const <typ.Int> [off/2]))
+	(ArrayGet <typ.UInt16> {t.Elem()} sa (I64Const <typ.Int> [off/2]))
 (I64Load8S [off] sa:(StackArray <t> _) _) && t.Elem().Elem().Size() == 1 =>
 	(ArrayGet <typ.Int8> {t.Elem()} sa (I64Const <typ.Int> [off]))
 (I64Load8U [off] sa:(StackArray <t> _) _) && t.Elem().Elem().Size() == 1 =>
-	(ArrayGet <typ.Int8> {t.Elem()} sa (I64Const <typ.Int> [off]))
+	(ArrayGet <typ.UInt8> {t.Elem()} sa (I64Const <typ.Int> [off]))
 
-// Variable-offset loads (mirror of variable-offset stores).
+// Variable-offset loads (mirror of variable-offset stores). Same
+// signed/unsigned-typed result-as-codegen-hint convention as the
+// constant-offset rules above.
 (I64Load [off] (I64Add sa:(StackArray <t> _) (I64Shl idx (I64Const [k]))) _)
 	&& off == 0 && t.Elem().Elem().Size() == 8 && k == 3 =>
-	(ArrayGet <typ.Int32> {t.Elem()} sa idx)
+	(ArrayGet <typ.Int64> {t.Elem()} sa idx)
 (I64Load32S [off] (I64Add sa:(StackArray <t> _) (I64Shl idx (I64Const [k]))) _)
 	&& off == 0 && t.Elem().Elem().Size() == 4 && k == 2 =>
-	(I64Extend32S (ArrayGet <typ.Int32> {t.Elem()} sa idx))
+	(ArrayGet <typ.Int32> {t.Elem()} sa idx)
 (I64Load32U [off] (I64Add sa:(StackArray <t> _) (I64Shl idx (I64Const [k]))) _)
 	&& off == 0 && t.Elem().Elem().Size() == 4 && k == 2 =>
-	(ArrayGet <typ.Int32> {t.Elem()} sa idx)
+	(ArrayGet <typ.UInt32> {t.Elem()} sa idx)
 (I64Load16S [off] (I64Add sa:(StackArray <t> _) (I64Shl idx (I64Const [k]))) _)
 	&& off == 0 && t.Elem().Elem().Size() == 2 && k == 1 =>
-	(ArrayGet <typ.Int32> {t.Elem()} sa idx)
+	(ArrayGet <typ.Int16> {t.Elem()} sa idx)
 (I64Load16U [off] (I64Add sa:(StackArray <t> _) (I64Shl idx (I64Const [k]))) _)
 	&& off == 0 && t.Elem().Elem().Size() == 2 && k == 1 =>
-	(ArrayGet <typ.Int32> {t.Elem()} sa idx)
+	(ArrayGet <typ.UInt16> {t.Elem()} sa idx)
 (I64Load8S [off] (I64Add sa:(StackArray <t> _) idx) _)
 	&& off == 0 && t.Elem().Elem().Size() == 1 =>
-	(ArrayGet <typ.Int32> {t.Elem()} sa idx)
+	(ArrayGet <typ.Int8> {t.Elem()} sa idx)
 (I64Load8U [off] (I64Add sa:(StackArray <t> _) idx) _)
 	&& off == 0 && t.Elem().Elem().Size() == 1 =>
-	(ArrayGet <typ.Int32> {t.Elem()} sa idx)
+	(ArrayGet <typ.UInt8> {t.Elem()} sa idx)
 
 // transforming readonly globals into constants
 (I64Load [off] (LoweredAddr {sym} [off2] (SB)) _) && symIsRO(sym) && isU32Bit(off+int64(off2)) => (I64Const [int64(read64(sym, off+int64(off2), config.ctxt.Arch.ByteOrder))])

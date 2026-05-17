@@ -4328,7 +4328,7 @@ func rewriteValueWasm3_OpWasm3I64Load(v *Value) bool {
 	}
 	// match: (I64Load [off] (I64Add sa:(StackArray <t> _) (I64Shl idx (I64Const [k]))) _)
 	// cond: off == 0 && t.Elem().Elem().Size() == 8 && k == 3
-	// result: (ArrayGet <typ.Int32> {t.Elem()} sa idx)
+	// result: (ArrayGet <typ.Int64> {t.Elem()} sa idx)
 	for {
 		off := auxIntToInt64(v.AuxInt)
 		if v_0.Op != OpWasm3I64Add {
@@ -4355,7 +4355,7 @@ func rewriteValueWasm3_OpWasm3I64Load(v *Value) bool {
 			break
 		}
 		v.reset(OpWasm3ArrayGet)
-		v.Type = typ.Int32
+		v.Type = typ.Int64
 		v.Aux = typeToAux(t.Elem())
 		v.AddArg2(sa, idx)
 		return true
@@ -4428,7 +4428,7 @@ func rewriteValueWasm3_OpWasm3I64Load16S(v *Value) bool {
 	}
 	// match: (I64Load16S [off] (I64Add sa:(StackArray <t> _) (I64Shl idx (I64Const [k]))) _)
 	// cond: off == 0 && t.Elem().Elem().Size() == 2 && k == 1
-	// result: (ArrayGet <typ.Int32> {t.Elem()} sa idx)
+	// result: (ArrayGet <typ.Int16> {t.Elem()} sa idx)
 	for {
 		off := auxIntToInt64(v.AuxInt)
 		if v_0.Op != OpWasm3I64Add {
@@ -4455,7 +4455,7 @@ func rewriteValueWasm3_OpWasm3I64Load16S(v *Value) bool {
 			break
 		}
 		v.reset(OpWasm3ArrayGet)
-		v.Type = typ.Int32
+		v.Type = typ.Int16
 		v.Aux = typeToAux(t.Elem())
 		v.AddArg2(sa, idx)
 		return true
@@ -4507,7 +4507,7 @@ func rewriteValueWasm3_OpWasm3I64Load16U(v *Value) bool {
 	}
 	// match: (I64Load16U [off] sa:(StackArray <t> _) _)
 	// cond: t.Elem().Elem().Size() == 2
-	// result: (ArrayGet <typ.Int16> {t.Elem()} sa (I64Const <typ.Int> [off/2]))
+	// result: (ArrayGet <typ.UInt16> {t.Elem()} sa (I64Const <typ.Int> [off/2]))
 	for {
 		off := auxIntToInt64(v.AuxInt)
 		sa := v_0
@@ -4519,7 +4519,7 @@ func rewriteValueWasm3_OpWasm3I64Load16U(v *Value) bool {
 			break
 		}
 		v.reset(OpWasm3ArrayGet)
-		v.Type = typ.Int16
+		v.Type = typ.UInt16
 		v.Aux = typeToAux(t.Elem())
 		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
 		v0.AuxInt = int64ToAuxInt(off / 2)
@@ -4528,7 +4528,7 @@ func rewriteValueWasm3_OpWasm3I64Load16U(v *Value) bool {
 	}
 	// match: (I64Load16U [off] (I64Add sa:(StackArray <t> _) (I64Shl idx (I64Const [k]))) _)
 	// cond: off == 0 && t.Elem().Elem().Size() == 2 && k == 1
-	// result: (ArrayGet <typ.Int32> {t.Elem()} sa idx)
+	// result: (ArrayGet <typ.UInt16> {t.Elem()} sa idx)
 	for {
 		off := auxIntToInt64(v.AuxInt)
 		if v_0.Op != OpWasm3I64Add {
@@ -4555,7 +4555,7 @@ func rewriteValueWasm3_OpWasm3I64Load16U(v *Value) bool {
 			break
 		}
 		v.reset(OpWasm3ArrayGet)
-		v.Type = typ.Int32
+		v.Type = typ.UInt16
 		v.Aux = typeToAux(t.Elem())
 		v.AddArg2(sa, idx)
 		return true
@@ -4607,7 +4607,7 @@ func rewriteValueWasm3_OpWasm3I64Load32S(v *Value) bool {
 	}
 	// match: (I64Load32S [off] sa:(StackArray <t> _) _)
 	// cond: t.Elem().Elem().Size() == 4
-	// result: (I64Extend32S (ArrayGet <typ.Int32> {t.Elem()} sa (I64Const <typ.Int> [off/4])))
+	// result: (ArrayGet <typ.Int32> {t.Elem()} sa (I64Const <typ.Int> [off/4]))
 	for {
 		off := auxIntToInt64(v.AuxInt)
 		sa := v_0
@@ -4618,18 +4618,17 @@ func rewriteValueWasm3_OpWasm3I64Load32S(v *Value) bool {
 		if !(t.Elem().Elem().Size() == 4) {
 			break
 		}
-		v.reset(OpWasm3I64Extend32S)
-		v0 := b.NewValue0(v.Pos, OpWasm3ArrayGet, typ.Int32)
-		v0.Aux = typeToAux(t.Elem())
-		v1 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
-		v1.AuxInt = int64ToAuxInt(off / 4)
-		v0.AddArg2(sa, v1)
-		v.AddArg(v0)
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.Int32
+		v.Aux = typeToAux(t.Elem())
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v0.AuxInt = int64ToAuxInt(off / 4)
+		v.AddArg2(sa, v0)
 		return true
 	}
 	// match: (I64Load32S [off] (I64Add sa:(StackArray <t> _) (I64Shl idx (I64Const [k]))) _)
 	// cond: off == 0 && t.Elem().Elem().Size() == 4 && k == 2
-	// result: (I64Extend32S (ArrayGet <typ.Int32> {t.Elem()} sa idx))
+	// result: (ArrayGet <typ.Int32> {t.Elem()} sa idx)
 	for {
 		off := auxIntToInt64(v.AuxInt)
 		if v_0.Op != OpWasm3I64Add {
@@ -4655,11 +4654,10 @@ func rewriteValueWasm3_OpWasm3I64Load32S(v *Value) bool {
 		if !(off == 0 && t.Elem().Elem().Size() == 4 && k == 2) {
 			break
 		}
-		v.reset(OpWasm3I64Extend32S)
-		v0 := b.NewValue0(v.Pos, OpWasm3ArrayGet, typ.Int32)
-		v0.Aux = typeToAux(t.Elem())
-		v0.AddArg2(sa, idx)
-		v.AddArg(v0)
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.Int32
+		v.Aux = typeToAux(t.Elem())
+		v.AddArg2(sa, idx)
 		return true
 	}
 	// match: (I64Load32S [off] (LoweredAddr {sym} [off2] (SB)) _)
@@ -4709,7 +4707,7 @@ func rewriteValueWasm3_OpWasm3I64Load32U(v *Value) bool {
 	}
 	// match: (I64Load32U [off] sa:(StackArray <t> _) _)
 	// cond: t.Elem().Elem().Size() == 4
-	// result: (ArrayGet <typ.Int32> {t.Elem()} sa (I64Const <typ.Int> [off/4]))
+	// result: (ArrayGet <typ.UInt32> {t.Elem()} sa (I64Const <typ.Int> [off/4]))
 	for {
 		off := auxIntToInt64(v.AuxInt)
 		sa := v_0
@@ -4721,7 +4719,7 @@ func rewriteValueWasm3_OpWasm3I64Load32U(v *Value) bool {
 			break
 		}
 		v.reset(OpWasm3ArrayGet)
-		v.Type = typ.Int32
+		v.Type = typ.UInt32
 		v.Aux = typeToAux(t.Elem())
 		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
 		v0.AuxInt = int64ToAuxInt(off / 4)
@@ -4730,7 +4728,7 @@ func rewriteValueWasm3_OpWasm3I64Load32U(v *Value) bool {
 	}
 	// match: (I64Load32U [off] (I64Add sa:(StackArray <t> _) (I64Shl idx (I64Const [k]))) _)
 	// cond: off == 0 && t.Elem().Elem().Size() == 4 && k == 2
-	// result: (ArrayGet <typ.Int32> {t.Elem()} sa idx)
+	// result: (ArrayGet <typ.UInt32> {t.Elem()} sa idx)
 	for {
 		off := auxIntToInt64(v.AuxInt)
 		if v_0.Op != OpWasm3I64Add {
@@ -4757,7 +4755,7 @@ func rewriteValueWasm3_OpWasm3I64Load32U(v *Value) bool {
 			break
 		}
 		v.reset(OpWasm3ArrayGet)
-		v.Type = typ.Int32
+		v.Type = typ.UInt32
 		v.Aux = typeToAux(t.Elem())
 		v.AddArg2(sa, idx)
 		return true
@@ -4829,7 +4827,7 @@ func rewriteValueWasm3_OpWasm3I64Load8S(v *Value) bool {
 	}
 	// match: (I64Load8S [off] (I64Add sa:(StackArray <t> _) idx) _)
 	// cond: off == 0 && t.Elem().Elem().Size() == 1
-	// result: (ArrayGet <typ.Int32> {t.Elem()} sa idx)
+	// result: (ArrayGet <typ.Int8> {t.Elem()} sa idx)
 	for {
 		off := auxIntToInt64(v.AuxInt)
 		if v_0.Op != OpWasm3I64Add {
@@ -4845,7 +4843,7 @@ func rewriteValueWasm3_OpWasm3I64Load8S(v *Value) bool {
 			break
 		}
 		v.reset(OpWasm3ArrayGet)
-		v.Type = typ.Int32
+		v.Type = typ.Int8
 		v.Aux = typeToAux(t.Elem())
 		v.AddArg2(sa, idx)
 		return true
@@ -4896,7 +4894,7 @@ func rewriteValueWasm3_OpWasm3I64Load8U(v *Value) bool {
 	}
 	// match: (I64Load8U [off] sa:(StackArray <t> _) _)
 	// cond: t.Elem().Elem().Size() == 1
-	// result: (ArrayGet <typ.Int8> {t.Elem()} sa (I64Const <typ.Int> [off]))
+	// result: (ArrayGet <typ.UInt8> {t.Elem()} sa (I64Const <typ.Int> [off]))
 	for {
 		off := auxIntToInt64(v.AuxInt)
 		sa := v_0
@@ -4908,7 +4906,7 @@ func rewriteValueWasm3_OpWasm3I64Load8U(v *Value) bool {
 			break
 		}
 		v.reset(OpWasm3ArrayGet)
-		v.Type = typ.Int8
+		v.Type = typ.UInt8
 		v.Aux = typeToAux(t.Elem())
 		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
 		v0.AuxInt = int64ToAuxInt(off)
@@ -4917,7 +4915,7 @@ func rewriteValueWasm3_OpWasm3I64Load8U(v *Value) bool {
 	}
 	// match: (I64Load8U [off] (I64Add sa:(StackArray <t> _) idx) _)
 	// cond: off == 0 && t.Elem().Elem().Size() == 1
-	// result: (ArrayGet <typ.Int32> {t.Elem()} sa idx)
+	// result: (ArrayGet <typ.UInt8> {t.Elem()} sa idx)
 	for {
 		off := auxIntToInt64(v.AuxInt)
 		if v_0.Op != OpWasm3I64Add {
@@ -4933,7 +4931,7 @@ func rewriteValueWasm3_OpWasm3I64Load8U(v *Value) bool {
 			break
 		}
 		v.reset(OpWasm3ArrayGet)
-		v.Type = typ.Int32
+		v.Type = typ.UInt8
 		v.Aux = typeToAux(t.Elem())
 		v.AddArg2(sa, idx)
 		return true
@@ -5649,6 +5647,16 @@ func rewriteValueWasm3_OpZero(v *Value) bool {
 	v_0 := v.Args[0]
 	b := v.Block
 	typ := &b.Func.Config.Types
+	// match: (Zero [_] (StackArray _) mem)
+	// result: mem
+	for {
+		if v_0.Op != OpWasm3StackArray {
+			break
+		}
+		mem := v_1
+		v.copyOf(mem)
+		return true
+	}
 	// match: (Zero [0] _ mem)
 	// result: mem
 	for {

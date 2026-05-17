@@ -505,15 +505,21 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		// M3 Stage D: array.set $arr_T (ref idx val).
 		// arg0 is the array ref (anyref local) — cast to typed
 		// ref. arg1 is the i64 index — narrow to i32. arg2 is
-		// the i64 element value. The type-index operand goes via
-		// R_WASMTYPE on the array backing's typeidx.
+		// the i64 element value, narrowed to i32 for packed (i8/
+		// i16) or i32 element storage; left as i64 for i64 elem.
+		// The type-index operand goes via R_WASMTYPE on the array
+		// backing's typeidx.
 		idx := int64(wasm3RegisterArrayAux(s, v))
+		elemSize := v.Aux.(*types.Type).Elem().Size()
 		getValue64(s, v.Args[0])
 		pCast := s.Prog(wasm.ARefCast)
 		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: idx}
 		getValue64(s, v.Args[1])
 		s.Prog(wasm.AI32WrapI64)
 		getValue64(s, v.Args[2])
+		if elemSize < 8 {
+			s.Prog(wasm.AI32WrapI64)
+		}
 		p := s.Prog(wasm.AArraySet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: idx}
 
@@ -766,14 +772,44 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// M3 Stage D: array.get $arr_T (ref idx). Same shape as
 		// ArraySet: ref.cast the anyref to typed ref, narrow idx
 		// to i32, then array.get with the type-index immediate.
+		//
+		// Packed storage (i8, i16) uses array.get_u / array.get_s
+		// per v.Type signedness — wasmgc rejects plain array.get
+		// on packed types because the unpacked value width is
+		// ambiguous. i32/i64 use plain array.get. The result is
+		// always extended back to i64 for the per-value local
+		// (i64 by wasm3ValueType), with the extension polarity
+		// matching the get_u/get_s chosen (and v.Type for i32).
 		idx := int64(wasm3RegisterArrayAux(s, v))
+		elemSize := v.Aux.(*types.Type).Elem().Size()
+		signed := v.Type.IsSigned()
 		getValue64(s, v.Args[0])
 		pCast := s.Prog(wasm.ARefCast)
 		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: idx}
 		getValue64(s, v.Args[1])
 		s.Prog(wasm.AI32WrapI64)
-		p := s.Prog(wasm.AArrayGet)
+		var getOp obj.As
+		switch elemSize {
+		case 1, 2:
+			if signed {
+				getOp = wasm.AArrayGetS
+			} else {
+				getOp = wasm.AArrayGetU
+			}
+		case 4, 8:
+			getOp = wasm.AArrayGet
+		default:
+			v.Fatalf("OpWasm3ArrayGet: unsupported elem size %d", elemSize)
+		}
+		p := s.Prog(getOp)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: idx}
+		if elemSize < 8 {
+			if signed {
+				s.Prog(wasm.AI64ExtendI32S)
+			} else {
+				s.Prog(wasm.AI64ExtendI32U)
+			}
+		}
 
 	case ssa.OpWasm3ArrayLen:
 		getValue64(s, v.Args[0])

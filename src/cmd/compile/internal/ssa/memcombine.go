@@ -480,6 +480,15 @@ func combineStores(root *Value) {
 			return
 		}
 	}
+	// wasm3 stack arrays are wasmgc `(ref (array T))` values; the
+	// element type is fixed (i8 for `[N]byte`) and there is no
+	// wasmgc opcode that stores wider than one element with a single
+	// instruction. Combining adjacent byte stores into an i64.store16
+	// / i32 / i64 store would leave the wasm3 backend with a shape
+	// no Stage D rule lowers; the cleaner fix is to skip the merge.
+	if rbase.ptr.Op == OpWasm3StackArray {
+		return
+	}
 	allMergeable = append(allMergeable, StoreRecord{root, roff, root.Aux.(*types.Type).Size()})
 	allMergeableSize := root.Aux.(*types.Type).Size()
 	// TODO: this loop strictly requires stores to chain together in memory.

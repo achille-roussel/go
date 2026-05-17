@@ -600,14 +600,61 @@ representation change:
   growslice's zero-the-tail path. Once the call-lowering fix
   lands, both retire.
 
-**Stage E phase 2 — wasmgc backing (not yet started).**
+**Stage E phase 2 — wasmgc backing (in progress, sub-slicing TODO).**
 
-The phase-1 slice header keeps the linear-memory pointer
-shape; the design's `(ref backing, i32 off, i32 len, i32 cap)`
-header — backing allocated by `array.new_default $T_elem`,
-indexing via `array.get` / `array.set` on the ref, sub-
-slicing tracked by the i32 offset — is unimplemented. The
-work breakdown:
+Three commits this session landed phase 2.A / 2.B / 2.C / 2.D:
+
+- `5296610763` (2.A / 2.B / 2.C): `OpWasm3MakeSlice` SSA op,
+  intrinsic replacing `runtime.makeslice` on wasm3, and 26 new
+  Wasm3.rules patterns lowering ref-backed slice element access
+  to `array.set` / `array.get` on the wasmgc backing.
+- `15084bbe0e` (2.D infra): `obj.WasmAnyref` field type +
+  `wasmgc.Storage.AnyRef` variant + `0x6E` encoding, so the
+  wasm function signature can declare a slice-ptr parameter as
+  the abstract anyref heap type.
+- `0dbbaa4a22` (2.D rules): `ssa.Wasm3SliceArgElemType` helper
+  recovers the slice's element `*types.Type` for an
+  `OpArgIntReg` of a TSLICE param's data field, and 26 more
+  Wasm3.rules patterns lower the resulting
+  `(I64Add OpArgIntReg ...)` shape to ArrayGet / ArraySet.
+
+End-to-end verified:
+
+  - `/tmp/wasm3-e2-min/main.go`: sumSlice(n) — local make() +
+    in-function index — returns n*(n+1)/2 for n ∈ {1, 2, 5, 10,
+    100} via wasmgc backing, no runtime call.
+  - `/tmp/wasm3-passed/main.go`: sumPassed(n) — local make() +
+    cross-function slice passing to sumOf — same expected
+    values; sumOf's compiled body uses
+    `ref.cast (ref $arr_i32); array.get $arr_i32` on its
+    anyref slice-ptr parameter, no linear-memory load anywhere
+    on the slice path.
+
+What still breaks (the next session's gate):
+
+  - **Sub-slicing `s[lo:hi]`.** The SSA decomposition of slice
+    expressions computes a new data ptr as
+    `I64Add(original_ptr, lo*elemSize)` — pointer arithmetic
+    that's meaningless on a wasmgc ref. The wasmgc design's
+    `(ref backing, off, len, cap)` slice header with an
+    explicit offset field is what's needed: sub-slicing then
+    becomes `(s.backing, s.offset + lo, hi - lo, s.cap - lo)`
+    with no allocation. This requires touching the generic SSA
+    slice representation (currently 3 components everywhere),
+    not just lowering rules.
+
+  - **append(s, v).** The append-fast-path skip from
+    `09f64d7dc9` still routes the call to `runtime.growslice` /
+    `printhexopts` whose stack-array → slice-from-it shape
+    needs the same offset-bearing slice header.
+
+  - **String / interface ABI.** Same `flatPrimitiveFields` site
+    now lowers TSTRING / TINTER to (i64, i64) but their data
+    pointers want anyref too. The pattern from 2.D extends
+    naturally; slice was the first user, the others retire when
+    a string-handling test program demands it.
+
+The original phase-2 work breakdown (kept for reference):
 
 1. SSA representation change: `OpSliceMake`'s ptr arg
    becomes a wasmgc ref, not a BytePtr i64. The `OpSlicePtr`

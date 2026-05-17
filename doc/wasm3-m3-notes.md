@@ -188,6 +188,47 @@ register model is needed. Once that lands, the bump-allocator
 these under M3 but they could slip to M3.5 / early M4 depending on
 how the ref-typed-call rung lands.
 
+## Blocker for the wasip1 test harness — `go test` produces invalid wasm
+
+`go test -c` for any package that pulls in the standard `testing`
+machinery produces a `.test` wasm binary that fails to parse on
+both wasm-tools and wasmtime:
+
+    error: struct fields size is out of bounds (at offset 0x16f9)
+
+Investigation: at the offending offset the type section declares a
+struct with 65508 fields (1 self-ref + 3 i64 + 65504 i32). The
+field count itself is correct — there really are 65508 fields in
+the encoded bytes — but wasmparser (used by both engines) caps
+struct fields at ~10000.
+
+Root cause: `typeCollector.lowerFields` in
+`cmd/compile/internal/wasm3/wasmtype.go` lowers a Go `TARRAY` by
+unrolling `[N]elem` into N×len(elem) struct fields. A runtime
+type with a large fixed-size array field — e.g. some
+testing-internal struct containing a `[65504]int32` buffer —
+produces a struct that exceeds the engine limit. (The 65504
+exactly matches what'd appear if a `[16376]struct{a,b,c,d int32}`
+were flattened, or a similarly-sized i32 buffer.)
+
+Why the naive fix doesn't land: short-circuiting the unrolling in
+`lowerFields` (return a single `(ref null any)` once the count
+exceeds a threshold) compiles and gets the type section under the
+limit, but immediately surfaces a different validation error —
+"type mismatch: expected i64, found (ref \$type)" — because the
+SSA-side struct-arg/struct-result code still flows the array as a
+sequence of i32 values per field. The wasm signature now says one
+ref, the call site pushes many i32s; calls mismatch.
+
+Real fix: Stage D/E. A large in-struct array becomes
+`(ref (array T))` and the SSA backend lowers element accesses via
+`array.get`/`array.set` instead of struct-field copies. The
+ref-typed-value plumbing (Stage C) is the pre-req.
+
+Until then, the wasip1 test harness can't exercise wasm3 binaries
+that link `testing`. The M2 14-case regression and the
+/tmp/wasm3-audit programs work because they don't pull in testing.
+
 ## Future optimization — drop trivial `//go:wasmexport` trampolines
 
 Every `//go:wasmexport` function gets a wasm wrapper LSym

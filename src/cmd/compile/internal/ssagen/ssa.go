@@ -3803,6 +3803,18 @@ func (s *state) getBackingStoreInfo(n ir.Node) *backingStoreInfo {
 	if !base.VariableMakeHash.MatchPos(n.Pos(), nil) {
 		return nil
 	}
+	// Stage E (wasm3): the append fast-path wraps its [K]E stack
+	// backing in a struct{[0]uintptr; [K]E} to force pointer
+	// alignment (issue 73199). On wasm3 there is no Go stack frame
+	// the address could be taken of; the struct-wrapped TARRAY auto
+	// would bypass ssagen.addr's OpWasm3StackArray hook (which
+	// matches IsArray, not IsStruct), and OpLocalAddr at the
+	// struct's SP offset would land at the obj backend's
+	// "Get of non-local register" stub. Skip the fast-path entirely;
+	// append falls through to the standard runtime.growslice call.
+	if buildcfg.GOARCH == "wasm3" {
+		return nil
+	}
 	i := s.backingStores[n]
 	if i != nil {
 		return i

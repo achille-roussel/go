@@ -467,8 +467,16 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		s.Prog(wasm.AMemoryFill)
 
 	case ssa.OpWasm3LoweredNilCheck:
+		// Stage E phase 4 (wasm3): when arg0 is anyref (the common
+		// case for wasmgc-backed slice / array backings), `i64.eqz`
+		// is invalid wasm. Emit `ref.is_null` instead — same
+		// boolean semantics (true when the ref is null).
 		getValue64(s, v.Args[0])
-		s.Prog(wasm.AI64Eqz)
+		if ssa.Wasm3IsAnyrefValue(v.Args[0]) {
+			s.Prog(wasm.ARefIsNull)
+		} else {
+			s.Prog(wasm.AI64Eqz)
+		}
 		s.Prog(wasm.AIf)
 		p := s.Prog(wasm.ACALLNORESUME)
 		p.To = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: ir.Syms.SigPanic}

@@ -486,7 +486,14 @@ func combineStores(root *Value) {
 	// instruction. Combining adjacent byte stores into an i64.store16
 	// / i32 / i64 store would leave the wasm3 backend with a shape
 	// no Stage D rule lowers; the cleaner fix is to skip the merge.
-	if rbase.ptr.Op == OpWasm3StackArray {
+	// Same rationale extends to OpWasm3MakeSlice and OpWasm3SubSlice:
+	// their wasmgc backings are also element-stored (array.set), not
+	// byte-stored, so combining adjacent element stores into a wider
+	// linear-memory I64Store leaves a shape no Wasm3.rules pattern
+	// matches.
+	if rbase.ptr.Op == OpWasm3StackArray ||
+		rbase.ptr.Op == OpWasm3MakeSlice ||
+		rbase.ptr.Op == OpWasm3SubSlice {
 		return
 	}
 	allMergeable = append(allMergeable, StoreRecord{root, roff, root.Aux.(*types.Type).Size()})

@@ -26,6 +26,7 @@ import (
 	"sync"
 
 	"cmd/compile/internal/ssa"
+	"cmd/internal/obj/wasm"
 )
 
 // cfgGraph is the minimal block-graph abstraction the relooper needs.
@@ -677,10 +678,49 @@ type funcPlan struct {
 // reuse the cached result.
 var reloopPlans sync.Map // *ssa.Func -> *funcPlan
 
-// emitPlansBySym lets the obj-side look up the emission plan by the
-// function's LSym. Populated by planForFunc once per function;
-// the obj-encoder consults it at the start of encodeWasm3Body.
-var emitPlansBySym sync.Map // *obj.LSym -> *emitPlan
+// toObjPlan converts the compiler-internal emitPlan into the slim
+// wasm.Wasm3StructuredPlan the obj-encoder consumes. Performed once
+// per function at planForFunc-cache-miss time so the obj-side does
+// not need to depend on the internal scope/branchKey/etc. types.
+func (ep *emitPlan) toObjPlan() *wasm.Wasm3StructuredPlan {
+	if ep == nil {
+		return nil
+	}
+	// Recover the layout from boundaryOfBlock (which is block ID →
+	// layout index). Layout is the inverse.
+	maxIdx := 0
+	for _, idx := range ep.boundaryOfBlock {
+		if idx > maxIdx {
+			maxIdx = idx
+		}
+	}
+	layout := make([]int32, maxIdx+1)
+	for bid, idx := range ep.boundaryOfBlock {
+		layout[idx] = bid
+	}
+
+	out := &wasm.Wasm3StructuredPlan{
+		PerBoundary: make([]wasm.Wasm3BoundaryOp, len(ep.perBoundary)),
+		Layout:      layout,
+	}
+	for i, bop := range ep.perBoundary {
+		out.PerBoundary[i].Closes = bop.closes
+		if len(bop.opens) > 0 {
+			out.PerBoundary[i].Opens = make([]wasm.Wasm3ScopeOpen, len(bop.opens))
+			for j, op := range bop.opens {
+				kind := wasm.Wasm3ScopeKindLoop
+				if op.kind == scopeBlock {
+					kind = wasm.Wasm3ScopeKindBlock
+				}
+				out.PerBoundary[i].Opens[j] = wasm.Wasm3ScopeOpen{
+					Kind:   kind,
+					Target: op.target,
+				}
+			}
+		}
+	}
+	return out
+}
 
 // planForFunc returns the relooper plan for f, computing it the
 // first time and caching the result. Safe for concurrent use from
@@ -696,7 +736,7 @@ func planForFunc(f *ssa.Func) *funcPlan {
 	fp = actual.(*funcPlan)
 	if !loaded {
 		if ep != nil && f.OwnAux != nil && f.OwnAux.Fn != nil {
-			emitPlansBySym.Store(f.OwnAux.Fn, ep)
+			wasm.Wasm3EmitPlans.Store(f.OwnAux.Fn, ep.toObjPlan())
 		}
 		if reloopDebug {
 			dumpReloopPlan(f.Name, newSSACFGGraph(f), fp)

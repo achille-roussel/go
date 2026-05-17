@@ -32,7 +32,59 @@ import (
 	"encoding/binary"
 	"math"
 	"sort"
+	"sync"
 )
+
+// Wasm3StructuredPlan is the relooper output the compiler-side
+// publishes to the obj-side encoder. When present for a given LSym,
+// encodeWasm3Body bypasses the legacy wasm3AnalyzeCFG dispatch-mode
+// fallback and emits structured wasm control flow (block / loop / if
+// / br) per the plan.
+//
+// Construction: cmd/compile/internal/wasm3 builds the plan from the
+// SSA function's dominators + natural loops. Lookup: the obj-encoder
+// reads Wasm3EmitPlans at the start of encodeWasm3Body.
+type Wasm3StructuredPlan struct {
+	// PerBoundary[i] is the scope op applied at boundary i, for i in
+	// [0, NumBlocks]. Boundary 0 is at function start (before the
+	// first prog of block Layout[0]); boundary NumBlocks is at
+	// function end (after the last prog of block Layout[NumBlocks-1]).
+	PerBoundary []Wasm3BoundaryOp
+
+	// Layout[i] is the block ID of the i-th block in layout order.
+	// Used to recover the source block ID from the obj-encoder's
+	// boundary counter, and target block IDs from boundaryOfPc.
+	Layout []int32
+}
+
+// Wasm3BoundaryOp is the scope manipulation applied at one boundary.
+// Closes are applied first (popping the stack); Opens are applied
+// next, pushed in order onto the stack.
+type Wasm3BoundaryOp struct {
+	Closes int
+	Opens  []Wasm3ScopeOpen
+}
+
+// Wasm3ScopeOpen describes one wasm scope being pushed onto the
+// stack at a boundary. Kind is 0 for a `loop` scope (back-edge
+// target) and 1 for a `block` scope (forward-merge target). Target
+// is the block ID the scope corresponds to: the loop header for a
+// loop scope, or the block ID immediately after the scope's `end`
+// for a block scope.
+type Wasm3ScopeOpen struct {
+	Kind   uint8
+	Target int32
+}
+
+const (
+	Wasm3ScopeKindLoop  uint8 = 0
+	Wasm3ScopeKindBlock uint8 = 1
+)
+
+// Wasm3EmitPlans is the registry of relooper plans, keyed by the
+// function's LSym. cmd/compile/internal/wasm3 populates it once per
+// function; encodeWasm3Body looks it up at the start of encoding.
+var Wasm3EmitPlans sync.Map // *obj.LSym -> *Wasm3StructuredPlan
 
 // preprocess3 prepares a function for the wasm3 typed ABI.
 //
@@ -170,6 +222,20 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 		return nil, false
 	}
 
+	// Relooper-plan integration. If the compiler-side has registered
+	// a structured plan for this LSym, drive scope ops from the plan
+	// instead of the legacy dispatch / forward-only schemes. The
+	// plan covers loops natively, so dispatch mode is disabled and
+	// the forward-only target list is cleared — both responsibilities
+	// transfer to perBoundary scope ops applied at function start
+	// and at each ARESUMEPOINT.
+	var structuredPlan *Wasm3StructuredPlan
+	if v, ok := Wasm3EmitPlans.Load(s); ok {
+		structuredPlan = v.(*Wasm3StructuredPlan)
+		cfg.dispatch = false
+		cfg.forwardTargets = nil
+	}
+
 	// Dispatch mode needs a fresh i32 local to hold the next basic-block
 	// index. Allocate it after every other declared local so its index
 	// is stable as we walk the body.
@@ -278,6 +344,54 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 		stack = stack[1:]
 	}
 
+	// Plan-mode helper: apply the relooper's per-boundary scope ops
+	// (closes innermost-first, then opens outermost-first). Closes
+	// pop plan frames off the front of the stack; opens push new
+	// plan frames onto the front (innermost-first invariant).
+	// Returns ok=false on a stack mismatch (typically a planner bug).
+	applyPlanBoundary := func(boundaryIdx int) bool {
+		if structuredPlan == nil || boundaryIdx >= len(structuredPlan.PerBoundary) {
+			return true
+		}
+		bop := &structuredPlan.PerBoundary[boundaryIdx]
+		for i := 0; i < bop.Closes; i++ {
+			if len(stack) == 0 {
+				return false
+			}
+			top := stack[0]
+			if top.kind != wasm3CFPlanLoop && top.kind != wasm3CFPlanBlock {
+				// AIf or legacy scope on top — closing a plan scope
+				// past it would be malformed nesting.
+				return false
+			}
+			writeOpcode(w, AEnd)
+			stack = stack[1:]
+		}
+		for _, op := range bop.Opens {
+			var kind wasm3CFKind
+			var as obj.As
+			switch op.Kind {
+			case Wasm3ScopeKindLoop:
+				kind = wasm3CFPlanLoop
+				as = ALoop
+			case Wasm3ScopeKindBlock:
+				kind = wasm3CFPlanBlock
+				as = ABlock
+			default:
+				return false
+			}
+			writeOpcode(w, as)
+			w.WriteByte(0x40)
+			stack = append([]wasm3CFFrame{{kind: kind, target: op.Target}}, stack...)
+		}
+		return true
+	}
+
+	// Plan-mode initial scope opens (boundary 0).
+	if structuredPlan != nil && !applyPlanBoundary(0) {
+		return nil, false
+	}
+
 	var relocs []obj.Reloc
 	sawRet := false
 	seenBoundary := 0
@@ -295,8 +409,14 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 			// lands execution at start of BB_K. The very last boundary
 			// (== cfg.numBlocks) has no dispatch block to close — the
 			// outer loop close happens after the walker finishes.
+			// In plan mode, apply the relooper's per-boundary closes
+			// and opens.
 			seenBoundary++
-			if cfg.dispatch {
+			if structuredPlan != nil {
+				if !applyPlanBoundary(seenBoundary) {
+					return nil, false
+				}
+			} else if cfg.dispatch {
 				if seenBoundary < cfg.numBlocks {
 					if len(stack) == 0 || stack[0].kind != wasm3CFDispatch || stack[0].boundary != seenBoundary {
 						return nil, false
@@ -317,6 +437,30 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 			tBoundary, isJmp := cfg.jmpTarget[p]
 			if !isJmp {
 				return nil, false
+			}
+			if structuredPlan != nil {
+				// Look up target block ID via the plan's layout.
+				if tBoundary < 0 || tBoundary >= len(structuredPlan.Layout) {
+					return nil, false
+				}
+				targetBlockID := structuredPlan.Layout[tBoundary]
+				// Walk the stack innermost-first; depth = position of
+				// the matching plan scope (whose target equals the
+				// target block ID). AIf frames count toward depth.
+				depth := -1
+				for i, f := range stack {
+					if (f.kind == wasm3CFPlanLoop || f.kind == wasm3CFPlanBlock) &&
+						f.target == targetBlockID {
+						depth = i
+						break
+					}
+				}
+				if depth < 0 {
+					return nil, false
+				}
+				writeOpcode(w, ABr)
+				writeUleb128(w, uint64(depth))
+				break
 			}
 			if cfg.dispatch {
 				// Set the dispatch local to the target boundary, then
@@ -725,6 +869,14 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 		// producing the declared results.
 		return nil, false
 	}
+	if structuredPlan != nil {
+		// Apply the final boundary's closes; any remaining stack
+		// entries (an AIf left open is the only legitimate case here,
+		// but generally none) signal a planner bug.
+		if !applyPlanBoundary(len(structuredPlan.PerBoundary) - 1) {
+			return nil, false
+		}
+	}
 	if cfg.dispatch {
 		// Close the outer `loop $L` and emit `unreachable` to satisfy
 		// the validator if execution somehow falls past the loop end
@@ -760,16 +912,19 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 // `br <depth>` lookup is a linear scan from index 0.
 type wasm3CFFrame struct {
 	kind     wasm3CFKind
-	boundary int // valid if kind == wasm3CFBlock: the boundary at which this block ends
+	boundary int   // valid if kind == wasm3CFBlock: the boundary at which this block ends
+	target   int32 // valid if kind == wasm3CFPlanLoop or wasm3CFPlanBlock: the target block ID
 }
 
 type wasm3CFKind uint8
 
 const (
-	wasm3CFBlock    wasm3CFKind = iota // wasm `block` opened for a forward AJMP target
-	wasm3CFIf                          // wasm `if` opened by an SSA AIf
-	wasm3CFLoop                        // wasm `loop` of the dispatch-loop scheme
-	wasm3CFDispatch                    // a `block` of the dispatch-loop scheme's br_table nest
+	wasm3CFBlock     wasm3CFKind = iota // wasm `block` opened for a forward AJMP target
+	wasm3CFIf                           // wasm `if` opened by an SSA AIf
+	wasm3CFLoop                         // wasm `loop` of the dispatch-loop scheme
+	wasm3CFDispatch                     // a `block` of the dispatch-loop scheme's br_table nest
+	wasm3CFPlanLoop                     // wasm `loop` opened by the relooper plan; target = loop header block ID
+	wasm3CFPlanBlock                    // wasm `block` opened by the relooper plan; target = block ID that follows the scope's `end`
 )
 
 // wasm3CFG is the result of the encoder's CFG pre-pass.

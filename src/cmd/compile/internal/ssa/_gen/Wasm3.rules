@@ -617,6 +617,82 @@
 	&& off == 0 && t.Elem().Size() == 1 =>
 	(ArrayGet <typ.UInt8> {t} sm idx)
 
+// M3 Stage E phase 2.D: ref-backed slice element access on a slice
+// parameter. The slice's data pointer arrives as an OpArgIntReg whose
+// per-value local is anyref (because the wasm signature's matching
+// field is WasmAnyref — see flatPrimitiveFields). The index/store
+// rules pattern-match the (I64Add OpArgIntReg ...) shape and lower
+// to array.set / array.get on the wasmgc backing.
+//
+// Wasm3SliceArgElemType(base) walks the function's WasmType +
+// declared param list to recover the slice's *types.Type — present
+// only when base is the data field of a TSLICE parameter. The
+// helper returns nil for non-slice OpArgs (which fall through to
+// the standard linear-memory load/store rules).
+
+// Constant-offset stores via slice-arg ptr.
+(I64Store [off] base val mem) && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 8 =>
+	(ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off/8]) val mem)
+(I64Store32 [off] base val mem) && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 4 =>
+	(ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off/4]) val mem)
+(I64Store16 [off] base val mem) && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 2 =>
+	(ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off/2]) val mem)
+(I64Store8 [off] base val mem) && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 1 =>
+	(ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off]) val mem)
+
+// Variable-offset stores via slice-arg ptr.
+(I64Store [off] (I64Add base (I64Shl idx (I64Const [k]))) val mem)
+	&& off == 0 && k == 3 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 8 =>
+	(ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base idx val mem)
+(I64Store32 [off] (I64Add base (I64Shl idx (I64Const [k]))) val mem)
+	&& off == 0 && k == 2 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 4 =>
+	(ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base idx val mem)
+(I64Store16 [off] (I64Add base (I64Shl idx (I64Const [k]))) val mem)
+	&& off == 0 && k == 1 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 2 =>
+	(ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base idx val mem)
+(I64Store8 [off] (I64Add base idx) val mem)
+	&& off == 0 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 1 =>
+	(ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base idx val mem)
+
+// Constant-offset loads via slice-arg ptr.
+(I64Load [off] base _) && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 8 =>
+	(ArrayGet <typ.Int64> {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off/8]))
+(I64Load32S [off] base _) && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 4 =>
+	(ArrayGet <typ.Int32> {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off/4]))
+(I64Load32U [off] base _) && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 4 =>
+	(ArrayGet <typ.UInt32> {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off/4]))
+(I64Load16S [off] base _) && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 2 =>
+	(ArrayGet <typ.Int16> {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off/2]))
+(I64Load16U [off] base _) && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 2 =>
+	(ArrayGet <typ.UInt16> {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off/2]))
+(I64Load8S [off] base _) && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 1 =>
+	(ArrayGet <typ.Int8> {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off]))
+(I64Load8U [off] base _) && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 1 =>
+	(ArrayGet <typ.UInt8> {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off]))
+
+// Variable-offset loads via slice-arg ptr.
+(I64Load [off] (I64Add base (I64Shl idx (I64Const [k]))) _)
+	&& off == 0 && k == 3 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 8 =>
+	(ArrayGet <typ.Int64> {types.NewSlice(Wasm3SliceArgElemType(base))} base idx)
+(I64Load32S [off] (I64Add base (I64Shl idx (I64Const [k]))) _)
+	&& off == 0 && k == 2 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 4 =>
+	(ArrayGet <typ.Int32> {types.NewSlice(Wasm3SliceArgElemType(base))} base idx)
+(I64Load32U [off] (I64Add base (I64Shl idx (I64Const [k]))) _)
+	&& off == 0 && k == 2 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 4 =>
+	(ArrayGet <typ.UInt32> {types.NewSlice(Wasm3SliceArgElemType(base))} base idx)
+(I64Load16S [off] (I64Add base (I64Shl idx (I64Const [k]))) _)
+	&& off == 0 && k == 1 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 2 =>
+	(ArrayGet <typ.Int16> {types.NewSlice(Wasm3SliceArgElemType(base))} base idx)
+(I64Load16U [off] (I64Add base (I64Shl idx (I64Const [k]))) _)
+	&& off == 0 && k == 1 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 2 =>
+	(ArrayGet <typ.UInt16> {types.NewSlice(Wasm3SliceArgElemType(base))} base idx)
+(I64Load8S [off] (I64Add base idx) _)
+	&& off == 0 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 1 =>
+	(ArrayGet <typ.Int8> {types.NewSlice(Wasm3SliceArgElemType(base))} base idx)
+(I64Load8U [off] (I64Add base idx) _)
+	&& off == 0 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 1 =>
+	(ArrayGet <typ.UInt8> {types.NewSlice(Wasm3SliceArgElemType(base))} base idx)
+
 // transforming readonly globals into constants
 (I64Load [off] (LoweredAddr {sym} [off2] (SB)) _) && symIsRO(sym) && isU32Bit(off+int64(off2)) => (I64Const [int64(read64(sym, off+int64(off2), config.ctxt.Arch.ByteOrder))])
 (I64Load32U [off] (LoweredAddr {sym} [off2] (SB)) _) && symIsRO(sym) && isU32Bit(off+int64(off2)) => (I64Const [int64(read32(sym, off+int64(off2), config.ctxt.Arch.ByteOrder))])

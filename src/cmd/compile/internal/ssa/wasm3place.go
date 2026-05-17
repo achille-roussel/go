@@ -4,7 +4,10 @@
 
 package ssa
 
-import "cmd/internal/obj"
+import (
+	"cmd/compile/internal/types"
+	"cmd/internal/obj"
+)
 
 // wasm3place.go is the wasm3-specific value-placement pass for the M3
 // regalloc-bypass restructure (doc/wasm3-m3-no-regalloc.md).
@@ -245,6 +248,86 @@ func wasm3ValueType(v *Value) byte {
 		return wasm3ValF64
 	}
 	return wasm3ValI64
+}
+
+// Wasm3SliceArgElemType reports the slice element *types.Type for v
+// when v is an OpArgIntReg corresponding to a TSLICE parameter's
+// data-pointer field. Returns nil if v is not a slice-ptr OpArg
+// (the caller's lowering rule should then not fire).
+//
+// Used by Wasm3.rules lowering for the (I64Add OpArgIntReg ...)
+// shape that arises when a slice parameter's `s[i]` access reaches
+// the SSA codegen. The returned slice's Elem() drives both the
+// ArrayGet/Set opcode-width choice and the wasmgc-backing-type
+// registration done by wasm3RegisterArrayAux.
+func Wasm3SliceArgElemType(v *Value) *types.Type {
+	if v.Op != OpArgIntReg {
+		return nil
+	}
+	ifn := v.Block.Func.Frontend().Func()
+	if ifn == nil || ifn.LSym == nil {
+		return nil
+	}
+	wt := ifn.LSym.Func().WasmType
+	if wt == nil {
+		return nil
+	}
+	wantIntIdx := v.AuxInt
+	var intCount int64
+	wasmFieldIdx := -1
+	for i, f := range wt.Params {
+		if f.Type == obj.WasmF32 || f.Type == obj.WasmF64 {
+			continue
+		}
+		if intCount == wantIntIdx {
+			wasmFieldIdx = i
+			break
+		}
+		intCount++
+	}
+	if wasmFieldIdx < 0 {
+		return nil
+	}
+	if wt.Params[wasmFieldIdx].Type != obj.WasmAnyref {
+		return nil
+	}
+	cursor := 0
+	for _, p := range ifn.Type().RecvParams() {
+		nFields := wasm3NumFlatFields(p.Type)
+		if cursor <= wasmFieldIdx && wasmFieldIdx < cursor+nFields {
+			if p.Type.IsSlice() && wasmFieldIdx == cursor {
+				return p.Type.Elem()
+			}
+			return nil
+		}
+		cursor += nFields
+	}
+	return nil
+}
+
+// wasm3NumFlatFields returns the number of wasm fields a Go type t
+// produces when flattened by the wasm3 compiler's flatPrimitiveFields
+// path (cmd/compile/internal/wasm3/wasmabi.go). Slices flatten to 3
+// fields, strings to 2, interfaces to 2, complex to 2; the rest are
+// 1 field. Mirrors flatPrimitiveFields' explicit cases.
+func wasm3NumFlatFields(t *types.Type) int {
+	switch t.Kind() {
+	case types.TSLICE:
+		return 3
+	case types.TSTRING:
+		return 2
+	case types.TINTER:
+		return 2
+	case types.TCOMPLEX64, types.TCOMPLEX128:
+		return 2
+	case types.TSTRUCT:
+		n := 0
+		for _, f := range t.Fields() {
+			n += wasm3NumFlatFields(f.Type)
+		}
+		return n
+	}
+	return 1
 }
 
 // wasm3OpArgIsRefParam reports whether v is an OpArgIntReg whose

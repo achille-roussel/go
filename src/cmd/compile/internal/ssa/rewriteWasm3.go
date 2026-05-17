@@ -4415,6 +4415,53 @@ func rewriteValueWasm3_OpWasm3I64Load(v *Value) bool {
 		v.AddArg2(sm, idx)
 		return true
 	}
+	// match: (I64Load [off] base _)
+	// cond: Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 8
+	// result: (ArrayGet <typ.Int64> {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off/8]))
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		base := v_0
+		if !(Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 8) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.Int64
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v0.AuxInt = int64ToAuxInt(off / 8)
+		v.AddArg2(base, v0)
+		return true
+	}
+	// match: (I64Load [off] (I64Add base (I64Shl idx (I64Const [k]))) _)
+	// cond: off == 0 && k == 3 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 8
+	// result: (ArrayGet <typ.Int64> {types.NewSlice(Wasm3SliceArgElemType(base))} base idx)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		if v_0.Op != OpWasm3I64Add {
+			break
+		}
+		_ = v_0.Args[1]
+		base := v_0.Args[0]
+		v_0_1 := v_0.Args[1]
+		if v_0_1.Op != OpWasm3I64Shl {
+			break
+		}
+		_ = v_0_1.Args[1]
+		idx := v_0_1.Args[0]
+		v_0_1_1 := v_0_1.Args[1]
+		if v_0_1_1.Op != OpWasm3I64Const {
+			break
+		}
+		k := auxIntToInt64(v_0_1_1.AuxInt)
+		if !(off == 0 && k == 3 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 8) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.Int64
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v.AddArg2(base, idx)
+		return true
+	}
 	// match: (I64Load [off] (LoweredAddr {sym} [off2] (SB)) _)
 	// cond: symIsRO(sym) && isU32Bit(off+int64(off2))
 	// result: (I64Const [int64(read64(sym, off+int64(off2), config.ctxt.Arch.ByteOrder))])
@@ -4568,6 +4615,53 @@ func rewriteValueWasm3_OpWasm3I64Load16S(v *Value) bool {
 		v.Type = typ.Int16
 		v.Aux = typeToAux(t)
 		v.AddArg2(sm, idx)
+		return true
+	}
+	// match: (I64Load16S [off] base _)
+	// cond: Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 2
+	// result: (ArrayGet <typ.Int16> {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off/2]))
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		base := v_0
+		if !(Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 2) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.Int16
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v0.AuxInt = int64ToAuxInt(off / 2)
+		v.AddArg2(base, v0)
+		return true
+	}
+	// match: (I64Load16S [off] (I64Add base (I64Shl idx (I64Const [k]))) _)
+	// cond: off == 0 && k == 1 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 2
+	// result: (ArrayGet <typ.Int16> {types.NewSlice(Wasm3SliceArgElemType(base))} base idx)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		if v_0.Op != OpWasm3I64Add {
+			break
+		}
+		_ = v_0.Args[1]
+		base := v_0.Args[0]
+		v_0_1 := v_0.Args[1]
+		if v_0_1.Op != OpWasm3I64Shl {
+			break
+		}
+		_ = v_0_1.Args[1]
+		idx := v_0_1.Args[0]
+		v_0_1_1 := v_0_1.Args[1]
+		if v_0_1_1.Op != OpWasm3I64Const {
+			break
+		}
+		k := auxIntToInt64(v_0_1_1.AuxInt)
+		if !(off == 0 && k == 1 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 2) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.Int16
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v.AddArg2(base, idx)
 		return true
 	}
 	// match: (I64Load16S [off] (LoweredAddr {sym} [off2] (SB)) _)
@@ -4725,6 +4819,53 @@ func rewriteValueWasm3_OpWasm3I64Load16U(v *Value) bool {
 		v.AddArg2(sm, idx)
 		return true
 	}
+	// match: (I64Load16U [off] base _)
+	// cond: Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 2
+	// result: (ArrayGet <typ.UInt16> {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off/2]))
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		base := v_0
+		if !(Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 2) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.UInt16
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v0.AuxInt = int64ToAuxInt(off / 2)
+		v.AddArg2(base, v0)
+		return true
+	}
+	// match: (I64Load16U [off] (I64Add base (I64Shl idx (I64Const [k]))) _)
+	// cond: off == 0 && k == 1 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 2
+	// result: (ArrayGet <typ.UInt16> {types.NewSlice(Wasm3SliceArgElemType(base))} base idx)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		if v_0.Op != OpWasm3I64Add {
+			break
+		}
+		_ = v_0.Args[1]
+		base := v_0.Args[0]
+		v_0_1 := v_0.Args[1]
+		if v_0_1.Op != OpWasm3I64Shl {
+			break
+		}
+		_ = v_0_1.Args[1]
+		idx := v_0_1.Args[0]
+		v_0_1_1 := v_0_1.Args[1]
+		if v_0_1_1.Op != OpWasm3I64Const {
+			break
+		}
+		k := auxIntToInt64(v_0_1_1.AuxInt)
+		if !(off == 0 && k == 1 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 2) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.UInt16
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v.AddArg2(base, idx)
+		return true
+	}
 	// match: (I64Load16U [off] (LoweredAddr {sym} [off2] (SB)) _)
 	// cond: symIsRO(sym) && isU32Bit(off+int64(off2))
 	// result: (I64Const [int64(read16(sym, off+int64(off2), config.ctxt.Arch.ByteOrder))])
@@ -4878,6 +5019,53 @@ func rewriteValueWasm3_OpWasm3I64Load32S(v *Value) bool {
 		v.Type = typ.Int32
 		v.Aux = typeToAux(t)
 		v.AddArg2(sm, idx)
+		return true
+	}
+	// match: (I64Load32S [off] base _)
+	// cond: Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 4
+	// result: (ArrayGet <typ.Int32> {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off/4]))
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		base := v_0
+		if !(Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 4) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.Int32
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v0.AuxInt = int64ToAuxInt(off / 4)
+		v.AddArg2(base, v0)
+		return true
+	}
+	// match: (I64Load32S [off] (I64Add base (I64Shl idx (I64Const [k]))) _)
+	// cond: off == 0 && k == 2 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 4
+	// result: (ArrayGet <typ.Int32> {types.NewSlice(Wasm3SliceArgElemType(base))} base idx)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		if v_0.Op != OpWasm3I64Add {
+			break
+		}
+		_ = v_0.Args[1]
+		base := v_0.Args[0]
+		v_0_1 := v_0.Args[1]
+		if v_0_1.Op != OpWasm3I64Shl {
+			break
+		}
+		_ = v_0_1.Args[1]
+		idx := v_0_1.Args[0]
+		v_0_1_1 := v_0_1.Args[1]
+		if v_0_1_1.Op != OpWasm3I64Const {
+			break
+		}
+		k := auxIntToInt64(v_0_1_1.AuxInt)
+		if !(off == 0 && k == 2 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 4) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.Int32
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v.AddArg2(base, idx)
 		return true
 	}
 	// match: (I64Load32S [off] (LoweredAddr {sym} [off2] (SB)) _)
@@ -5035,6 +5223,53 @@ func rewriteValueWasm3_OpWasm3I64Load32U(v *Value) bool {
 		v.AddArg2(sm, idx)
 		return true
 	}
+	// match: (I64Load32U [off] base _)
+	// cond: Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 4
+	// result: (ArrayGet <typ.UInt32> {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off/4]))
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		base := v_0
+		if !(Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 4) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.UInt32
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v0.AuxInt = int64ToAuxInt(off / 4)
+		v.AddArg2(base, v0)
+		return true
+	}
+	// match: (I64Load32U [off] (I64Add base (I64Shl idx (I64Const [k]))) _)
+	// cond: off == 0 && k == 2 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 4
+	// result: (ArrayGet <typ.UInt32> {types.NewSlice(Wasm3SliceArgElemType(base))} base idx)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		if v_0.Op != OpWasm3I64Add {
+			break
+		}
+		_ = v_0.Args[1]
+		base := v_0.Args[0]
+		v_0_1 := v_0.Args[1]
+		if v_0_1.Op != OpWasm3I64Shl {
+			break
+		}
+		_ = v_0_1.Args[1]
+		idx := v_0_1.Args[0]
+		v_0_1_1 := v_0_1.Args[1]
+		if v_0_1_1.Op != OpWasm3I64Const {
+			break
+		}
+		k := auxIntToInt64(v_0_1_1.AuxInt)
+		if !(off == 0 && k == 2 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 4) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.UInt32
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v.AddArg2(base, idx)
+		return true
+	}
 	// match: (I64Load32U [off] (LoweredAddr {sym} [off2] (SB)) _)
 	// cond: symIsRO(sym) && isU32Bit(off+int64(off2))
 	// result: (I64Const [int64(read32(sym, off+int64(off2), config.ctxt.Arch.ByteOrder))])
@@ -5167,6 +5402,42 @@ func rewriteValueWasm3_OpWasm3I64Load8S(v *Value) bool {
 		v.AddArg2(sm, idx)
 		return true
 	}
+	// match: (I64Load8S [off] base _)
+	// cond: Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 1
+	// result: (ArrayGet <typ.Int8> {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off]))
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		base := v_0
+		if !(Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 1) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.Int8
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v0.AuxInt = int64ToAuxInt(off)
+		v.AddArg2(base, v0)
+		return true
+	}
+	// match: (I64Load8S [off] (I64Add base idx) _)
+	// cond: off == 0 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 1
+	// result: (ArrayGet <typ.Int8> {types.NewSlice(Wasm3SliceArgElemType(base))} base idx)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		if v_0.Op != OpWasm3I64Add {
+			break
+		}
+		idx := v_0.Args[1]
+		base := v_0.Args[0]
+		if !(off == 0 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 1) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.Int8
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v.AddArg2(base, idx)
+		return true
+	}
 	// match: (I64Load8S [off] (LoweredAddr {sym} [off2] (SB)) _)
 	// cond: symIsRO(sym) && isU32Bit(off+int64(off2))
 	// result: (I64Const [int64(int8(read8(sym, off+int64(off2))))])
@@ -5297,6 +5568,42 @@ func rewriteValueWasm3_OpWasm3I64Load8U(v *Value) bool {
 		v.Type = typ.UInt8
 		v.Aux = typeToAux(t)
 		v.AddArg2(sm, idx)
+		return true
+	}
+	// match: (I64Load8U [off] base _)
+	// cond: Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 1
+	// result: (ArrayGet <typ.UInt8> {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off]))
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		base := v_0
+		if !(Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 1) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.UInt8
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v0.AuxInt = int64ToAuxInt(off)
+		v.AddArg2(base, v0)
+		return true
+	}
+	// match: (I64Load8U [off] (I64Add base idx) _)
+	// cond: off == 0 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 1
+	// result: (ArrayGet <typ.UInt8> {types.NewSlice(Wasm3SliceArgElemType(base))} base idx)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		if v_0.Op != OpWasm3I64Add {
+			break
+		}
+		idx := v_0.Args[1]
+		base := v_0.Args[0]
+		if !(off == 0 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 1) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.UInt8
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v.AddArg2(base, idx)
 		return true
 	}
 	// match: (I64Load8U [off] (LoweredAddr {sym} [off2] (SB)) _)
@@ -5746,6 +6053,55 @@ func rewriteValueWasm3_OpWasm3I64Store(v *Value) bool {
 		v.AddArg4(sm, idx, val, mem)
 		return true
 	}
+	// match: (I64Store [off] base val mem)
+	// cond: Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 8
+	// result: (ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off/8]) val mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		base := v_0
+		val := v_1
+		mem := v_2
+		if !(Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 8) {
+			break
+		}
+		v.reset(OpWasm3ArraySet)
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v0.AuxInt = int64ToAuxInt(off / 8)
+		v.AddArg4(base, v0, val, mem)
+		return true
+	}
+	// match: (I64Store [off] (I64Add base (I64Shl idx (I64Const [k]))) val mem)
+	// cond: off == 0 && k == 3 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 8
+	// result: (ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base idx val mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		if v_0.Op != OpWasm3I64Add {
+			break
+		}
+		_ = v_0.Args[1]
+		base := v_0.Args[0]
+		v_0_1 := v_0.Args[1]
+		if v_0_1.Op != OpWasm3I64Shl {
+			break
+		}
+		_ = v_0_1.Args[1]
+		idx := v_0_1.Args[0]
+		v_0_1_1 := v_0_1.Args[1]
+		if v_0_1_1.Op != OpWasm3I64Const {
+			break
+		}
+		k := auxIntToInt64(v_0_1_1.AuxInt)
+		val := v_1
+		mem := v_2
+		if !(off == 0 && k == 3 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 8) {
+			break
+		}
+		v.reset(OpWasm3ArraySet)
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v.AddArg4(base, idx, val, mem)
+		return true
+	}
 	return false
 }
 func rewriteValueWasm3_OpWasm3I64Store16(v *Value) bool {
@@ -5886,6 +6242,55 @@ func rewriteValueWasm3_OpWasm3I64Store16(v *Value) bool {
 		v.reset(OpWasm3ArraySet)
 		v.Aux = typeToAux(t)
 		v.AddArg4(sm, idx, val, mem)
+		return true
+	}
+	// match: (I64Store16 [off] base val mem)
+	// cond: Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 2
+	// result: (ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off/2]) val mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		base := v_0
+		val := v_1
+		mem := v_2
+		if !(Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 2) {
+			break
+		}
+		v.reset(OpWasm3ArraySet)
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v0.AuxInt = int64ToAuxInt(off / 2)
+		v.AddArg4(base, v0, val, mem)
+		return true
+	}
+	// match: (I64Store16 [off] (I64Add base (I64Shl idx (I64Const [k]))) val mem)
+	// cond: off == 0 && k == 1 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 2
+	// result: (ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base idx val mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		if v_0.Op != OpWasm3I64Add {
+			break
+		}
+		_ = v_0.Args[1]
+		base := v_0.Args[0]
+		v_0_1 := v_0.Args[1]
+		if v_0_1.Op != OpWasm3I64Shl {
+			break
+		}
+		_ = v_0_1.Args[1]
+		idx := v_0_1.Args[0]
+		v_0_1_1 := v_0_1.Args[1]
+		if v_0_1_1.Op != OpWasm3I64Const {
+			break
+		}
+		k := auxIntToInt64(v_0_1_1.AuxInt)
+		val := v_1
+		mem := v_2
+		if !(off == 0 && k == 1 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 2) {
+			break
+		}
+		v.reset(OpWasm3ArraySet)
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v.AddArg4(base, idx, val, mem)
 		return true
 	}
 	return false
@@ -6030,6 +6435,55 @@ func rewriteValueWasm3_OpWasm3I64Store32(v *Value) bool {
 		v.AddArg4(sm, idx, val, mem)
 		return true
 	}
+	// match: (I64Store32 [off] base val mem)
+	// cond: Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 4
+	// result: (ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off/4]) val mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		base := v_0
+		val := v_1
+		mem := v_2
+		if !(Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 4) {
+			break
+		}
+		v.reset(OpWasm3ArraySet)
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v0.AuxInt = int64ToAuxInt(off / 4)
+		v.AddArg4(base, v0, val, mem)
+		return true
+	}
+	// match: (I64Store32 [off] (I64Add base (I64Shl idx (I64Const [k]))) val mem)
+	// cond: off == 0 && k == 2 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 4
+	// result: (ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base idx val mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		if v_0.Op != OpWasm3I64Add {
+			break
+		}
+		_ = v_0.Args[1]
+		base := v_0.Args[0]
+		v_0_1 := v_0.Args[1]
+		if v_0_1.Op != OpWasm3I64Shl {
+			break
+		}
+		_ = v_0_1.Args[1]
+		idx := v_0_1.Args[0]
+		v_0_1_1 := v_0_1.Args[1]
+		if v_0_1_1.Op != OpWasm3I64Const {
+			break
+		}
+		k := auxIntToInt64(v_0_1_1.AuxInt)
+		val := v_1
+		mem := v_2
+		if !(off == 0 && k == 2 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 4) {
+			break
+		}
+		v.reset(OpWasm3ArraySet)
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v.AddArg4(base, idx, val, mem)
+		return true
+	}
 	return false
 }
 func rewriteValueWasm3_OpWasm3I64Store8(v *Value) bool {
@@ -6148,6 +6602,44 @@ func rewriteValueWasm3_OpWasm3I64Store8(v *Value) bool {
 		v.reset(OpWasm3ArraySet)
 		v.Aux = typeToAux(t)
 		v.AddArg4(sm, idx, val, mem)
+		return true
+	}
+	// match: (I64Store8 [off] base val mem)
+	// cond: Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 1
+	// result: (ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off]) val mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		base := v_0
+		val := v_1
+		mem := v_2
+		if !(Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 1) {
+			break
+		}
+		v.reset(OpWasm3ArraySet)
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v0.AuxInt = int64ToAuxInt(off)
+		v.AddArg4(base, v0, val, mem)
+		return true
+	}
+	// match: (I64Store8 [off] (I64Add base idx) val mem)
+	// cond: off == 0 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 1
+	// result: (ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base idx val mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		if v_0.Op != OpWasm3I64Add {
+			break
+		}
+		idx := v_0.Args[1]
+		base := v_0.Args[0]
+		val := v_1
+		mem := v_2
+		if !(off == 0 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 1) {
+			break
+		}
+		v.reset(OpWasm3ArraySet)
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v.AddArg4(base, idx, val, mem)
 		return true
 	}
 	return false

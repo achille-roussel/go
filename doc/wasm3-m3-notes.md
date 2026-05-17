@@ -454,6 +454,108 @@ produce different prog shapes).
 Option 1 is recommended once a session can dedicate the focused
 SSA-rules + ssagen work.
 
+## Stage E — slice progress
+
+**Stage E phase 1: slice as Go-ABI value via the bump heap. ✅**
+
+End-to-end Go slice operations work on wasm3:
+
+- `make([]T, n)` — runtime call into the wasm3 fork's bump-heap
+  makeslice (a new `runtime/makeslice_wasm3.go` shares the
+  newobject heap; the original mallocgc path lives in
+  `makeslice_default.go` behind `!wasm3` so the wasm3
+  binary doesn't link mallocgc / the page allocator /
+  the trace locker).
+- `s[i] = v`, `v = s[i]` — standard SSA pointer arithmetic
+  on the slice's i64 ptr field; the backing is linear
+  memory carved from the bump heap, so existing
+  load/store rules apply unchanged.
+- `len(s)`, `cap(s)`, `s[a:b]`, ranging via `for i` — all
+  through the existing slice-header SSA decomposition.
+- Passing a slice across functions — the new
+  `tryFlatPrimitiveAttach` fallback lowers a slice param
+  / result to 3 i64 fields (ptr, len, cap) matching what
+  the SSA caller pushes.
+
+End-to-end (`/tmp/wasm3-slice/main.go`): sumSlice / sumPassed /
+sumSub / sliceLen / sliceCap all return expected values for
+sizes 1..100.
+
+Commits this arc:
+
+- `7b5825e8c2`: `tryFlatPrimitiveAttach` fallback for any
+  function whose primitive- and collector-attach paths both
+  bail. Walks each Go param / result recursively and emits
+  one wasm field per Go-ABI register slot — pointer-shaped
+  leaves go to i64 (matching SSA's push), multi-word headers
+  (string=2, slice=3, interface=2) flatten to their natural
+  shape. `collectorMatchesRegabi` is tightened to reject
+  struct-with-pointer fields so traceLocker-shaped returns
+  fall into the flat path with a regabi-matching signature
+  instead of producing a ref-typed result the SSA call site
+  can't satisfy. Two locking tests.
+- `244aec5440`: `walkMakeSlice` skips the constant-size and
+  tryStack array fast paths on wasm3 (they wrap a `[K]E` in
+  a struct-with-padding auto the wasm3 backend can't address).
+  `runtime.makeslice` / `.64` split into per-target files; the
+  wasm3 version uses the bump heap and avoids mallocgc.
+
+**Stage E phase 2 — wasmgc backing (not yet started).**
+
+The phase-1 slice header keeps the linear-memory pointer
+shape; the design's `(ref backing, i32 off, i32 len, i32 cap)`
+header — backing allocated by `array.new_default $T_elem`,
+indexing via `array.get` / `array.set` on the ref, sub-
+slicing tracked by the i32 offset — is unimplemented. The
+work breakdown:
+
+1. SSA representation change: `OpSliceMake`'s ptr arg
+   becomes a wasmgc ref, not a BytePtr i64. The `OpSlicePtr`
+   accessor returns a ref-typed value. The wasm3 per-value
+   local for the slice's ptr component is anyref.
+
+2. Lowering rules for indexing / slicing on ref-typed slice
+   pointers. The pattern is the same shape as Stage D's
+   stack-array rules but with a different base: `(I64Load
+   [off] (I64Add (OpSlicePtr s) (I64Shl idx ...)) _) =>
+   (Wasm3ArrayGet ...)`. The offset field needs to fold
+   into the index calculation.
+
+3. `make([]T, n)` intrinsic: at SSA-time replace the
+   `runtime.makeslice` call with an `OpWasm3MakeSlice` that
+   emits `array.new_default $T_elem` and constructs the
+   slice header `(ref, 0, n, n)`. Retires the bump-heap
+   path for slices.
+
+4. Cross-function slice ABI in the typed signature:
+   slices lower to 4 wasm fields `(ref, i32, i32, i32)`,
+   not the current 3 i64. tryFlatPrimitiveAttach grows a
+   TSLICE branch that produces the ref-typed header, and
+   the SSA call site pushes the slice ref instead of an
+   i64.
+
+5. Sub-slicing `s2 := s[a:b]` adjusts the offset field:
+   `s2 = (s.backing, s.offset + a, b - a, s.cap - a)`. No
+   reallocation, no copy.
+
+6. Runtime helpers (`growslice`, `slicecopy`,
+   `slicebytetostring`, etc.) ported to ref-backed slices
+   — most need the wasmgc <-> linear-memory bridge from the
+   M3 Stage D notes, since they touch the backing through
+   what was previously a linear-memory pointer.
+
+7. Retire the bump-heap makeslice shim (the bump heap stays
+   for newobject until Stage B's `OpWasm3LoweredStructNew`
+   intrinsic lands).
+
+Per-piece sizing: roughly two more sessions of focused SSA-
+rules + ABI + runtime work, with regression sweeps after each
+phase. Phase 2 unblocks two adjacent shim retirements —
+`printstring_wasm3` (gwrite's slice path) and
+`write1_wasip1_wasm3` (the iovec / nwritten autos can move
+back to the standard stack pattern once slice/array autos
+work cleanly).
+
 ## Stretch — interfaces + closures
 
 `fmt.Println` (interface dispatch) + a higher-order `func` value

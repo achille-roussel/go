@@ -134,6 +134,58 @@ func TestLoweredSignatureCollectsTypes(t *testing.T) {
 	checkDependencyOrder(t, c.table)
 }
 
+// TestFlatPrimitiveAttachSlice locks in that a function whose param
+// list contains a slice gets a 3-i64 lowering from tryFlatPrimitiveAttach
+// — the regabi-matching shape (ptr, len, cap) the SSA call site pushes.
+// Before this fallback existed the function would have no WasmType
+// aux and the linker would default to ()->(), breaking the caller's
+// wasm-stack balance at validation time.
+func TestFlatPrimitiveAttachSlice(t *testing.T) {
+	ft := sig(
+		[]*types.Type{types.NewSlice(types.Types[types.TINT32])},
+		[]*types.Type{types.Types[types.TINT32]},
+	)
+	got, ok := tryFlatPrimitiveAttach(ft)
+	if !ok {
+		t.Fatalf("tryFlatPrimitiveAttach rejected func([]int32) int32")
+	}
+	wantFields(t, "params", got.Params, []obj.WasmField{
+		{Type: obj.WasmI64}, // backing ptr
+		{Type: obj.WasmI64}, // len
+		{Type: obj.WasmI64}, // cap
+	})
+	wantFields(t, "results", got.Results, []obj.WasmField{
+		{Type: obj.WasmI32},
+	})
+}
+
+// TestFlatPrimitiveAttachPointerStruct covers the trace-locker shape
+// (a struct of {*m, uintptr}) that the typeCollector path used to
+// produce a ref-typed signature for. collectorMatchesRegabi now
+// rejects struct fields that are pointers; the flat fallback lowers
+// every leaf to its register-shaped wasm type, yielding two i64
+// results which matches what the SSA call site pushes.
+func TestFlatPrimitiveAttachPointerStruct(t *testing.T) {
+	// `struct{ *struct{ v int64 }; uintptr }`
+	inner := types.NewStruct([]*types.Field{field("v", types.Types[types.TINT64])})
+	st := types.NewStruct([]*types.Field{
+		field("mp", types.NewPtr(inner)),
+		field("gen", types.Types[types.TUINTPTR]),
+	})
+	ft := sig(nil, []*types.Type{st})
+	got, ok := tryFlatPrimitiveAttach(ft)
+	if !ok {
+		t.Fatalf("tryFlatPrimitiveAttach rejected struct{*T; uintptr} result")
+	}
+	if len(got.Params) != 0 {
+		t.Errorf("params = %+v, want empty", got.Params)
+	}
+	wantFields(t, "results", got.Results, []obj.WasmField{
+		{Type: obj.WasmI64}, // *inner — i64-register-shaped pointer
+		{Type: obj.WasmI64}, // uintptr
+	})
+}
+
 func TestCollectSignature(t *testing.T) {
 	// func(*struct{v int64}, int32) string
 	inner := types.NewStruct([]*types.Field{field("v", types.Types[types.TINT64])})

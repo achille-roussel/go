@@ -179,6 +179,118 @@ func attachWasmType(fn *ir.Func) {
 		wasm3StashCollector(fn.LSym.Func(), c)
 		return
 	}
+	// Fallback: a flat primitive lowering that walks each Go param /
+	// result recursively, flattening structs / arrays into the i64/i32/
+	// f32/f64 register slots the SSA layer actually pushes. This gives
+	// every function a signature that lines up with its call sites even
+	// when neither tryPrimitiveAttach nor tryCollectorAttach can produce
+	// a precise ref-typed lowering — the function body might still fall
+	// back to the obj backend's stub (unreachable), but at least its
+	// signature matches the caller's wasm stack and the module validates.
+	//
+	// Without this fallback, attachWasmType would leave the function with
+	// no aux and the linker would default to ()->(). Callers compiled
+	// against the original Go signature would push args / pop returns,
+	// causing wasm validation to reject the module.
+	if sig, ok := tryFlatPrimitiveAttach(ft); ok {
+		fn.LSym.Func().WasmType = &obj.WasmType{WasmFuncType: sig}
+		return
+	}
+}
+
+// tryFlatPrimitiveAttach lowers a function signature by walking each
+// parameter / result recursively, flattening composites (structs,
+// arrays) into their leaf primitive types. Each leaf becomes one wasm
+// field (i64 / i32 / f64 / f32 per width and integer/float category);
+// pointer-shaped leaves lower to i64 (matching what the SSA layer
+// pushes for register-resident pointer values, not the ref-typed wasm
+// field a precise lowering would emit). Returns false if any leaf is
+// itself a composite the flat lowering can't handle — currently slices
+// and interfaces (their wasm-field shape's 4-/2- field count doesn't
+// match Go's regabi 3-/2- register shape, so the call site would still
+// mismatch).
+func tryFlatPrimitiveAttach(ft *types.Type) (obj.WasmFuncType, bool) {
+	var sig obj.WasmFuncType
+	for _, p := range ft.RecvParams() {
+		fs, ok := flatPrimitiveFields(p.Type)
+		if !ok {
+			return obj.WasmFuncType{}, false
+		}
+		sig.Params = append(sig.Params, fs...)
+	}
+	for _, r := range ft.Results() {
+		fs, ok := flatPrimitiveFields(r.Type)
+		if !ok {
+			return obj.WasmFuncType{}, false
+		}
+		sig.Results = append(sig.Results, fs...)
+	}
+	return sig, true
+}
+
+func flatPrimitiveFields(t *types.Type) ([]obj.WasmField, bool) {
+	if f, ok := wasm3IntField(t); ok {
+		return []obj.WasmField{f}, true
+	}
+	switch t.Kind() {
+	case types.TSTRING:
+		// (data *byte, len int) — both pass as i64 registers.
+		return []obj.WasmField{
+			{Type: obj.WasmI64},
+			{Type: obj.WasmI64},
+		}, true
+	case types.TSLICE:
+		// (data *Elem, len int, cap int) — three i64 registers.
+		// Stage E proper boxes the backing in a wasmgc ref instead
+		// of a linear-memory pointer; until then the regabi shape
+		// is the SSA-pushed shape and this flat lowering matches.
+		return []obj.WasmField{
+			{Type: obj.WasmI64},
+			{Type: obj.WasmI64},
+			{Type: obj.WasmI64},
+		}, true
+	case types.TINTER:
+		// (type *_type, data unsafe.Pointer) — two i64 registers.
+		return []obj.WasmField{
+			{Type: obj.WasmI64},
+			{Type: obj.WasmI64},
+		}, true
+	case types.TCOMPLEX64:
+		return []obj.WasmField{
+			{Type: obj.WasmF32},
+			{Type: obj.WasmF32},
+		}, true
+	case types.TCOMPLEX128:
+		return []obj.WasmField{
+			{Type: obj.WasmF64},
+			{Type: obj.WasmF64},
+		}, true
+	case types.TSTRUCT:
+		var out []obj.WasmField
+		for _, f := range t.Fields() {
+			fs, ok := flatPrimitiveFields(f.Type)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, fs...)
+		}
+		return out, true
+	case types.TARRAY:
+		// Empty arrays produce no fields and the per-call-site
+		// register count is also 0 — matches by being empty on both
+		// sides. A non-empty array exceeds the per-register flatten
+		// budget for the typical regabi, so we leave it to the
+		// collector path (which boxes it as a single ref field).
+		if t.NumElem() == 0 {
+			return nil, true
+		}
+		return nil, false
+	case types.TMAP, types.TCHAN, types.TFUNC:
+		// Pointer-shaped runtime types: one i64 register at the SSA
+		// layer until the M3/M4 lowering refines them.
+		return []obj.WasmField{{Type: obj.WasmI64}}, true
+	}
+	return nil, false
 }
 
 // tryPrimitiveAttach is the legacy lowering: every Go param/result is
@@ -355,11 +467,28 @@ func collectorMatchesRegabi(t *types.Type) bool {
 	case types.TBOOL,
 		types.TINT8, types.TINT16, types.TINT32, types.TINT, types.TINT64,
 		types.TUINT8, types.TUINT16, types.TUINT32, types.TUINT, types.TUINT64,
-		types.TUINTPTR, types.TFLOAT32, types.TFLOAT64,
-		types.TPTR, types.TUNSAFEPTR:
+		types.TUINTPTR, types.TFLOAT32, types.TFLOAT64:
+		return true
+	case types.TPTR, types.TUNSAFEPTR:
+		// At the top level tryPrimitiveAttach has already won and
+		// lowered a pointer to i64; collectorMatchesRegabi is only
+		// called for the composite-recursion case. Accept here so
+		// the struct-walking case below can decide field-by-field
+		// (it explicitly rejects pointer fields — see TSTRUCT).
 		return true
 	case types.TSTRUCT:
 		for _, f := range t.Fields() {
+			// Reject any struct containing a pointer field: the
+			// typeCollector lowers a pointer to a ref-typed wasm
+			// field, but the SSA call site pushes an i64 register.
+			// The wasm validator rejects the mismatched signature.
+			// tryFlatPrimitiveAttach catches the rejected case with
+			// an i64-shaped fallback signature that matches what the
+			// caller pushes — the function body may still fall back
+			// to the obj backend's stub, but the module validates.
+			if f.Type.Kind() == types.TPTR || f.Type.Kind() == types.TUNSAFEPTR {
+				return false
+			}
 			if !collectorMatchesRegabi(f.Type) {
 				return false
 			}

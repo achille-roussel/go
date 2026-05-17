@@ -544,10 +544,49 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 			}
 			switch p.As {
 			case ABlock, ALoop, ABrIf, ABrTable,
-				ACall, ACallIndirect, AReturnCallRef:
+				ACall, ACallIndirect:
 				// AIf/AElse/AEnd/ABr are handled above (the branches
 				// rung); the rest are still bailout cases.
 				return nil, false
+
+			case ARefFunc:
+				// ref.func $funcidx — materialises a (ref $funcType)
+				// value referencing the named function. The funcidx is
+				// patched in at link time via R_CALL, the same reloc
+				// the direct-call case uses; the wasm encoding is a
+				// single leb128 funcidx after the opcode byte.
+				if p.From.Type != obj.TYPE_MEM ||
+					(p.From.Name != obj.NAME_EXTERN && p.From.Name != obj.NAME_STATIC) {
+					return nil, false
+				}
+				writeOpcode(w, p.As)
+				relocs = append(relocs, obj.Reloc{
+					Type: objabi.R_CALL,
+					Off:  int32(w.Len()),
+					Siz:  1, // variable-sized; the linker writes the function index
+					Sym:  p.From.Sym,
+				})
+				continue
+
+			case ACallRef, AReturnCallRef:
+				// call_ref / return_call_ref $typeidx — invokes the
+				// function reference on top of the operand stack
+				// against the named function-type signature. The
+				// typeidx immediate is a per-package wasmgc type index
+				// in p.From.Offset, R_WASMTYPE-relocated to the
+				// module-global typeidx by the linker (same shape as
+				// StructNew / RefCast / ArrayGet).
+				if p.From.Type != obj.TYPE_CONST {
+					return nil, false
+				}
+				writeOpcode(w, p.As)
+				relocs = append(relocs, obj.Reloc{
+					Type: objabi.R_WASMTYPE,
+					Off:  int32(w.Len()),
+					Siz:  1, // variable-sized; the linker writes the type index
+					Add:  p.From.Offset,
+				})
+				continue
 
 			case AStructNew, AStructNewDefault:
 				// 0xFB-prefixed GC opcodes with a single type-index

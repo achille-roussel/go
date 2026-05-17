@@ -114,16 +114,21 @@ func wasm3HasOutput(v *Value) bool {
 	// a per-value local makes its consumers (and especially
 	// emitPhiCopies sources) independent of regalloc's
 	// register-local assignment, paving the way for Phase 4.
-	case OpSelect0, OpSelect1, OpSelectN:
-		// Selectors get the same register as their tuple element
-		// via regalloc (regalloc.go ~1519), and the call result
-		// placement loop already populates that register-local.
-		// genssa's outer loop in ssagen/ssa.go skips Arch.
-		// SSAGenValue for Select{0,1,N} ("nothing to do"), so a
-		// per-value local for a selector can never be populated
-		// from the backend — leave them on the register-local
-		// path, the same fallback OpArg-less programs use.
+	case OpSelect0, OpSelect1:
+		// Select0/Select1 are used by Mul64uhilo and friends
+		// (Wasm3.rules rewrites them away into Hmul64u/I64Mul),
+		// so they shouldn't survive to genssa. If one does, fall
+		// back to the register-local path: ssagen's outer loop
+		// skips Arch.SSAGenValue for Select{0,1,N}, so we can't
+		// emit anything backend-side anyway.
 		return false
+		// OpSelectN IS placed. ssagen skips Arch.SSAGenValue for
+		// it, but the wasm3 backend's call-result placement loop
+		// scans for the SelectN values that consume each result
+		// of the call and writes the wasm-stack value directly
+		// into the selector's per-value local. The fallback when
+		// no SelectN exists (or no per-value local was assigned)
+		// is the regalloc-driven setReg path.
 	}
 	// OpPhi is intentionally allowed through: a Phi gets its own
 	// per-value local, and the wasm3 backend emits explicit

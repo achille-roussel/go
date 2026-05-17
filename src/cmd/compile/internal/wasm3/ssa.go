@@ -414,11 +414,43 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 					regs = append(regs, resultReg{ssa.ObjRegForAbiReg(r, v.Block.Func.Config), narrow})
 				}
 			}
+			// Find the OpSelectN value (if any) that downstream
+			// code uses to read result i, so we can write the
+			// result straight into its per-value local under the
+			// M3 regalloc-bypass scheme. The selectors are
+			// scheduled in the same block as the call
+			// (tightenTupleSelectors enforces this). A nil here
+			// means no selector reads this result, or the
+			// selector has no per-value local — fall back to the
+			// register-local path so regalloc-driven Phi
+			// resolution still sees the value.
+			selectN := make([]*ssa.Value, len(regs))
+			for _, u := range v.Block.Values {
+				if u.Op != ssa.OpSelectN {
+					continue
+				}
+				if len(u.Args) < 1 || u.Args[0] != v {
+					continue
+				}
+				if u.AuxInt < 0 || int(u.AuxInt) >= len(regs) {
+					continue
+				}
+				selectN[u.AuxInt] = u
+			}
 			for i := len(regs) - 1; i >= 0; i-- {
 				if regs[i].narrow {
 					s.Prog(wasm.AI64ExtendI32U)
 				}
-				setReg(s, regs[i].reg)
+				placed := false
+				if sel := selectN[i]; sel != nil {
+					if idx, ok := wasm3ValueLocalIdx(s, sel); ok {
+						localSetIdx(s, idx)
+						placed = true
+					}
+				}
+				if !placed {
+					setReg(s, regs[i].reg)
+				}
 			}
 		}
 

@@ -8,59 +8,81 @@ package runtime
 
 import "unsafe"
 
-// printuint / printint for GOARCH=wasm3 share a package-global
-// [21]byte buffer rather than the `var buf [20]byte` stack
-// pattern the standard implementation in printnum.go uses.
+// printuint / printint for GOARCH=wasm3 compose the decimal digits
+// in a Stage-D wasmgc stack array (`var buf [21]byte` lowers to
+// `(ref (array i8))`), then copy the run of digits, one byte at a
+// time, into a package-global linear-memory scratch region and hand
+// that pointer to WASI fd_write. The copy loop is the wasmgc <->
+// linear-memory bridge — there is no wasm opcode that copies from a
+// wasmgc array directly into linear memory, so we do it in Go.
 //
-// M3 Stage D now lowers `var buf [N]byte` to a wasmgc
-// `(ref (array i8))`, but write1 — the WASI fd_write bridge —
-// takes a linear-memory pointer for the buffer (the host can't
-// dereference a wasmgc ref). `unsafe.Pointer(&buf[i])` on a
-// ref-backed array can't produce that pointer; the SSA value
-// would be the array ref (anyref) where i64 is expected,
-// yielding a wasmtime validation failure.
+// Why we can't take `unsafe.Pointer(&buf[i])` directly: a wasmgc
+// array element is not addressable as a linear-memory pointer; the
+// host cannot dereference a wasmgc ref. A package-global byte array
+// lives in the data section, which IS linear memory, so
+// `&printnumScratch[0]` materialises a real i32 pointer fd_write
+// can consume.
 //
-// A package-global byte array IS in linear memory (lives in the
-// data section), so &printnumBuf[i] gives the linear-memory
-// pointer write1 needs. The trade is single-goroutine: the
-// global is shared. That's fine while the wasm3 runtime stays
-// single-goroutine — the goroutine machinery's own bring-up
-// has its own milestone.
+// The bridge is inlined into each caller rather than factored into
+// a helper because the wasm3 backend does not yet bridge a wasmgc
+// ref across a function-call boundary — passing `*[21]byte` lowers
+// the parameter to i64, and the caller-side push of an anyref local
+// would fail wasm validation. Stage I (wasmexport composite
+// marshalling) sketches the ref-typed-parameter ABI that would
+// retire the manual inlining.
 //
-// Full retirement of this shim needs a wasmgc <-> linear-memory
-// bridge for I/O (array.copy from buf to a scratch region, or
-// a WASI 0.3 / component-model array-aware fd_write). Either is
-// a Stage I-ish piece of work.
-var printnumBuf [21]byte
+// Single-goroutine wasm3 lets us share one global scratch buffer
+// across both print routines. When the goroutine machinery's own
+// milestone (M4) brings up real parking, a per-M scratch will be
+// needed.
 
-func formatUint10(v uint64) int {
-	i := 20
+const printnumScratchSize = 21 // -9223372036854775808 is 20 chars
+
+var printnumScratch [printnumScratchSize]byte
+
+//go:nosplit
+func printuint(v uint64) {
+	var buf [printnumScratchSize]byte
+	i := int32(printnumScratchSize - 1)
 	for {
 		i--
-		printnumBuf[i] = byte(v%10) + '0'
+		buf[i] = byte(v%10) + '0'
 		v /= 10
 		if v == 0 {
 			break
 		}
 	}
-	return i
+	n := int32(printnumScratchSize-1) - i
+	for j := int32(0); j < n; j++ {
+		printnumScratch[j] = buf[i+j]
+	}
+	write1(2, unsafe.Pointer(&printnumScratch[0]), n)
 }
 
-func printuint(v uint64) {
-	i := formatUint10(v)
-	write1(2, unsafe.Pointer(&printnumBuf[i]), int32(20-i))
-}
-
+//go:nosplit
 func printint(v int64) {
 	neg := v < 0
 	u := uint64(v)
 	if neg {
 		u = -u
 	}
-	i := formatUint10(u)
+	var buf [printnumScratchSize]byte
+	i := int32(printnumScratchSize - 1)
+	for {
+		i--
+		buf[i] = byte(u%10) + '0'
+		u /= 10
+		if u == 0 {
+			break
+		}
+	}
 	if neg {
 		i--
-		printnumBuf[i] = '-'
+		buf[i] = '-'
 	}
-	write1(2, unsafe.Pointer(&printnumBuf[i]), int32(20-i))
+	n := int32(printnumScratchSize-1) - i
+	for j := int32(0); j < n; j++ {
+		printnumScratch[j] = buf[i+j]
+	}
+	write1(2, unsafe.Pointer(&printnumScratch[0]), n)
 }

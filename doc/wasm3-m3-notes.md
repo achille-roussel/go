@@ -258,6 +258,97 @@ len)` instead of the reflection-based `(*slice)(unsafe.Pointer(
 standard `gwrite(bytes(s))` path off-limits to wasm3; bytes()
 no longer takes the address of a stack slice header.
 
+### Bridge — wasmgc ↔ linear memory for fd_write
+
+The blocker for retiring the buffer-shim trio (printnum_wasm3,
+printstring_wasm3, write1_wasip1_wasm3) is structural: WASI
+fd_write takes a linear-memory pointer, but Stage D made
+`var buf [N]byte` a wasmgc `(ref (array i8))` from which
+`unsafe.Pointer(&buf[i])` cannot materialise a linear-memory
+pointer. wasmgc has no built-in opcode that copies from an array
+ref to linear memory — `array.copy` is gc → gc only.
+
+The bridge is the obvious shape: a package-global byte array
+(which lives in the data section, i.e. linear memory, so
+`&scratch[0]` is a real i32 pointer) plus a small Go loop that
+copies element-by-element from the wasmgc array into the
+scratch using `scratch[i] = buf[i]`. The load is `array.get_u`
+(wasmgc), the store is `i32.store8` (linear), and Go bridges
+them through an i64 register. The fd_write call then runs
+against `&scratch[0]`.
+
+Five compiler-side pieces had to land first to make even this
+minimal bridge code generate:
+
+1. `(array (mut i8))` backing for `[N]byte` stack arrays.
+   `collectBacking`'s pre-bridge path went through `scalarPrim`,
+   which maps TUINT8→i32 (correct for struct fields, since
+   wasmgc field storage rounds up but wrong for array
+   element storage where packed i8/i16 is both legal and
+   tighter). A new `packedArrayPrim` shortcuts the byte/short
+   array case to `PrimStorage(I8)` / `PrimStorage(I16)` so the
+   `[N]byte` backing matches Stage D's expectation that the
+   byte access lowers to `array.get_u`, not a 32-bit get.
+
+2. Packed-aware ArraySet codegen. wasmgc `array.set` on a
+   packed array takes i32 (the value is implicitly truncated
+   to the storage width); the pre-bridge codegen pushed i64.
+   Wrap to i32 with `i32.wrap_i64` when `elemSize < 8`.
+
+3. Packed-aware ArrayGet codegen. wasmgc rejects plain
+   `array.get` on packed storage — it cannot decide between
+   sign-/zero-extension to i32. Emit `array.get_u` or
+   `array.get_s` based on `v.Type.IsSigned()`, then
+   `i64.extend_i32_{u,s}` so the result lands as i64 in the
+   per-value local (every wasm3 GP local is i64). The Stage D
+   rules in `Wasm3.rules` now annotate the SSA result type
+   with `typ.UInt8`, `typ.Int8`, `typ.UInt16`, etc., so the
+   codegen can read the signedness off `v.Type`.
+
+4. Zero-on-StackArray is a no-op. `array.new_default`
+   initialises every element to zero already, so ssagen's
+   stock `var buf [N]byte` zeroing pattern (which expands a
+   16-byte zero into two `i64.store` ops at offsets 0 and 8)
+   would target a stack array with i64 stores — no Stage D
+   rule covers an i64-store on an i8 array. The Stage D rule
+   `(Zero [_] (StackArray _) mem) => mem` discards the redundant
+   zeroing entirely.
+
+5. Skip memcombine for StackArray destinations.
+   `combineStores` (the generic memcombine pass) fused
+   adjacent byte stores into wider `i64.store16` / 32 / 64
+   ops to amortise the linear-memory store cost. On a wasmgc
+   byte array there is no wide-store opcode — the storage is
+   element-by-element. Bail in `combineStores` when
+   `splitPtr`'s base is `OpWasm3StackArray` so the byte
+   stores stay byte-wide and the Stage D rules can lower
+   each one to `array.set`.
+
+End-to-end demonstration (`/tmp/wasm3-bridge/main.go`):
+`bridgeWriteHello` composes `"hello, wasmgc\n"` in a
+`var src [14]byte`, copies through a package-global
+`var bridgeScratch [64]byte`, hands `&bridgeScratch[0]` to
+`fd_write(1, ...)`, and the host stdout prints the string.
+
+First user landed: `runtime/printnum_wasm3.go` now uses a
+stack-allocated wasmgc buf rather than the package-global
+`printnumBuf` hoist that documented this exact blocker. The
+copy loop is inlined into both `printuint` / `printint`
+because the wasm3 backend does not yet bridge a wasmgc ref
+across a function-call boundary — passing `*[N]byte` lowers
+the parameter to i64 and the caller's anyref local then
+mismatches the callee's i64 expectation. Cross-function ref
+passing is Stage I-shaped (wasmexport composite marshalling).
+
+Still on the shim path after this arc: `printstring_wasm3`
+(blocked on gwrite/writeErr/writeErrData/write1 chain — the
+slice header path needs Stage E), `write1_wasip1_wasm3` (its
+`iovec` and `nwritten` autos need linear-memory addresses
+for fd_write; the package-global hoist is the same trick the
+old printnumBuf did and doesn't benefit from the bridge),
+`printlock_wasm3` (gated on M4 scheduler bring-up — the
+bridge does not apply).
+
 - `2a3c74ca4b`: `typeCollector.lowerFields` lowers TARRAY as a
   single `(ref (array T_elem))` field via the existing
   collectBacking path (already in place for the TSLICE case). The

@@ -36,12 +36,55 @@ const (
 	wasm3ValF64 = 0x7C
 )
 
+// wasm3MarkOnStack mirrors regalloc's OnWasmStack analysis
+// (regalloc.go around line 850) so wasm3PlaceValues can skip
+// placement for values that will be consumed inline on the wasm
+// stack. With regalloc skipped for GOARCH=wasm3, this is the
+// only place v.OnWasmStack gets set.
+func wasm3MarkOnStack(f *Func) {
+	canLiveOnStack := f.newSparseSet(f.NumValues())
+	defer f.retSparseSet(canLiveOnStack)
+	for _, b := range f.Blocks {
+		canLiveOnStack.clear()
+		for _, c := range b.ControlValues() {
+			if c.Uses == 1 && !opcodeTable[c.Op].generic {
+				canLiveOnStack.add(c.ID)
+			}
+		}
+		for i := len(b.Values) - 1; i >= 0; i-- {
+			v := b.Values[i]
+			if canLiveOnStack.contains(v.ID) {
+				v.OnWasmStack = true
+			} else {
+				canLiveOnStack.clear()
+			}
+			// Generic consumers (OpConvert, OpPhi, etc.) don't call
+			// getValue on their args in the wasm3 backend — most go
+			// through ssagen's `nothing to do` short-circuit. With
+			// regalloc skipped there's no spill-driven materialization
+			// to absorb their args, so an OnWasmStack value flowing
+			// into a generic op would leak (Skipped++ with no matching
+			// decrement). Skip adding args when v itself is generic.
+			if opcodeTable[v.Op].generic {
+				continue
+			}
+			for _, arg := range v.Args {
+				if arg.Uses == 1 && arg.Block == v.Block && !arg.Type.IsMemory() && !opcodeTable[arg.Op].generic {
+					canLiveOnStack.add(arg.ID)
+				}
+			}
+		}
+	}
+}
+
 // wasm3PlaceValues populates f.Wasm3ValueLocals and f.Wasm3LocalTypes
 // for GOARCH=wasm3 functions. No-op for other arches.
 func wasm3PlaceValues(f *Func) {
 	if f.Config.arch != "wasm3" {
 		return
 	}
+
+	wasm3MarkOnStack(f)
 
 	// Single walk over blocks/values in layout/schedule order:
 	// assign a fresh local to every value that survives wasm3HasOutput.
@@ -136,16 +179,12 @@ func wasm3HasOutput(v *Value) bool {
 	// ssaGenBlock before each control transfer, taking the place
 	// of regalloc's destination-register-sharing scheme.
 
-	// Phase 4 (regalloc skipped for wasm3): every value-producing
-	// op needs a per-value local because there's no register-local
-	// fallback. The OnWasmStack-mirror skip (regalloc.go's `Uses
-	// == 1 && !generic`) trades cleanly only when something else
-	// is willing to materialize values to a register-local when
-	// the analysis is wrong — without regalloc that fallback
-	// path doesn't exist. Re-enabling the skip is possible but
-	// requires teaching emitPhiCopies and every getValue-less
-	// consumer path to honor OnWasmStack on its source values
-	// (see "wasm: bad stack" panic on runtime build attempt).
+	// Skip placement for values wasm3MarkOnStack flagged
+	// OnWasmStack — they're consumed inline at their use site,
+	// so the per-value local would be declared but never written.
+	if v.OnWasmStack {
+		return false
+	}
 	return true
 }
 

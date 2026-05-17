@@ -608,12 +608,13 @@ func AutoVar(v *Value) (*ir.Name, int64) {
 		}
 	}
 	// Assume it is a register, return its spill slot, which needs to be live.
-	// On GOARCH=wasm3 (regalloc skipped), some values that the liveness
-	// machinery probes via AutoVar — notably OpArgIntReg / OpArgFloatReg
-	// in functions with no result params — can have a nil Aux. There's no
-	// spill slot to point at because wasm3 doesn't use linear-memory
-	// frames; returning a nil *ir.Name lets affectedVar's downstream
-	// `n == nil` check skip the entry.
+	// On GOARCH=wasm3 (regalloc skipped), values reached via OpKeepAlive
+	// can have a nil Aux because there's no spill slot to point at —
+	// wasm3 keeps everything alive via per-value locals, not linear-
+	// memory frames. Returning a nil *ir.Name lets the liveness
+	// machinery's `n == nil` check skip the entry; per-value locals
+	// outlast the GC scan because they're the wasm function's own
+	// declared locals.
 	nameOff, _ := v.Aux.(*AuxNameOffset)
 	if nameOff == nil {
 		return nil, 0

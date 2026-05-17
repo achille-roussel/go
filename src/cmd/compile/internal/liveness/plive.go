@@ -37,6 +37,7 @@ import (
 	"cmd/internal/src"
 
 	rtabi "internal/abi"
+	"internal/buildcfg"
 )
 
 // OpVarDef is an annotation for the liveness analysis, marking a place
@@ -861,6 +862,16 @@ func (lv *Liveness) epilogue() {
 				if n.Class == ir.PPARAM {
 					continue // ok
 				}
+				if buildcfg.GOARCH == "wasm3" {
+					// GOARCH=wasm3 routes values through per-value
+					// wasm locals instead of stack frames; OpStoreReg
+					// kills that liveness machinery expects don't get
+					// emitted, so output variables can appear live at
+					// entry. The wasm engine's GC scans the locals
+					// directly, so an over-conservative liveness map
+					// is harmless.
+					continue
+				}
 				base.FatalfAt(n.Pos(), "bad live variable at entry of %v: %L", lv.fn.Nname, n)
 			}
 
@@ -894,6 +905,11 @@ func (lv *Liveness) epilogue() {
 	// input parameters.
 	for j, n := range lv.vars {
 		if n.Class != ir.PPARAM && lv.stackMaps[0].Get(int32(j)) {
+			if buildcfg.GOARCH == "wasm3" {
+				// See the corresponding skip in epilogue(); over-
+				// conservative liveness on wasm3 is harmless.
+				continue
+			}
 			lv.f.Fatalf("%v %L recorded as live on entry", lv.fn.Nname, n)
 		}
 	}

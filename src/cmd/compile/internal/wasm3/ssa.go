@@ -968,6 +968,11 @@ func readPhiSource(s *ssagen.State, v *ssa.Value) {
 		}
 		v = v.Args[0]
 	}
+	if v.OnWasmStack {
+		s.OnWasmStackSkipped--
+		ssaGenValueOnStack(s, v, true)
+		return
+	}
 	if idx, ok := wasm3ValueLocalIdx(s, v); ok {
 		localGetIdx(s, idx)
 		return

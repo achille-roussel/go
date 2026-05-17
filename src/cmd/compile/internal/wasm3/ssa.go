@@ -850,6 +850,21 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 	case ssa.OpCopy:
 		getValue64(s, v.Args[0])
 
+	case ssa.OpWasm3MakeSlice:
+		// M3 Stage E phase 2: replacement for the bump-heap
+		// runtime.makeslice. v.Aux is the slice's *types.Type
+		// (e.g. `[]int32`); the wasmgc backing is keyed on the
+		// element type via wasm3RegisterArrayAux. arg0=len,
+		// arg1=cap (the backing is sized by cap). Emit:
+		//     i32.wrap(cap); array.new_default $arr_T_elem
+		// The default case's localSetIdx fall-through stores the
+		// resulting ref in v's per-value local, typed anyref by
+		// wasm3ValueType's OpWasm3MakeSlice case.
+		getValue64(s, v.Args[1])
+		s.Prog(wasm.AI32WrapI64)
+		p := s.Prog(wasm.AArrayNewDefault)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterArrayAux(s, v))}
+
 	case ssa.OpWasm3StackArray:
 		// M3 Stage D: stack-allocated `var buf [N]T` auto. The
 		// SSA-side replacement for the OpLocalAddr ssagen would

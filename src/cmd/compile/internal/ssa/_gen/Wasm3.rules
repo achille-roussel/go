@@ -543,6 +543,80 @@
 	&& off == 0 && t.Elem().Elem().Size() == 1 =>
 	(ArrayGet <typ.UInt8> {t.Elem()} sa idx)
 
+// M3 Stage E phase 2: ref-backed slice element access lowered to
+// array.get / array.set on the wasmgc backing.
+//
+// The data pointer of a wasm3-make slice traces back to a
+// MakeSlice op (after the generic decomposition rule
+// SlicePtr(SliceMake p _ _) => p). MakeSlice's v.Aux is the
+// slice's *types.Type; t.Elem() is the element type whose size
+// drives the wasmgc opcode width. The output op's Aux is set to
+// the same slice type, matching what wasm3RegisterArrayAux
+// expects (it derives the backing key from t.Elem()).
+
+// Constant-offset stores (index = off / elemSize).
+(I64Store [off] sm:(MakeSlice {t} _ _ _) val mem) && t.Elem().Size() == 8 =>
+	(ArraySet {t} sm (I64Const <typ.Int> [off/8]) val mem)
+(I64Store32 [off] sm:(MakeSlice {t} _ _ _) val mem) && t.Elem().Size() == 4 =>
+	(ArraySet {t} sm (I64Const <typ.Int> [off/4]) val mem)
+(I64Store16 [off] sm:(MakeSlice {t} _ _ _) val mem) && t.Elem().Size() == 2 =>
+	(ArraySet {t} sm (I64Const <typ.Int> [off/2]) val mem)
+(I64Store8 [off] sm:(MakeSlice {t} _ _ _) val mem) && t.Elem().Size() == 1 =>
+	(ArraySet {t} sm (I64Const <typ.Int> [off]) val mem)
+
+// Variable-offset stores: `&backing + i * elemSize` lowered to `array.set ref i val`.
+(I64Store [off] (I64Add sm:(MakeSlice {t} _ _ _) (I64Shl idx (I64Const [k]))) val mem)
+	&& off == 0 && t.Elem().Size() == 8 && k == 3 =>
+	(ArraySet {t} sm idx val mem)
+(I64Store32 [off] (I64Add sm:(MakeSlice {t} _ _ _) (I64Shl idx (I64Const [k]))) val mem)
+	&& off == 0 && t.Elem().Size() == 4 && k == 2 =>
+	(ArraySet {t} sm idx val mem)
+(I64Store16 [off] (I64Add sm:(MakeSlice {t} _ _ _) (I64Shl idx (I64Const [k]))) val mem)
+	&& off == 0 && t.Elem().Size() == 2 && k == 1 =>
+	(ArraySet {t} sm idx val mem)
+(I64Store8 [off] (I64Add sm:(MakeSlice {t} _ _ _) idx) val mem)
+	&& off == 0 && t.Elem().Size() == 1 =>
+	(ArraySet {t} sm idx val mem)
+
+// Constant-offset loads.
+(I64Load [off] sm:(MakeSlice {t} _ _ _) _) && t.Elem().Size() == 8 =>
+	(ArrayGet <typ.Int64> {t} sm (I64Const <typ.Int> [off/8]))
+(I64Load32S [off] sm:(MakeSlice {t} _ _ _) _) && t.Elem().Size() == 4 =>
+	(ArrayGet <typ.Int32> {t} sm (I64Const <typ.Int> [off/4]))
+(I64Load32U [off] sm:(MakeSlice {t} _ _ _) _) && t.Elem().Size() == 4 =>
+	(ArrayGet <typ.UInt32> {t} sm (I64Const <typ.Int> [off/4]))
+(I64Load16S [off] sm:(MakeSlice {t} _ _ _) _) && t.Elem().Size() == 2 =>
+	(ArrayGet <typ.Int16> {t} sm (I64Const <typ.Int> [off/2]))
+(I64Load16U [off] sm:(MakeSlice {t} _ _ _) _) && t.Elem().Size() == 2 =>
+	(ArrayGet <typ.UInt16> {t} sm (I64Const <typ.Int> [off/2]))
+(I64Load8S [off] sm:(MakeSlice {t} _ _ _) _) && t.Elem().Size() == 1 =>
+	(ArrayGet <typ.Int8> {t} sm (I64Const <typ.Int> [off]))
+(I64Load8U [off] sm:(MakeSlice {t} _ _ _) _) && t.Elem().Size() == 1 =>
+	(ArrayGet <typ.UInt8> {t} sm (I64Const <typ.Int> [off]))
+
+// Variable-offset loads (mirror of variable-offset stores).
+(I64Load [off] (I64Add sm:(MakeSlice {t} _ _ _) (I64Shl idx (I64Const [k]))) _)
+	&& off == 0 && t.Elem().Size() == 8 && k == 3 =>
+	(ArrayGet <typ.Int64> {t} sm idx)
+(I64Load32S [off] (I64Add sm:(MakeSlice {t} _ _ _) (I64Shl idx (I64Const [k]))) _)
+	&& off == 0 && t.Elem().Size() == 4 && k == 2 =>
+	(ArrayGet <typ.Int32> {t} sm idx)
+(I64Load32U [off] (I64Add sm:(MakeSlice {t} _ _ _) (I64Shl idx (I64Const [k]))) _)
+	&& off == 0 && t.Elem().Size() == 4 && k == 2 =>
+	(ArrayGet <typ.UInt32> {t} sm idx)
+(I64Load16S [off] (I64Add sm:(MakeSlice {t} _ _ _) (I64Shl idx (I64Const [k]))) _)
+	&& off == 0 && t.Elem().Size() == 2 && k == 1 =>
+	(ArrayGet <typ.Int16> {t} sm idx)
+(I64Load16U [off] (I64Add sm:(MakeSlice {t} _ _ _) (I64Shl idx (I64Const [k]))) _)
+	&& off == 0 && t.Elem().Size() == 2 && k == 1 =>
+	(ArrayGet <typ.UInt16> {t} sm idx)
+(I64Load8S [off] (I64Add sm:(MakeSlice {t} _ _ _) idx) _)
+	&& off == 0 && t.Elem().Size() == 1 =>
+	(ArrayGet <typ.Int8> {t} sm idx)
+(I64Load8U [off] (I64Add sm:(MakeSlice {t} _ _ _) idx) _)
+	&& off == 0 && t.Elem().Size() == 1 =>
+	(ArrayGet <typ.UInt8> {t} sm idx)
+
 // transforming readonly globals into constants
 (I64Load [off] (LoweredAddr {sym} [off2] (SB)) _) && symIsRO(sym) && isU32Bit(off+int64(off2)) => (I64Const [int64(read64(sym, off+int64(off2), config.ctxt.Arch.ByteOrder))])
 (I64Load32U [off] (LoweredAddr {sym} [off2] (SB)) _) && symIsRO(sym) && isU32Bit(off+int64(off2)) => (I64Const [int64(read32(sym, off+int64(off2), config.ctxt.Arch.ByteOrder))])

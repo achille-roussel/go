@@ -219,7 +219,7 @@ func wasm3ValueType(v *Value) byte {
 	case OpWasm3StructNew, OpWasm3StructNewDefault,
 		OpWasm3ArrayNew, OpWasm3ArrayNewDefault,
 		OpWasm3RefNull, OpWasm3RefCast,
-		OpWasm3StackArray:
+		OpWasm3StackArray, OpWasm3MakeSlice:
 		return wasm3ValAnyref
 	}
 	t := v.Type

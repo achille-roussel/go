@@ -310,6 +310,20 @@ func init() {
 		// the wasm level. Later Wasm3.rules rewrite (Load (OffPtr [off]
 		// (StackArray ...)) _) into Wasm3ArrayGet ops on this ref.
 		{name: "StackArray", argLength: 1, reg: gp01, aux: "Sym", symEffect: "Addr"},
+
+		// M3 Stage E phase 2: replacement for the bump-heap
+		// runtime.makeslice call. Allocates a wasmgc `(ref (array T))`
+		// backing of length cap via `array.new_default`. The result is
+		// the slice's data pointer at the SSA level — Go-typed as
+		// unsafe.Pointer (so the SSA layer treats it like a normal
+		// pointer flowing into OpSliceMake), wasm-typed as anyref so the
+		// per-value local holds the actual ref. v.Aux carries the
+		// *types.Type of the slice's element (T); the obj backend
+		// resolves it to a wasmgc array-backing type index via
+		// wasm3RegisterArrayBacking. arg0=len, arg1=cap, arg2=mem.
+		// Indexing on a Wasm3MakeSlice-derived OpSlicePtr lowers via
+		// Wasm3.rules to ArrayGet / ArraySet on the ref.
+		{name: "MakeSlice", argLength: 3, reg: gp21, aux: "Typ", typ: "BytePtr"},
 	}
 
 	archs = append(archs, arch{

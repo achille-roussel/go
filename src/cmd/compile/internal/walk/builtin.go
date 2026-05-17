@@ -547,6 +547,14 @@ func walkMakeSlice(n *ir.MakeExpr, init *ir.Nodes) ir.Node {
 	fn := typecheck.LookupRuntime(fnname)
 	ptr := mkcall1(fn, types.Types[types.TUNSAFEPTR], init, reflectdata.MakeSliceElemRType(base.Pos, n), typecheck.Conv(len, argtype), typecheck.Conv(cap, argtype))
 	ptr.MarkNonNil()
+	// Stage E phase 2 (wasm3): pin the slice's element type to the
+	// CallExpr so the SSA-time intrinsic for runtime.makeslice can
+	// emit OpWasm3MakeSlice with the correct backing-array type. The
+	// SSA layer has no other way to recover Elem() from the rtype
+	// arg (an OpAddr of the runtime type symbol).
+	if buildcfg.GOARCH == "wasm3" {
+		ir.Wasm3MakeSliceElemTypes.Store(ptr, t.Elem())
+	}
 	len = typecheck.Conv(len, types.Types[types.TINT])
 	cap = typecheck.Conv(cap, types.Types[types.TINT])
 	s := ir.NewSliceHeaderExpr(base.Pos, t, ptr, len, cap)

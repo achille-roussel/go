@@ -143,6 +143,31 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			},
 			all...)
 	}
+
+	// M3 Stage E phase 2 (wasm3): replace runtime.makeslice /
+	// runtime.makeslice64 with OpWasm3MakeSlice, allocating a wasmgc
+	// `(ref (array T))` backing instead of going through the bump-
+	// heap fork. The element *types.Type comes from a side channel
+	// (ir.Wasm3MakeSliceElemTypes) populated by walkMakeSlice — the
+	// SSA layer has no other way to recover it from the rtype-arg
+	// SSA value (which is an OpAddr of a runtime type symbol).
+	wasm3MakeSliceIntrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		entry, ok := ir.Wasm3MakeSliceElemTypes.LoadAndDelete(n)
+		if !ok {
+			s.Fatalf("wasm3 makeslice intrinsic: no recorded elem type for call %v", n)
+		}
+		elem := entry.(*types.Type)
+		// Slice type for Aux: wasm3RegisterArrayAux handles slice or
+		// array; we use the slice type so the helper resolves to the
+		// elem's backing via t.Elem(). args[0] is the rtype (discard);
+		// args[1] is len, args[2] is cap.
+		sliceType := types.NewSlice(elem)
+		v := s.newValue3(ssa.OpWasm3MakeSlice, types.Types[types.TUNSAFEPTR], args[1], args[2], s.mem())
+		v.Aux = sliceType
+		return v
+	}
+	add("runtime", "makeslice", wasm3MakeSliceIntrinsic, sys.ArchWasm3)
+	add("runtime", "makeslice64", wasm3MakeSliceIntrinsic, sys.ArchWasm3)
 	addF("internal/runtime/math", "MulUintptr",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			if s.config.PtrSize == 4 {
@@ -2304,7 +2329,24 @@ func IsIntrinsicCall(n *ir.CallExpr) bool {
 		}
 		return false
 	}
-	return IsIntrinsicSym(name.Sym())
+	if !IsIntrinsicSym(name.Sym()) {
+		return false
+	}
+	// M3 Stage E phase 2 (wasm3): the runtime.makeslice / .64
+	// intrinsics only fire for calls walkMakeSlice registered via
+	// ir.Wasm3MakeSliceElemTypes — those are the user-make() call
+	// sites for which we have the slice element *types.Type. Direct
+	// in-runtime calls (e.g. makeslice64 → makeslice) have no
+	// recorded entry; let them fall through to the standard call.
+	if buildcfg.GOARCH == "wasm3" {
+		sym := name.Sym()
+		if sym.Pkg != nil && sym.Pkg.Path == "runtime" && (sym.Name == "makeslice" || sym.Name == "makeslice64") {
+			if _, ok := ir.Wasm3MakeSliceElemTypes.Load(n); !ok {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func IsIntrinsicSym(sym *types.Sym) bool {

@@ -500,6 +500,35 @@ Commits this arc:
   `runtime.makeslice` / `.64` split into per-target files; the
   wasm3 version uses the bump heap and avoids mallocgc.
 
+**Stage E phase 1 known gaps (carry into phase 2 or adjacent
+work).**
+
+These are the operations that still fail on phase 1's bump-heap
+slice — each has its own blocker independent of the wasmgc
+representation change:
+
+- `append(s, v)` — the SSA backend bails on the function (the
+  obj backend emits an `unreachable` stub for `main.sumAppend`).
+  growslice's call path pulls in fast-path SSA shapes the wasm3
+  backend hasn't grown a case for; needs a focused trace of
+  which obj pattern triggers the bail.
+
+- `copy(dst, src)` slice-to-slice copy — reaches `runtime.memmove`
+  which in `memmove_wasm3.s` reads its args via `MOVD .+N(FP)` on
+  a Go stack frame the wasm3 runtime doesn't have. A wrapper the
+  backend auto-generates stores the wasm-level params to address
+  0 (uninitialised "FP" local) and then calls into an
+  `unreachable` stub for the asm body. Investigated:
+  rewriting the asm to `Get R0/R1/R2` directly + extending
+  `enqueueFunc`'s bodyless branch to call `PrepareFunc` on the
+  runtime forward decl — but the forward-decl `*ir.Func` and the
+  asm-defined LSym are distinct enough that the WasmType
+  attachment doesn't reach `encodeWasm3Body`. The proper fix is
+  signature derivation in `assemble3` from the LSym's frame size
+  (or a runtime pragma carrying the WasmType for asm symbols).
+  Reverted. (Same shape blocks `runtime.memclrNoHeapPointers`,
+  used by growslice's zero-the-tail path.)
+
 **Stage E phase 2 — wasmgc backing (not yet started).**
 
 The phase-1 slice header keeps the linear-memory pointer

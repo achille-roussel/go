@@ -321,3 +321,173 @@ func TestBlockSet_Basics(t *testing.T) {
 		t.Errorf("len: got %d, want 2", got)
 	}
 }
+
+// planTestSetup runs the full pipeline (back-edges → natural loops →
+// nesting → emit plan) on an in-memory graph plus a layout. Returns
+// the plan, or nil if the relooper bails. Tests use this to keep
+// setup terse.
+func planTestSetup(g cfgGraph, layout []int32) *emitPlan {
+	backs := findBackEdges(g)
+	loops := findNaturalLoops(g, backs)
+	nestLoops(loops)
+	rp := &reloopPlan{loops: loops}
+	// Approximate irreducibility check (mirrors computeReloopPlan).
+	for _, l := range loops {
+		for _, id := range g.Blocks() {
+			if id == l.header || !l.body.has(id) {
+				continue
+			}
+			for _, p := range g.Preds(id) {
+				if !l.body.has(p) {
+					rp.hasIrreducible = true
+					break
+				}
+			}
+			if rp.hasIrreducible {
+				break
+			}
+		}
+		if rp.hasIrreducible {
+			break
+		}
+	}
+	return computeEmitPlanFor(g, layout, rp)
+}
+
+func TestEmitPlan_Linear(t *testing.T) {
+	// 1 → 2 → 3 (terminal). No loops, no merge points; the plan
+	// should be empty (no scopes anywhere).
+	g := newAdjacencyGraph(1, [][2]int32{{1, 2}, {2, 3}})
+	plan := planTestSetup(g, []int32{1, 2, 3})
+	if plan == nil {
+		t.Fatal("plan should not be nil for linear CFG")
+	}
+	for i, bop := range plan.perBoundary {
+		if bop.closes != 0 || len(bop.opens) != 0 {
+			t.Errorf("boundary %d: got closes=%d opens=%d, want empty", i, bop.closes, len(bop.opens))
+		}
+	}
+	if len(plan.branchDepth) != 0 {
+		t.Errorf("branchDepth should be empty for linear CFG, got %+v", plan.branchDepth)
+	}
+}
+
+func TestEmitPlan_IfElseMerge(t *testing.T) {
+	// 1 → {2, 3}; 2 → 4; 3 → 4. Diamond. Layout: 1, 2, 3, 4.
+	// Block 1's layout-adjacent successor is 2, so 1→2 falls through
+	// but 1→3 needs a branch. Block 2's layout-adjacent successor
+	// would be 3, so 2→4 needs a branch (4 is past 3). Block 3's
+	// adjacent successor is 4, so 3→4 falls through.
+	// Two block scopes: one for 3 (endsAt=2) and one for 4 (endsAt=3).
+	// Both open at boundary 0 (block 1's idom — which is block 1
+	// itself, the entry, at layout position 0).
+	g := newAdjacencyGraph(1, [][2]int32{{1, 2}, {1, 3}, {2, 4}, {3, 4}})
+	plan := planTestSetup(g, []int32{1, 2, 3, 4})
+	if plan == nil {
+		t.Fatal("plan should not be nil for diamond CFG")
+	}
+	if len(plan.perBoundary) != 5 {
+		t.Fatalf("perBoundary len: got %d, want 5", len(plan.perBoundary))
+	}
+	// Boundary 0: opens two block scopes, outermost (endsAt=3) first.
+	if got := len(plan.perBoundary[0].opens); got != 2 {
+		t.Fatalf("boundary 0: opens len %d, want 2", got)
+	}
+	if op := plan.perBoundary[0].opens[0]; op.kind != scopeBlock || op.target != 4 || op.endsAt != 3 {
+		t.Errorf("boundary 0 opens[0] (outermost): got %+v, want scopeBlock target=4 endsAt=3", op)
+	}
+	if op := plan.perBoundary[0].opens[1]; op.kind != scopeBlock || op.target != 3 || op.endsAt != 2 {
+		t.Errorf("boundary 0 opens[1] (innermost): got %+v, want scopeBlock target=3 endsAt=2", op)
+	}
+	// Boundary 2: close inner block scope (for 3).
+	if plan.perBoundary[2].closes != 1 {
+		t.Errorf("boundary 2: closes %d, want 1", plan.perBoundary[2].closes)
+	}
+	// Boundary 3: close outer block scope (for 4).
+	if plan.perBoundary[3].closes != 1 {
+		t.Errorf("boundary 3: closes %d, want 1", plan.perBoundary[3].closes)
+	}
+	// Branch 1→3: depth 0 (innermost is block scope for 3 at sidx=1).
+	if d, ok := plan.branchDepth[branchKey{from: 1, to: 3}]; !ok || d != 0 {
+		t.Errorf("branchDepth[1→3]: got %d ok=%v, want 0 ok=true", d, ok)
+	}
+	// Branch 2→4: depth 1 (scope for 4 is at sidx=0, scope for 3
+	// is at sidx=1 above it; depth = 2-1-0 = 1).
+	if d, ok := plan.branchDepth[branchKey{from: 2, to: 4}]; !ok || d != 1 {
+		t.Errorf("branchDepth[2→4]: got %d ok=%v, want 1 ok=true", d, ok)
+	}
+}
+
+func TestEmitPlan_SimpleLoop(t *testing.T) {
+	// 1 → 2 → 3 → 2 (back-edge); 3 → 4 (exit). Layout: 1, 2, 3, 4.
+	// Loop body: {2, 3}, header 2.
+	g := newAdjacencyGraph(1, [][2]int32{{1, 2}, {2, 3}, {3, 2}, {3, 4}})
+	plan := planTestSetup(g, []int32{1, 2, 3, 4})
+	if plan == nil {
+		t.Fatal("plan should not be nil for simple loop")
+	}
+	// Loop scope opens at boundary 1 (before block 2), closes at
+	// boundary 3 (before block 4 — after block 3).
+	if got := len(plan.perBoundary[1].opens); got != 1 {
+		t.Fatalf("boundary 1: opens len %d, want 1", got)
+	}
+	if op := plan.perBoundary[1].opens[0]; op.kind != scopeLoop || op.target != 2 {
+		t.Errorf("boundary 1 open: got %+v, want scopeLoop target=2", op)
+	}
+	if got := plan.perBoundary[3].closes; got != 1 {
+		t.Errorf("boundary 3: closes %d, want 1", got)
+	}
+	// Branch 3→2 (back-edge): depth 0 (loop is innermost).
+	if d, ok := plan.branchDepth[branchKey{from: 3, to: 2}]; !ok || d != 0 {
+		t.Errorf("branchDepth[3→2]: got %d ok=%v, want 0 ok=true", d, ok)
+	}
+}
+
+func TestEmitPlan_NestedLoops(t *testing.T) {
+	// 1 → 2 → 3 → 4 → 3 (inner back-edge); 4 → 5 → 2 (outer back-edge);
+	// 5 → 6 (exit). Layout: 1, 2, 3, 4, 5, 6.
+	// Outer loop: header 2, body {2,3,4,5}.
+	// Inner loop: header 3, body {3,4}.
+	g := newAdjacencyGraph(1, [][2]int32{
+		{1, 2}, {2, 3}, {3, 4}, {4, 3}, {4, 5}, {5, 2}, {5, 6},
+	})
+	plan := planTestSetup(g, []int32{1, 2, 3, 4, 5, 6})
+	if plan == nil {
+		t.Fatal("plan should not be nil for nested loops")
+	}
+	// At boundary 1: open outer loop (target=2, endsAt=5).
+	// At boundary 2: open inner loop (target=3, endsAt=4).
+	// At boundary 4: close inner loop.
+	// At boundary 5: close outer loop.
+	if got := len(plan.perBoundary[1].opens); got != 1 {
+		t.Errorf("boundary 1: opens len %d, want 1", got)
+	}
+	if got := len(plan.perBoundary[2].opens); got != 1 {
+		t.Errorf("boundary 2: opens len %d, want 1", got)
+	}
+	if plan.perBoundary[4].closes != 1 {
+		t.Errorf("boundary 4: closes %d, want 1", plan.perBoundary[4].closes)
+	}
+	if plan.perBoundary[5].closes != 1 {
+		t.Errorf("boundary 5: closes %d, want 1", plan.perBoundary[5].closes)
+	}
+	// Back-edge 4→3 (inner): depth 0 (inner is innermost).
+	if d, ok := plan.branchDepth[branchKey{from: 4, to: 3}]; !ok || d != 0 {
+		t.Errorf("branchDepth[4→3]: got %d ok=%v, want 0 ok=true", d, ok)
+	}
+	// Back-edge 5→2 (outer): depth 0 (inner has been closed by
+	// boundary 5; at block 5's terminator only outer remains open).
+	if d, ok := plan.branchDepth[branchKey{from: 5, to: 2}]; !ok || d != 0 {
+		t.Errorf("branchDepth[5→2]: got %d ok=%v, want 0 ok=true", d, ok)
+	}
+}
+
+func TestEmitPlan_IrreducibleBail(t *testing.T) {
+	// 1 → 2; 1 → 3; 2 → 3; 3 → 2. SCC {2, 3} with two entries from
+	// outside (1→2 and 1→3) — irreducible.
+	g := newAdjacencyGraph(1, [][2]int32{{1, 2}, {1, 3}, {2, 3}, {3, 2}})
+	plan := planTestSetup(g, []int32{1, 2, 3})
+	if plan != nil {
+		t.Errorf("plan should be nil for irreducible CFG, got %+v", plan)
+	}
+}

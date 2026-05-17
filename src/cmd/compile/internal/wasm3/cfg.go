@@ -369,25 +369,340 @@ func computeReloopPlan(f *ssa.Func) *reloopPlan {
 	return &reloopPlan{loops: loops, hasIrreducible: hasIrreducible}
 }
 
+// scopeKind tags the wasm structure type of a relooper scope.
+type scopeKind int
+
+const (
+	// scopeLoop is a wasm `loop` scope wrapping a natural loop's body.
+	// Branches targeting a scopeLoop are back-edges that re-enter the
+	// loop's header.
+	scopeLoop scopeKind = iota
+	// scopeBlock is a wasm `block` scope wrapping a region whose end
+	// is a forward-branch merge point. Branches targeting a
+	// scopeBlock are forward edges that exit the block at its `end`.
+	scopeBlock
+)
+
+// scope describes one open structured-control-flow scope on the
+// relooper's stack.
+type scope struct {
+	kind   scopeKind
+	target int32 // for scopeLoop: the loop header block ID. For scopeBlock: the block ID immediately after the scope's `end`.
+	endsAt int   // boundary index at which this scope's `end` op is emitted
+}
+
+// boundaryOp is the scope manipulation that happens at one boundary.
+// Closes are applied first (innermost first, popping the stack);
+// opens are applied next (outermost first, pushed in order onto the
+// stack). Both lists may be empty.
+type boundaryOp struct {
+	closes int     // number of scopes to pop before this boundary
+	opens  []scope // scopes to push at this boundary, outermost first
+}
+
+// branchKey identifies a CFG edge for the branchDepth map.
+type branchKey struct {
+	from, to int32
+}
+
+// emitPlan is the full relooper output for one function. The
+// emission pipeline (in ssa.go and wasm3obj.go) walks the prog
+// stream and consults perBoundary at every ARESUMEPOINT, and
+// consults branchDepth at every AJMP, instead of running its own
+// CFG analysis.
+//
+// A nil emitPlan signals "fall back to the legacy wasm3AnalyzeCFG
+// path." computeEmitPlan returns nil for functions the relooper
+// cannot handle (irreducible CFGs, non-contiguous loop bodies, etc.)
+// so the legacy path remains available as a safety net while the
+// relooper matures.
+type emitPlan struct {
+	// perBoundary[i] is the scope op applied at boundary i, for i in
+	// [0, numBlocks]. Boundary 0 is at function start (before the
+	// first prog of block layout[0]); boundary numBlocks is at
+	// function end (after the last prog of block layout[numBlocks-1]).
+	perBoundary []boundaryOp
+
+	// branchDepth maps each CFG edge to the wasm br-depth at the
+	// source block's terminator. Computed once at plan time so the
+	// emission pipeline does not need to maintain its own scope
+	// stack: each AJMP looks up its depth directly.
+	branchDepth map[branchKey]int
+
+	// boundaryOfBlock maps each block ID to its layout index, which
+	// is the boundary index of its start (= boundary just after its
+	// preceding ARESUMEPOINT).
+	boundaryOfBlock map[int32]int
+}
+
+// computeEmitPlan returns the full emission plan for f, or nil if
+// the relooper cannot handle the function. Conditions that trigger
+// the bail-to-legacy path:
+//   - The CFG is irreducible.
+//   - A natural loop's body is non-contiguous in layout order.
+//   - A natural loop's header is not at the first layout position of
+//     its body.
+//
+// These are conservative checks; relaxing them is future work
+// (block reordering pre-pass; SCC-scoped dispatch fallback).
+func computeEmitPlan(f *ssa.Func, rp *reloopPlan) *emitPlan {
+	layout := make([]int32, len(f.Blocks))
+	for i, b := range f.Blocks {
+		layout[i] = int32(b.ID)
+	}
+	return computeEmitPlanFor(newSSACFGGraph(f), layout, rp)
+}
+
+// computeEmitPlanFor is the testable core of the planner: it operates
+// on a generic cfgGraph plus an explicit layout order. The SSA
+// adapter at the call site supplies the layout from f.Blocks; tests
+// supply hand-built adjacency graphs and any layout order.
+func computeEmitPlanFor(g cfgGraph, layout []int32, rp *reloopPlan) *emitPlan {
+	if rp.hasIrreducible {
+		return nil
+	}
+
+	layoutIdx := make(map[int32]int, len(layout))
+	for i, b := range layout {
+		layoutIdx[b] = i
+	}
+
+	// Verify loop body contiguity in layout and header-at-start.
+	type loopExtent struct {
+		first, last int // layout index of body's first / last block
+	}
+	loopExtents := make(map[int32]loopExtent, len(rp.loops))
+	for _, L := range rp.loops {
+		first, last := len(layout), -1
+		for i, b := range layout {
+			if L.body.has(b) {
+				if i < first {
+					first = i
+				}
+				if i > last {
+					last = i
+				}
+			}
+		}
+		for i := first; i <= last; i++ {
+			if !L.body.has(layout[i]) {
+				return nil
+			}
+		}
+		if layout[first] != L.header {
+			return nil
+		}
+		loopExtents[L.header] = loopExtent{first: first, last: last}
+	}
+
+	// For each block T, decide whether it needs a wasm `block` scope
+	// opened ending at T. Yes iff T has at least one forward
+	// predecessor that does not layout-fall-through to T.
+	//
+	// A predecessor P is a forward predecessor iff layoutIdx[P] <
+	// layoutIdx[T] AND P→T is not a back-edge (T does not dominate
+	// P). P fall-throughs to T iff P is layout-adjacent to T
+	// (layoutIdx[P] == layoutIdx[T]-1).
+	needsBlockScope := make(map[int32]bool)
+	for i, T := range layout {
+		if i == 0 {
+			continue
+		}
+		for _, P := range g.Preds(T) {
+			pi, ok := layoutIdx[P]
+			if !ok || pi >= i {
+				continue
+			}
+			if g.Dominates(T, P) {
+				continue // back-edge
+			}
+			if pi != i-1 {
+				needsBlockScope[T] = true
+				break
+			}
+			// pi == i-1: layout-adjacent forward predecessor. May or
+			// may not need a scope depending on whether P emits an
+			// explicit branch to T or falls through. ssaGenBlock
+			// falls through when P's `next` parameter equals T,
+			// which is the case when T is layout-adjacent AND T is
+			// not P's only "non-natural" successor. Conservative:
+			// only mark scope-needed if some OTHER predecessor of T
+			// is at a different position. The current pi-iteration
+			// continues to look at other preds, so the break above
+			// catches the "needs scope" case.
+		}
+	}
+
+	// For each block T needing a block scope, compute the open
+	// position: the layout index of T's immediate dominator (the
+	// latest block before T in layout that dominates T). All forward
+	// predecessors of T are dominated by T.idom (definition of
+	// dominators), so they are all at or after the idom in layout
+	// for reducible CFGs.
+	blockScopeOpenAt := make(map[int32]int, len(needsBlockScope))
+	for T := range needsBlockScope {
+		ti := layoutIdx[T]
+		idomPos := 0
+		for j := ti - 1; j >= 0; j-- {
+			if g.Dominates(layout[j], T) {
+				idomPos = j
+				break
+			}
+		}
+		blockScopeOpenAt[T] = idomPos
+	}
+
+	// Walk boundaries and build the plan.
+	numBoundaries := len(layout) + 1
+	plan := &emitPlan{
+		perBoundary:     make([]boundaryOp, numBoundaries),
+		branchDepth:     make(map[branchKey]int),
+		boundaryOfBlock: layoutIdx,
+	}
+
+	var stack []scope
+
+	for i := 0; i <= len(layout); i++ {
+		bop := &plan.perBoundary[i]
+
+		// Close scopes whose end is at this boundary, innermost first.
+		for len(stack) > 0 && stack[len(stack)-1].endsAt == i {
+			stack = stack[:len(stack)-1]
+			bop.closes++
+		}
+
+		// Collect scopes opening at this boundary, sort outermost-first
+		// by ending position (largest endsAt first), then push.
+		var opens []scope
+		for _, L := range rp.loops {
+			ext := loopExtents[L.header]
+			if ext.first == i {
+				opens = append(opens, scope{
+					kind:   scopeLoop,
+					target: L.header,
+					endsAt: ext.last + 1,
+				})
+			}
+		}
+		for T, openAt := range blockScopeOpenAt {
+			if openAt == i {
+				opens = append(opens, scope{
+					kind:   scopeBlock,
+					target: T,
+					endsAt: layoutIdx[T],
+				})
+			}
+		}
+		sort.Slice(opens, func(a, b int) bool {
+			if opens[a].endsAt != opens[b].endsAt {
+				return opens[a].endsAt > opens[b].endsAt
+			}
+			// Tie-break deterministically by (kind, target).
+			if opens[a].kind != opens[b].kind {
+				return opens[a].kind < opens[b].kind
+			}
+			return opens[a].target < opens[b].target
+		})
+
+		for _, op := range opens {
+			stack = append(stack, op)
+		}
+		bop.opens = opens
+
+		// Compute branch depths for the block whose terminator runs
+		// at boundary i+1 (i.e., block layout[i]'s terminator).
+		if i < len(layout) {
+			srcBlock := layout[i]
+			for _, succ := range g.Succs(srcBlock) {
+				depth := -1
+				for sidx := len(stack) - 1; sidx >= 0; sidx-- {
+					s := stack[sidx]
+					if s.target == succ {
+						// Loop target = back-edge to header; block
+						// target = forward branch to scope's end.
+						depth = len(stack) - 1 - sidx
+						break
+					}
+				}
+				if depth >= 0 {
+					plan.branchDepth[branchKey{from: srcBlock, to: succ}] = depth
+				}
+			}
+		}
+	}
+
+	if len(stack) != 0 {
+		// Some scope was not properly closed — algorithm bug. Bail
+		// to legacy rather than emit broken wasm.
+		return nil
+	}
+
+	// Trust-but-verify: every CFG edge that is NOT a layout
+	// fall-through must have a recorded branch depth. If we missed
+	// one — typically because the target lives in a multi-entry
+	// SCC that escaped the natural-loop / hasIrreducible detection
+	// — bail to legacy rather than emit broken wasm.
+	for _, from := range layout {
+		fi := layoutIdx[from]
+		for _, to := range g.Succs(from) {
+			ti, ok := layoutIdx[to]
+			if !ok {
+				return nil
+			}
+			if ti == fi+1 {
+				continue // layout-adjacent fall-through; no branch needed
+			}
+			if _, ok := plan.branchDepth[branchKey{from: from, to: to}]; !ok {
+				return nil
+			}
+		}
+	}
+
+	return plan
+}
+
+// funcPlan is the bundled output of the relooper for one function:
+// the structural analysis (loops + irreducibility flag) plus the
+// emission plan. emit may be nil when the relooper bails on the
+// function — the obj-encoder then falls back to the legacy
+// wasm3AnalyzeCFG path.
+type funcPlan struct {
+	reloop *reloopPlan
+	emit   *emitPlan
+}
+
 // reloopPlans caches the computed plan per *ssa.Func so the analysis
 // runs at most once per function. The map is populated lazily on
 // first call to planForFunc; subsequent calls in the same compilation
 // reuse the cached result.
-var reloopPlans sync.Map // *ssa.Func -> *reloopPlan
+var reloopPlans sync.Map // *ssa.Func -> *funcPlan
+
+// emitPlansBySym lets the obj-side look up the emission plan by the
+// function's LSym. Populated by planForFunc once per function;
+// the obj-encoder consults it at the start of encodeWasm3Body.
+var emitPlansBySym sync.Map // *obj.LSym -> *emitPlan
 
 // planForFunc returns the relooper plan for f, computing it the
 // first time and caching the result. Safe for concurrent use from
 // multiple compilation goroutines.
-func planForFunc(f *ssa.Func) *reloopPlan {
+func planForFunc(f *ssa.Func) *funcPlan {
 	if cached, ok := reloopPlans.Load(f); ok {
-		return cached.(*reloopPlan)
+		return cached.(*funcPlan)
 	}
-	plan := computeReloopPlan(f)
-	actual, loaded := reloopPlans.LoadOrStore(f, plan)
-	if !loaded && reloopDebug {
-		dumpReloopPlan(f.Name, newSSACFGGraph(f), plan)
+	rp := computeReloopPlan(f)
+	ep := computeEmitPlan(f, rp)
+	fp := &funcPlan{reloop: rp, emit: ep}
+	actual, loaded := reloopPlans.LoadOrStore(f, fp)
+	fp = actual.(*funcPlan)
+	if !loaded {
+		if ep != nil && f.OwnAux != nil && f.OwnAux.Fn != nil {
+			emitPlansBySym.Store(f.OwnAux.Fn, ep)
+		}
+		if reloopDebug {
+			dumpReloopPlan(f.Name, newSSACFGGraph(f), fp)
+		}
 	}
-	return actual.(*reloopPlan)
+	return fp
 }
 
 // reloopDebug is enabled by GOWASM3_RELOOPER_DEBUG=1 in the
@@ -398,13 +713,17 @@ func planForFunc(f *ssa.Func) *reloopPlan {
 var reloopDebug = os.Getenv("GOWASM3_RELOOPER_DEBUG") == "1"
 
 // dumpReloopPlan prints a human-readable summary of plan to stderr.
-// Format: one line per function ("name: N loops, irreducible=Y/N"),
-// followed by one line per loop ("  loop header=bK depth=D
-// body=bA,bB,..."). Used only when reloopDebug is set.
-func dumpReloopPlan(funcName string, g cfgGraph, plan *reloopPlan) {
-	fmt.Fprintf(os.Stderr, "wasm3-relooper: %s: %d loops, irreducible=%v\n",
-		funcName, len(plan.loops), plan.hasIrreducible)
-	for _, l := range plan.loops {
+// Format: one line per function ("name: N loops, irreducible=Y/N,
+// emit=Y/N"), followed by one line per loop ("  loop header=bK
+// depth=D body=bA,bB,..."). Used only when reloopDebug is set.
+func dumpReloopPlan(funcName string, g cfgGraph, plan *funcPlan) {
+	emitStatus := "yes"
+	if plan.emit == nil {
+		emitStatus = "no (bail to legacy)"
+	}
+	fmt.Fprintf(os.Stderr, "wasm3-relooper: %s: %d loops, irreducible=%v, emit=%s\n",
+		funcName, len(plan.reloop.loops), plan.reloop.hasIrreducible, emitStatus)
+	for _, l := range plan.reloop.loops {
 		var members []int32
 		for _, id := range g.Blocks() {
 			if l.body.has(id) {

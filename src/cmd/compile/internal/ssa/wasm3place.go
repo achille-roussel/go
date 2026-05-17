@@ -4,6 +4,8 @@
 
 package ssa
 
+import "cmd/internal/obj"
+
 // wasm3place.go is the wasm3-specific value-placement pass for the M3
 // regalloc-bypass restructure (doc/wasm3-m3-no-regalloc.md).
 //
@@ -209,6 +211,12 @@ func wasm3HasOutput(v *Value) bool {
 // downcast with `ref.cast (ref $T)` at their use site (the
 // `(ref $T)` precise type comes from v.Aux).
 //
+// OpArgIntReg whose wasm parameter type is WasmAnyref or WasmRef
+// (per the function's WasmType signature) also gets an anyref
+// local — the local.get of the param must land in a type
+// compatible with the wasm signature. Stage E phase 2 lowers
+// slice-ptr params to WasmAnyref via flatPrimitiveFields.
+//
 // Pointer-shaped values lower to i64 in the M2 backend; the M3
 // switch to ref types (Stage B onward) will revise this — first
 // for these explicit GC-op producers, then for ordinary Go *T
@@ -221,6 +229,10 @@ func wasm3ValueType(v *Value) byte {
 		OpWasm3RefNull, OpWasm3RefCast,
 		OpWasm3StackArray, OpWasm3MakeSlice:
 		return wasm3ValAnyref
+	case OpArgIntReg:
+		if wasm3OpArgIsRefParam(v) {
+			return wasm3ValAnyref
+		}
 	}
 	t := v.Type
 	if t.IsFloat() {
@@ -233,4 +245,42 @@ func wasm3ValueType(v *Value) byte {
 		return wasm3ValF64
 	}
 	return wasm3ValI64
+}
+
+// wasm3OpArgIsRefParam reports whether v is an OpArgIntReg whose
+// corresponding wasm function-signature parameter is WasmAnyref or
+// WasmRef. Used by wasm3ValueType to assign the right per-value
+// local type; the entry-prologue local.get must land in a local
+// compatible with the wasm parameter's type.
+//
+// v.AuxInt is the per-class integer-param index — it counts only
+// OpArgIntReg-shaped params before v in declaration order. The
+// wasm signature interleaves int and float fields; this scan walks
+// WasmType.Params and counts non-float fields to find the absolute
+// wasm field index.
+func wasm3OpArgIsRefParam(v *Value) bool {
+	if v.Op != OpArgIntReg {
+		return false
+	}
+	ifn := v.Block.Func.Frontend().Func()
+	if ifn == nil || ifn.LSym == nil {
+		return false
+	}
+	wt := ifn.LSym.Func().WasmType
+	if wt == nil {
+		return false
+	}
+	wantIdx := v.AuxInt
+	var intCount int64
+	for _, f := range wt.Params {
+		switch f.Type {
+		case obj.WasmF32, obj.WasmF64:
+			continue
+		}
+		if intCount == wantIdx {
+			return f.Type == obj.WasmAnyref || f.Type == obj.WasmRef
+		}
+		intCount++
+	}
+	return false
 }

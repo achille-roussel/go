@@ -881,6 +881,14 @@ const (
 	// represented as host-GC-managed references rather than linear-memory
 	// addresses. The referenced type's index is carried in WasmField.Offset.
 	WasmRef
+
+	// WasmAnyref is the abstract (ref null any) heap-type shortcut. Used
+	// by GOARCH=wasm3 for parameters and results whose typed-ref backing
+	// varies across callers — most notably the data pointer of a wasmgc-
+	// backed slice, which holds a (ref (array T)) but whose T differs
+	// per call site. The wasmgc encoder emits the one-byte 0x6E valtype.
+	// WasmField.Offset is unused.
+	WasmAnyref
 )
 
 type InlMark struct {

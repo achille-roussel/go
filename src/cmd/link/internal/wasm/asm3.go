@@ -103,6 +103,8 @@ func objStorage(f obj.WasmField) wasmgc.Storage {
 		return wasmgc.PrimStorage(wasmgc.F64)
 	case obj.WasmRef:
 		panic("wasm3: WasmRef in a host-import signature has no per-package table to remap against")
+	case obj.WasmAnyref:
+		return wasmgc.AnyRefStorage()
 	default:
 		panic(fmt.Sprintf("wasm3: unknown obj.WasmField type %d", f.Type))
 	}

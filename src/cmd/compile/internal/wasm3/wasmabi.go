@@ -240,12 +240,27 @@ func flatPrimitiveFields(t *types.Type) ([]obj.WasmField, bool) {
 			{Type: obj.WasmI64},
 		}, true
 	case types.TSLICE:
-		// (data *Elem, len int, cap int) — three i64 registers.
-		// Stage E proper boxes the backing in a wasmgc ref instead
-		// of a linear-memory pointer; until then the regabi shape
-		// is the SSA-pushed shape and this flat lowering matches.
+		// Stage E phase 2: the slice's data pointer is a wasmgc
+		// `(ref (array T))`. We declare the wasm signature's first
+		// field as the anyref abstract heap-type shortcut rather
+		// than a typed `(ref $arrayT)` for two reasons:
+		//
+		//   - The Go []T type alone doesn't fix T's wasmgc backing
+		//     index at signature-emit time; the index is per-
+		//     function-package and the linker remaps it. Typed
+		//     refs would force every cross-package call site to
+		//     downcast to a known typed-ref form.
+		//
+		//   - Per-value locals for slice ptrs (OpWasm3MakeSlice's
+		//     output, OpArgIntReg of a slice-ptr param) are
+		//     anyref-typed already (per wasm3ValueType). Matching
+		//     the wasm field type to anyref lets the call site
+		//     local.get the per-value local without any cast.
+		//
+		// len and cap stay i64 — they're regular ints with no
+		// reference semantics.
 		return []obj.WasmField{
-			{Type: obj.WasmI64},
+			{Type: obj.WasmAnyref},
 			{Type: obj.WasmI64},
 			{Type: obj.WasmI64},
 		}, true

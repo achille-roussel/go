@@ -43,13 +43,21 @@ const (
 	F64
 )
 
-// Storage is the storage type of a struct field or array element. It is
-// a primitive when RefType < 0, otherwise a reference to the wasm type
-// at index RefType in the module type table.
+// Storage is the storage type of a struct field or array element.
+// Three variants:
+//   - RefType < 0 && !AnyRef:  primitive (Prim is the kind)
+//   - RefType >= 0:            typed reference (ref [null] $RefType)
+//   - AnyRef && RefType < 0:   abstract (ref null any), the wasm shortcut
+//
+// AnyRef is used by the wasm3 wasmexport ABI for slice ptr fields and
+// similar values where the typed-ref backing would require a per-call-
+// site downcast — the abstract heap type avoids that by accepting any
+// subtype implicitly.
 type Storage struct {
-	Prim    Prim // valid when RefType < 0
-	RefType int  // index into the type table, or -1 for a primitive
+	Prim    Prim // valid when RefType < 0 && !AnyRef
+	RefType int  // index into the type table, or -1 for non-typed
 	RefNull bool // (ref null $t) vs (ref $t); only meaningful when RefType >= 0
+	AnyRef  bool // (ref null any), the abstract supertype shortcut
 }
 
 // PrimStorage builds a primitive storage type.
@@ -65,8 +73,16 @@ func RefStorage(t int, null bool) Storage {
 	return Storage{RefType: t, RefNull: null}
 }
 
+// AnyRefStorage builds the abstract (ref null any) storage. Encoded as
+// the one-byte 0x6E shortcut in the wasm binary format. Used for
+// function parameters whose runtime ref type varies across callers
+// (most notably the data pointer of a wasmgc-backed slice).
+func AnyRefStorage() Storage {
+	return Storage{RefType: -1, AnyRef: true}
+}
+
 // IsRef reports whether s is a reference rather than a primitive.
-func (s Storage) IsRef() bool { return s.RefType >= 0 }
+func (s Storage) IsRef() bool { return s.RefType >= 0 || s.AnyRef }
 
 // Field is one field of a struct type.
 type Field struct {
@@ -148,7 +164,8 @@ func PreludeTypes() []Type {
 // DependsOn returns the type-table indices that t directly depends on:
 // its supertype and every reference-typed field or element. A type must
 // be emitted in the same recursion group as, or a later group than,
-// each of its dependencies.
+// each of its dependencies. AnyRef storages depend on nothing — the
+// abstract heap type is built-in.
 func (t Type) DependsOn() []int {
 	var deps []int
 	if t.Super >= 0 {
@@ -157,22 +174,22 @@ func (t Type) DependsOn() []int {
 	switch t.Kind {
 	case KindStruct:
 		for _, f := range t.Fields {
-			if f.Storage.IsRef() {
+			if f.Storage.RefType >= 0 {
 				deps = append(deps, f.Storage.RefType)
 			}
 		}
 	case KindArray:
-		if t.Elem.IsRef() {
+		if t.Elem.RefType >= 0 {
 			deps = append(deps, t.Elem.RefType)
 		}
 	case KindFunc:
 		for _, p := range t.Params {
-			if p.IsRef() {
+			if p.RefType >= 0 {
 				deps = append(deps, p.RefType)
 			}
 		}
 		for _, r := range t.Results {
-			if r.IsRef() {
+			if r.RefType >= 0 {
 				deps = append(deps, r.RefType)
 			}
 		}

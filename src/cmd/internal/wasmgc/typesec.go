@@ -40,6 +40,7 @@ const (
 	valI64      = 0x7E
 	valF32      = 0x7D
 	valF64      = 0x7C
+	valAnyref   = 0x6E // (ref null any), one-byte abstract heap type shortcut
 	packedI8    = 0x78
 	packedI16   = 0x77
 	fieldConst  = 0x00
@@ -102,6 +103,11 @@ func (table Table) EncodeTypeSection() []byte {
 	}
 
 	storage := func(b []byte, s Storage) []byte {
+		if s.AnyRef {
+			// Abstract heap type shortcut: (ref null any) is the
+			// one-byte 0x6E valtype, no heaptype suffix needed.
+			return append(b, valAnyref)
+		}
 		if s.IsRef() {
 			if s.RefNull {
 				b = append(b, opRefNull)

@@ -9,6 +9,7 @@ import (
 	"go/constant"
 	"go/token"
 	"internal/abi"
+	"internal/buildcfg"
 	"strings"
 
 	"cmd/compile/internal/base"
@@ -437,7 +438,13 @@ func walkMakeSlice(n *ir.MakeExpr, init *ir.Nodes) ir.Node {
 	}
 
 	tryStack := false
-	if n.Esc() == ir.EscNone {
+	// Stage E (wasm3): the constant-size and tryStack array fast paths
+	// wrap a [K]E in a struct-with-padding auto whose address the
+	// wasm3 SSA backend can't form. The OpWasm3StackArray hook only
+	// fires for pure TARRAY autos, not struct-wrapped ones — falling
+	// through to the runtime.makeslice call routes the allocation
+	// through the runtime fork's bump allocator (newobject path).
+	if n.Esc() == ir.EscNone && buildcfg.GOARCH != "wasm3" {
 		if why := escape.HeapAllocReason(n); why != "" {
 			base.Fatalf("%v has EscNone, but %v", n, why)
 		}

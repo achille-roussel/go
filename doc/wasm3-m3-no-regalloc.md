@@ -356,9 +356,28 @@ Phi resolution point.
 
 **Phase 4 final state:** M2 14-case regression passes 14/14;
 `go build std` succeeds clean for `GOOS=wasip1 GOARCH=wasm3`;
-binary 12141 (pre-flip Phase 3a) → 12240 (post-Phase 4b) — within
-+99 bytes of baseline while running fully through the per-value
-local scheme.
+binary 12141 (pre-flip Phase 3a) → 12038 (post-Phase 4b +
+codegen polishing) — **-103 bytes, 0.8% smaller** than the
+baseline. The regalloc-bypass rewrite is now a net byte saver,
+not a cost.
+
+Codegen polishing that made up the difference:
+
+- `cmd/internal/obj/wasm`: run-length encode the locals
+  declaration vector. Consecutive same-type entries collapse
+  into one (count, type) pair. wasm3PlaceValues output is
+  largely all-i64 runs, so the saving is meaningful — listSum's
+  16-i64 + 1-i32 vector goes from 34 declaration bytes to 4.
+- `cmd/internal/obj/wasm`: peephole `local.set N; local.get N`
+  → `local.tee N` in the wasm3 encoder. Saves 2 bytes per
+  occurrence (one opcode + one leb128 index repeat). 14
+  occurrences in the M2 regression's 34 functions.
+- `wasm3MarkOnStack` whitelists `OpMakeResult` from its "skip
+  arg scan when v is generic" rule — BlockRet pulls each return
+  value via getValue / getValue32 / getValue64, so MakeResult
+  args do honor the OnWasmStack contract. Return expressions
+  now flow straight off the wasm stack instead of round-tripping
+  through a per-value local.
 
 **Phase 5 — drop register-class infrastructure from Wasm3Ops.go.**
 

@@ -771,6 +771,72 @@ work cleanly).
 these under M3 but they could slip to M3.5 / early M4 depending on
 how the ref-typed-call rung lands.
 
+## Stage G — function values + `call_ref` (survey)
+
+Test program: `/tmp/wasm3-funcval/main.go` — `apply(add, 5, 3)`,
+a bare top-level function passed as `func(int, int) int`. No
+closures, no methods. Currently this **builds** but **traps** at
+`unreachable` inside `main.apply`: the obj-encoder's wasm3 path
+(`cmd/internal/obj/wasm/wasm3obj.go:507`) bails on indirect ACALL
+(`p.To.Type != obj.TYPE_MEM`), falling through to the wasm1
+fallback at `wasmobj.go:485`. That fallback expects the wasm1
+runtime model — REG_SP-resident goroutine stack, PC_F/PC_B
+encoding, ACallIndirect against the funcref table — none of which
+wasm3 has set up.
+
+What needs to change for `apply(add, 5, 3)` to work end-to-end:
+
+1. **Funcvalue representation.** Today `staticdata.FuncLinksym`
+   (consumed at `ssagen/ssa.go:3082`) produces a `*ptr` to the
+   function's closure linksym. For wasm3 the equivalent must
+   produce a `(ref $closureCtx)` — a struct whose first field
+   is a `(ref $funcType)`. For top-level functions with no
+   captures, the closure object is a one-field singleton
+   struct `{ ref.func $name }`.
+2. **Type collector.** Each function type used as a value (the
+   `$funcType` referenced by `ref.func` and `call_ref`) gets
+   a wasmgc `(func (param ...) (result ...))` type-section
+   entry. Already partially in place for direct-call sigs;
+   needs to cover indirect-call sigs and be reachable from the
+   `OpAddr`-of-PFUNC site.
+3. **flatPrimitiveFields TFUNC branch.** A `func(...)` slot in
+   a param/result list lowers to a single `WasmAnyref` field
+   (mirrors what the TSLICE branch from 2.D did for slices).
+   The call ABI then passes the funcvalue as one ref.
+4. **Indirect call lowering.** `OpWasm3LoweredClosureCall`
+   currently emits `obj.ACALL` with TYPE_NONE. For wasm3 this
+   needs to extract the funcref from the closure (`struct.get
+   $closureCtx 0`), then emit `call_ref $funcType`. The
+   `$funcType` typeidx needs to be pinned at SSA time from
+   the call's ABIInfo.
+5. **Obj-encoder support.** Add cases for `ARefFunc` (opcode
+   0xD2, funcidx operand, R_CALL reloc) and `ACallRef` (opcode
+   0x14, typeidx operand, R_WASMTYPE reloc) in the inner
+   switch at `wasm3obj.go:545`. `AReturnCallRef` moves out of
+   the bailout list to a real case for tail-call-via-funcref.
+6. **Static-data linksym for closure singletons.** The
+   per-function closure object (currently a 1-word linear-
+   memory record at `staticdata.go`'s FuncLinksym path) needs
+   a wasm3-specific producer that emits an init-section
+   `(struct.new $closureCtx_<sig> (ref.func $name))`
+   global, or it gets lazily materialised at first use. Init
+   sections are simpler if the test only needs one shot.
+
+The cleanest first vertical slice is the bare-function case
+(no captures). Method values and closures with captured
+variables then extend the same `$closureCtx` machinery — the
+struct grows additional fields for each capture, but the
+call-site lowering is unchanged.
+
+**Stage G blocks Stage F.** Interface method dispatch builds
+the itab as a `(struct (ref $funcType_method1) (ref
+$funcType_method2) ...)`; without call_ref there's nothing to
+invoke off the itab struct.
+
+Sizing: roughly two sessions, plus a third for closures with
+captures. Each piece (encoder, type-collector, ABI, lowering,
+linksym producer) lands as its own commit.
+
 ## Blocker for the wasip1 test harness — `go test` produces invalid wasm
 
 `go test -c` for any package that pulls in the standard `testing`

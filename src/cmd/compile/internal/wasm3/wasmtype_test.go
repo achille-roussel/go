@@ -340,6 +340,48 @@ func TestCollectArrayField(t *testing.T) {
 	}
 }
 
+// TestCollectArrayBackingPacked locks in that array backings for
+// sub-i32 element kinds use packed wasmgc storage (i8 for
+// byte/int8/bool, i16 for int16/uint16) rather than rounding up
+// to i32. This is what makes the wasmgc <-> linear-memory bridge
+// work for byte arrays: a `[N]byte` lays out as `(array (mut i8))`,
+// the wasm3 backend emits `array.get_u` / `array.set` on i32, and
+// the read elements can be stored into linear-memory scratch with
+// `i32.store8` for fd_write to consume.
+func TestCollectArrayBackingPacked(t *testing.T) {
+	cases := []struct {
+		kind    types.Kind
+		want    wasmgc.Prim
+		wantStr string
+	}{
+		{types.TUINT8, wasmgc.I8, "i8"},
+		{types.TINT8, wasmgc.I8, "i8"},
+		{types.TBOOL, wasmgc.I8, "i8"},
+		{types.TINT16, wasmgc.I16, "i16"},
+		{types.TUINT16, wasmgc.I16, "i16"},
+		{types.TINT32, wasmgc.I32, "i32"},
+		{types.TUINT32, wasmgc.I32, "i32"},
+		{types.TINT64, wasmgc.I64, "i64"},
+		{types.TFLOAT64, wasmgc.F64, "f64"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.wantStr, func(t *testing.T) {
+			c := newTypeCollector()
+			idx := c.collectBacking(types.Types[tc.kind])
+			got := c.table[idx]
+			if got.Kind != wasmgc.KindArray {
+				t.Fatalf("backing for %v: got kind=%d, want array", tc.kind, got.Kind)
+			}
+			if got.Elem.IsRef() {
+				t.Fatalf("backing for %v: got ref storage, want primitive %s", tc.kind, tc.wantStr)
+			}
+			if got.Elem.Prim != tc.want {
+				t.Errorf("backing for %v: got prim=%d, want %s (%d)", tc.kind, got.Elem.Prim, tc.wantStr, tc.want)
+			}
+		})
+	}
+}
+
 func TestEncodedCollectedTypesValidate(t *testing.T) {
 	// A program-like mix: a recursive struct, a struct with a string
 	// and a slice, mutually recursive structs, and a pointer to a

@@ -315,6 +315,17 @@ const (
 	AI31GetS          // opcode 0xFB 0x1D
 	AI31GetU          // opcode 0xFB 0x1E
 
+	// Abstract-heap-type variants of ref.cast. The wasmgc binary
+	// format reuses the same opcode bytes as ARefCast / ARefCastNull
+	// (0xFB 0x16 / 0xFB 0x17) followed by a one-byte abstract heap
+	// type (eqref=0x6D, anyref=0x6E). The standard ARefCast encoder
+	// emits an R_WASMTYPE-relocated typed-ref index, which doesn't
+	// fit the abstract-heap-type case — these pseudo-ops route
+	// through a dedicated three-byte encoder in writeOpcode that
+	// emits the full 0xFB <opcode> <heap-type> sequence.
+	ARefCastEqref  // 0xFB 0x17 0x6D — ref.cast (ref null eq)
+	ARefCastAnyref // 0xFB 0x17 0x6E — ref.cast (ref null any)
+
 	ALAST
 )
 

@@ -686,16 +686,24 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 	case ssa.OpWasm3I64Eq, ssa.OpWasm3I64Ne:
 		// Stage E phase 2.D follow-up: ref-typed equality. When both
 		// operands' per-value locals are anyref, lower to `ref.eq`
-		// (i32 result, same boolean semantics as i64.eq). For I64Ne
-		// flip with `i32.eqz`.
-		getValue64(s, v.Args[0])
-		getValue64(s, v.Args[1])
+		// — but ref.eq requires its operands to be eqref subtypes,
+		// while anyref is the supertype of eqref. Insert
+		// `ref.cast (ref null eq)` on each operand to downcast first;
+		// the cast is a runtime no-op for array/struct refs (which
+		// are all eqref subtypes by wasmgc subtyping). I64Ne flips
+		// the result with `i32.eqz`.
 		if ssa.Wasm3IsAnyrefValue(v.Args[0]) && ssa.Wasm3IsAnyrefValue(v.Args[1]) {
+			getValue64(s, v.Args[0])
+			s.Prog(wasm.ARefCastEqref)
+			getValue64(s, v.Args[1])
+			s.Prog(wasm.ARefCastEqref)
 			s.Prog(wasm.ARefEq)
 			if v.Op == ssa.OpWasm3I64Ne {
 				s.Prog(wasm.AI32Eqz)
 			}
 		} else {
+			getValue64(s, v.Args[0])
+			getValue64(s, v.Args[1])
 			s.Prog(v.Op.Asm())
 		}
 		if extend {

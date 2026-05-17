@@ -1399,6 +1399,21 @@ func writeOpcode(w *bytes.Buffer, as obj.As) {
 		// in a.out.go are ordered to match).
 		w.WriteByte(0xFB)
 		w.WriteByte(byte(as - AStructNew))
+	case as == ARefCastEqref:
+		// ref.cast (ref null eq) — 0xFB 0x17 followed by the eqref
+		// one-byte abstract heap type (0x6D). Used by the wasm3 backend
+		// to satisfy ref.eq's eqref-subtype operand requirement when
+		// comparing two anyref-typed slice pointers.
+		w.WriteByte(0xFB)
+		w.WriteByte(0x17)
+		w.WriteByte(0x6D)
+	case as == ARefCastAnyref:
+		// ref.cast (ref null any) — 0xFB 0x17 0x6E. Mostly an identity
+		// cast (anyref already accepts every reference), kept for
+		// symmetry with ARefCastEqref.
+		w.WriteByte(0xFB)
+		w.WriteByte(0x17)
+		w.WriteByte(0x6E)
 	case as == AThrow:
 		w.WriteByte(0x08)
 	case as == AThrowRef:

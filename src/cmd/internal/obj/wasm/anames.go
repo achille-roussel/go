@@ -256,5 +256,7 @@ var Anames = []string{
 	"RefI31",
 	"I31GetS",
 	"I31GetU",
+	"RefCastEqref",
+	"RefCastAnyref",
 	"LAST",
 }

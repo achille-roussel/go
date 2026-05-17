@@ -528,6 +528,38 @@ representation change:
   (the shape walkMakeSlice used and the append fast-path also
   uses).
 
+  Landed in `09f64d7dc9`: skip the append fast-path on wasm3
+  (same shape as the walkMakeSlice change). `main.sumAppend`
+  now compiles to a real wasm function instead of an
+  `unreachable` stub. But the runtime chain it newly reaches
+  surfaces the *next* blocker:
+
+  - `runtime.growslice` panics on overflow → `panicmakeslicelen`
+    → `gopanic` → `printlock`/`printhex`/... and crucially
+    `runtime.printhexopts` (validation error at offset 0x8046:
+    `i64.eqz` reading a local typed `anyref`).
+
+    printhexopts' body is `var buf [100]byte; ... gwrite(buf[i:])`.
+    Stage D made the stack `[100]byte` a wasmgc `(ref (array i8))`,
+    so the slice expression `buf[i:]` extracts the array ref as
+    the slice's data pointer. The slice's `OpSlicePtr` is i64-
+    typed (the generic SSA layer treats slice ptrs as BytePtr),
+    but the wasm local now holds an anyref. The first time the
+    SSA layer compares the slice ptr to nil — `i64.eqz` after
+    `local.get <anyref>` — wasm validation rejects the module.
+
+    Same root cause as the memmove/copy chain: slice-from-stack-
+    array doesn't work until Stage E phase 2 (the wasmgc slice
+    header `(ref backing, off, len, cap)`) is implemented. Every
+    runtime function that calls `gwrite(buf[i:])` — printhexopts,
+    printfloat, printcomplex, printslice, printquoted — has the
+    same shape.
+
+  After phase 2 lands and slice ptrs are ref-typed at the SSA
+  layer too, both the append-via-real-growslice path AND the
+  memmove/copy path work transparently — they're the same
+  underlying fix.
+
 - `copy(dst, src)` slice-to-slice copy — reaches `runtime.memmove`
   which in `memmove_wasm3.s` reads its args via `MOVD .+N(FP)` on
   a Go stack frame the wasm3 runtime doesn't have. A wrapper the

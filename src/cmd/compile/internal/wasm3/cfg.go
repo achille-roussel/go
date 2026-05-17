@@ -454,12 +454,22 @@ func computeEmitPlan(f *ssa.Func, rp *reloopPlan) *emitPlan {
 	return computeEmitPlanFor(newSSACFGGraph(f), layout, rp)
 }
 
+// bail emits a one-line bail-category marker to stderr when
+// GOWASM3_RELOOPER_DEBUG is set. The marker is grep'able for bail-
+// category surveys; output is otherwise suppressed.
+func bail(category string) {
+	if reloopDebug {
+		fmt.Fprintf(os.Stderr, "wasm3-relooper:   BAIL %s\n", category)
+	}
+}
+
 // computeEmitPlanFor is the testable core of the planner: it operates
 // on a generic cfgGraph plus an explicit layout order. The SSA
 // adapter at the call site supplies the layout from f.Blocks; tests
 // supply hand-built adjacency graphs and any layout order.
 func computeEmitPlanFor(g cfgGraph, layout []int32, rp *reloopPlan) *emitPlan {
 	if rp.hasIrreducible {
+		bail("irreducible")
 		return nil
 	}
 
@@ -487,10 +497,12 @@ func computeEmitPlanFor(g cfgGraph, layout []int32, rp *reloopPlan) *emitPlan {
 		}
 		for i := first; i <= last; i++ {
 			if !L.body.has(layout[i]) {
+				bail("non-contiguous-body")
 				return nil
 			}
 		}
 		if layout[first] != L.header {
+			bail("header-not-at-start")
 			return nil
 		}
 		loopExtents[L.header] = loopExtent{first: first, last: last}
@@ -555,8 +567,15 @@ func computeEmitPlanFor(g cfgGraph, layout []int32, rp *reloopPlan) *emitPlan {
 		ti := layoutIdx[T]
 		openPos := 0
 		smallestSpan := len(layout) + 1
-		for _, ext := range loopExtents {
+		for headerID, ext := range loopExtents {
 			if ti < ext.first || ti > ext.last {
+				continue
+			}
+			// Skip the loop where T is the header: T is entered from
+			// OUTSIDE that loop, so the block scope must open outside
+			// it too. Opening at L.first when T == L.first would give
+			// an empty (open-at-end) scope that never closes.
+			if headerID == T {
 				continue
 			}
 			span := ext.last - ext.first
@@ -648,17 +667,7 @@ func computeEmitPlanFor(g cfgGraph, layout []int32, rp *reloopPlan) *emitPlan {
 	}
 
 	if len(stack) != 0 {
-		// Some scope was not properly closed — typically because a
-		// block scope opened inside a loop ends past the loop's end
-		// (improper nesting). Bail to legacy; the nesting-fix is
-		// future work (open the block scope outside the loop when
-		// the target is outside the loop too).
-		if reloopDebug {
-			fmt.Fprintf(os.Stderr, "wasm3-relooper:   BAIL: stack not empty at end (len=%d)\n", len(stack))
-			for i, s := range stack {
-				fmt.Fprintf(os.Stderr, "wasm3-relooper:     stack[%d] kind=%d target=b%d endsAt=%d\n", i, s.kind, s.target, s.endsAt)
-			}
-		}
+		bail("stack-not-empty")
 		return nil
 	}
 
@@ -672,12 +681,14 @@ func computeEmitPlanFor(g cfgGraph, layout []int32, rp *reloopPlan) *emitPlan {
 		for _, to := range g.Succs(from) {
 			ti, ok := layoutIdx[to]
 			if !ok {
+				bail("succ-not-in-layout")
 				return nil
 			}
 			if ti == fi+1 {
 				continue // layout-adjacent fall-through; no branch needed
 			}
 			if _, ok := plan.branchDepth[branchKey{from: from, to: to}]; !ok {
+				bail("missing-branch-depth")
 				return nil
 			}
 		}

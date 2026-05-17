@@ -187,3 +187,49 @@ register model is needed. Once that lands, the bump-allocator
 (closure) running end-to-end is the M3 stretch goal. The plan groups
 these under M3 but they could slip to M3.5 / early M4 depending on
 how the ref-typed-call rung lands.
+
+## Future optimization — drop trivial `//go:wasmexport` trampolines
+
+Every `//go:wasmexport` function gets a wasm wrapper LSym
+(`GenWasmExportWrapper` in `cmd/compile/internal/ssagen/abi.go`)
+whose body bridges the host-facing wasmexport ABI to the wrapped
+Go function's internal ABI. For wasm3 the bridge is
+`assembleWasm3ExportWrapper` (`cmd/internal/obj/wasm/wasm3obj.go:925`):
+widen each `WasmPtr` param with `i64.extend_i32_u` before the
+call, narrow each `WasmPtr` result with `i32.wrap_i64` after.
+
+When the function has no pointer-shaped params/results (no
+`WasmPtr`/`WasmBool`/`WasmI32` narrowing in either direction) the
+wrapper body collapses to a pure forwarder:
+
+    local.get 0
+    local.get 1
+    ...
+    call $main.<wrapped>
+    end
+
+— and the wrapper and wrapped have identical wasm signatures.
+
+In the M2 regression `test.wasm` (10 wasmexports), 8 wrappers are
+trivial forwarders. Each costs ~10–15 bytes (function entry + type
+ref + 3–6 byte body); eliminating them is ~100 bytes off the
+binary, scaling linearly with wasmexport count.
+
+Two approaches:
+
+- **Linker change.** Detect trivial-forwarder wrappers at
+  `cmd/link/internal/wasm/asm3.go` setup, skip them from
+  `m.funcs`, re-index everything after, and emit the export
+  with the call target's funcidx. Local to the wasm3 linker
+  path; requires care because funcidx shifts ripple through
+  every R_CALL reloc.
+- **Compiler change.** Skip emitting the wrapper LSym entirely
+  when the bridge would be a no-op. Either rename the wrapped
+  function to the export name (clashes with Go-level callsites)
+  or thread a separate "export name" field through the loader/
+  linker so `writeName(ctxt.Out, ldr.SymName(s))` can emit
+  "add32" while the symbol stays "main.add32". Structurally
+  cleaner but touches the loader symbol struct.
+
+Deferred — not worth the complexity right now, but a clean
+~1% binary win when M3 stabilizes.

@@ -30,10 +30,11 @@ package ssa
 // avoid a circular import with cmd/internal/obj/wasm — when the obj
 // backend reads these it interprets the bytes directly.
 const (
-	wasm3ValI32 = 0x7F
-	wasm3ValI64 = 0x7E
-	wasm3ValF32 = 0x7D
-	wasm3ValF64 = 0x7C
+	wasm3ValI32   = 0x7F
+	wasm3ValI64   = 0x7E
+	wasm3ValF32   = 0x7D
+	wasm3ValF64   = 0x7C
+	wasm3ValAnyref = 0x6E // (ref null any), single-byte abstract heap type
 )
 
 // wasm3MarkOnStack mirrors regalloc's OnWasmStack analysis
@@ -199,9 +200,27 @@ func wasm3HasOutput(v *Value) bool {
 // internally. This matches the existing register-local convention
 // the obj backend's `regType` produces.
 //
+// Ref-producing ops (OpWasm3StructNew / *Default, OpWasm3ArrayNew /
+// *Default, OpWasm3RefNull, OpWasm3RefCast) get an `(ref null any)`
+// local. Their wasm semantics produce a `(ref $T)` value that must
+// land in a ref-typed local; the abstract `(ref null any)` byte is
+// the single-byte encoding that needs no R_WASMTYPE relocation and
+// accepts every typed-ref subtype by wasmgc subtyping. Consumers
+// downcast with `ref.cast (ref $T)` at their use site (the
+// `(ref $T)` precise type comes from v.Aux).
+//
 // Pointer-shaped values lower to i64 in the M2 backend; the M3
-// switch to ref types (Stage B onward) will revise this.
+// switch to ref types (Stage B onward) will revise this — first
+// for these explicit GC-op producers, then for ordinary Go *T
+// values once Stage C's rules lower OpAddr/OpLoad/OpStore on
+// struct fields to struct.get/struct.set.
 func wasm3ValueType(v *Value) byte {
+	switch v.Op {
+	case OpWasm3StructNew, OpWasm3StructNewDefault,
+		OpWasm3ArrayNew, OpWasm3ArrayNewDefault,
+		OpWasm3RefNull, OpWasm3RefCast:
+		return wasm3ValAnyref
+	}
 	t := v.Type
 	if t.IsFloat() {
 		switch t.Size() {

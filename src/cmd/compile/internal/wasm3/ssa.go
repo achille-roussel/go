@@ -942,7 +942,19 @@ func emitPhiCopies(s *ssagen.State, b, succ *ssa.Block) {
 //
 // Phi sources can land in any of the three, so this helper covers
 // all three. Used by emitPhiCopies.
+//
+// Special case: OpCopy chains. Regalloc inserts OpCopy values as
+// part of its Phi-resolution-via-register-sharing scheme; they
+// have no per-value local (added after wasm3PlaceValues runs) and
+// otherwise fall through to the register-local path. Tracing
+// through them eliminates one copy per Phi resolution edge.
 func readPhiSource(s *ssagen.State, v *ssa.Value) {
+	for v.Op == ssa.OpCopy {
+		if _, ok := wasm3ValueLocalIdx(s, v); ok {
+			break // placed; reading its per-value local is fine
+		}
+		v = v.Args[0]
+	}
 	if idx, ok := wasm3ValueLocalIdx(s, v); ok {
 		localGetIdx(s, idx)
 		return

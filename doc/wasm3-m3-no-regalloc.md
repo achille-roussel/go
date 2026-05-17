@@ -257,6 +257,39 @@ Phase 3a baseline. Both regalloc-managed register-locals *and*
 per-value locals are declared while both schemes coexist; the
 size win arrives in Phase 4 when regalloc is skipped entirely.
 
+**Phase 3c (incremental followups):**
+
+- OpArg{Int,Float}Reg routed through per-value locals via an
+  entry-prologue copy (`local.get <param>; widen?; local.set
+  <Larg>`). `wasm3OpArgParamInfo` walks WasmType.Params to map
+  the per-class v.AuxInt to the absolute wasm parameter index.
+- OpSelectN routed through per-value locals via the call result
+  placement loop scanning v.Block.Values for selectors whose
+  Args[0] == call. ssagen's outer genssa loop has a
+  `case ssa.OpSelect0, ssa.OpSelect1, ssa.OpSelectN,
+  ssa.OpMakeResult: // nothing to do` clause and never calls
+  Arch.SSAGenValue for selectors, so the bridge must run on the
+  call side, not the selector side.
+
+After these, the values still on the regalloc-managed register-
+local path are: regalloc-inserted OpCopy values (added after
+wasm3PlaceValues runs, so unplaced); REG_CTXT (closure context);
+REG_SP / NAME_PARAM (caller SP for runtime); and anything
+regalloc decides to spill.
+
+Attempted but didn't help: a `wasm3-patch-values` pass after
+regalloc to extend Wasm3ValueLocals over the OpCopy values
+regalloc inserted. The OpCopy values are themselves Phi-
+resolution copies (regalloc's traditional Phi scheme); giving
+them per-value locals doesn't eliminate them — it just renames
+their backing store from a register-local to a per-value local
+of equal size. Net result was +62 bytes on the M2 regression
+binary, not bytes saved. The real win requires either skipping
+the regalloc OpCopy insertion for wasm3 (modifying regalloc) or
+having readPhiSource trace through OpCopy.Args[0] to the
+original value (eliminating OpCopy as a load-bearing
+intermediate). Both are larger changes deferred to Phase 4.
+
 **Phase 4 — skip regalloc for wasm3.**
 
 Once nothing reads `v.Reg()` for wasm3, gate the regalloc pass in

@@ -171,15 +171,36 @@ global type indices. The plumbing is exercised the moment Stage B
 emits the first AStructNew prog. Regression sweep still passes 14/14
 — nothing was broken by adding the plumbing.
 
-**Stage B — `newobject` intrinsic + ref-typed SSA values**: NEXT.
-The SSA op `Wasm3LoweredStructNew` needs to land alongside an SSA
-intrinsic that replaces `runtime.newobject(typ)` with a direct
-struct.new at the call site (no runtime call). The harder pre-req
-is plumbing ref-typed values through the SSA register allocator: a
-struct.new returns a `(ref $T)`, which can't be stored in an i64
-register. Either a new ref register class or a redesign of wasm3's
-register model is needed. Once that lands, the bump-allocator
-`runtime.newobject` shim can retire.
+**Stage B — `newobject` intrinsic + ref-typed SSA values**: in
+progress. The hard regalloc-class pre-req is already gone (Phase 4
+of doc/wasm3-m3-no-regalloc.md skipped regalloc entirely; per-
+value locals can be any wasm type). Foundation commits landed:
+
+- `38c4ae1366`: per-function `typeCollector` stashed in a sync.Map
+  keyed by `*obj.FuncInfo` so SSA codegen can register additional
+  body-emitted types and reserialise `wt.Table`. The codegen path
+  for `OpWasm3StructNew/Default` and `OpWasm3StructGet` now emits
+  the R_WASMTYPE operand the linker needs.
+- `8269aaec7e`: `wasm3ValueType` returns `(ref null any)` (0x6E)
+  for SSA values produced by ref-creating Wasm3 ops
+  (StructNew/NewDefault, ArrayNew/NewDefault, RefNull, RefCast).
+  The per-value local for a struct.new result lands at the right
+  wasm type without an R_WASMTYPE relocation in the locals
+  section — the abstract heap type accepts every typed-ref subtype
+  by wasmgc subtyping.
+
+Still needed for Stage B to actually trigger end-to-end:
+- An SSA-level intrinsic (or rewrite rule) that replaces
+  `runtime.newobject(typ)` with `OpWasm3StructNewDefault` carrying
+  `v.Aux = typ`.
+- Consumer-side ref handling — without it the StructNew result has
+  no Go-level use and SSA DCE drops it. Stage C's
+  `OpAddr`/`OpLoad`/`OpStore` lowering rules provide the consumers
+  via struct.get / struct.set; until they land, the struct.new
+  op is dead code.
+
+Once both pieces are in place, the bump-allocator `runtime.newobject`
+shim can retire.
 
 ## Stretch — interfaces + closures
 

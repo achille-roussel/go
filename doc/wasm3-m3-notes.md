@@ -220,10 +220,22 @@ SSA-side struct-arg/struct-result code still flows the array as a
 sequence of i32 values per field. The wasm signature now says one
 ref, the call site pushes many i32s; calls mismatch.
 
-Real fix: Stage D/E. A large in-struct array becomes
-`(ref (array T))` and the SSA backend lowers element accesses via
-`array.get`/`array.set` instead of struct-field copies. The
-ref-typed-value plumbing (Stage C) is the pre-req.
+Real fix: Stage D/E. Lower **every** Go array — small or large —
+to `(ref (array T))` with element accesses via `array.get` /
+`array.set`, not just the ones that would exceed the engine's
+struct-field limit. The ref-typed-value plumbing (Stage C) is the
+pre-req.
+
+Resisting the temptation to special-case: a threshold-based
+"unroll if small, ref if large" lowering would force every call
+site that crosses the threshold (or every consumer that depends
+on the size statically) to handle two layouts. Picking one
+representation — array-typed for all Go arrays — keeps the SSA
+backend and the runtime helpers honest and removes a class of
+"works for [4]byte, breaks for [4097]byte" failure modes before
+they have a chance to appear. The encoded cost is one extra ref
+indirection per array access, which the wasm engine is built to
+optimize through.
 
 Until then, the wasip1 test harness can't exercise wasm3 binaries
 that link `testing`. The M2 14-case regression and the

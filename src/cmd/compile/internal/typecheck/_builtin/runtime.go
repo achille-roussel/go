@@ -199,6 +199,16 @@ func wasm3WrapClosure(closureType *byte, funcsym uintptr, captures unsafe.Pointe
 func wasm3MakeClosureInline1(closureType *byte, funcsym uintptr, cap0 uintptr) unsafe.Pointer
 func wasm3MakeClosureInline1F32(closureType *byte, funcsym uintptr, cap0 float32) unsafe.Pointer
 func wasm3MakeClosureInline1F64(closureType *byte, funcsym uintptr, cap0 float64) unsafe.Pointer
+func wasm3MakeClosureInline2F64(closureType *byte, funcsym uintptr, cap0, cap1 float64) unsafe.Pointer
+func wasm3MakeClosureInline3F64(closureType *byte, funcsym uintptr, cap0, cap1, cap2 float64) unsafe.Pointer
+func wasm3MakeClosureInline4F64(closureType *byte, funcsym uintptr, cap0, cap1, cap2, cap3 float64) unsafe.Pointer
+func wasm3MakeClosureInline5F64(closureType *byte, funcsym uintptr, cap0, cap1, cap2, cap3, cap4 float64) unsafe.Pointer
+func wasm3MakeClosureInline6F64(closureType *byte, funcsym uintptr, cap0, cap1, cap2, cap3, cap4, cap5 float64) unsafe.Pointer
+func wasm3MakeClosureInline7F64(closureType *byte, funcsym uintptr, cap0, cap1, cap2, cap3, cap4, cap5, cap6 float64) unsafe.Pointer
+func wasm3MakeClosureInline8F64(closureType *byte, funcsym uintptr, cap0, cap1, cap2, cap3, cap4, cap5, cap6, cap7 float64) unsafe.Pointer
+func wasm3MakeClosureInline2F32(closureType *byte, funcsym uintptr, cap0, cap1 float32) unsafe.Pointer
+func wasm3MakeClosureInline3F32(closureType *byte, funcsym uintptr, cap0, cap1, cap2 float32) unsafe.Pointer
+func wasm3MakeClosureInline4F32(closureType *byte, funcsym uintptr, cap0, cap1, cap2, cap3 float32) unsafe.Pointer
 func wasm3MakeClosureInline2(closureType *byte, funcsym uintptr, cap0, cap1 uintptr) unsafe.Pointer
 func wasm3MakeClosureInline3(closureType *byte, funcsym uintptr, cap0, cap1, cap2 uintptr) unsafe.Pointer
 func wasm3MakeClosureInline4(closureType *byte, funcsym uintptr, cap0, cap1, cap2, cap3 uintptr) unsafe.Pointer

@@ -7994,26 +7994,45 @@ func wasm3ClosureUsesCapturesInStruct(fn *ir.Func) bool {
 	if len(fn.ClosureVars) < 1 || len(fn.ClosureVars) > 8 {
 		return false
 	}
-	hasFloat := false
+	// All captures must share a shape (all int/ptr, all F32, or
+	// all F64) so a single typed intrinsic exists in walkClosure.
+	// Per-shape multi-arity intrinsics in runtime.go cover up to:
+	//   - 8 uintptr (int / ptr) captures
+	//   - 8 F64 captures
+	//   - 4 F32 captures (rarer)
+	// Mixed-shape closures (e.g. one int + one float) and floats
+	// beyond the table fall back to the legacy heap path.
+	type shape int
+	const (
+		shapeUintptr shape = iota
+		shapeF32
+		shapeF64
+		shapeNone
+	)
+	slotShape := func(t *types.Type) shape {
+		switch {
+		case t.IsInteger(), t.IsPtr(), t.IsUnsafePtr():
+			return shapeUintptr
+		case t.IsFloat() && t.Size() == 4:
+			return shapeF32
+		case t.IsFloat() && t.Size() == 8:
+			return shapeF64
+		}
+		return shapeNone
+	}
+	first := slotShape(fn.ClosureVars[0].Type())
+	if first == shapeNone {
+		return false
+	}
 	for _, n := range fn.ClosureVars {
 		if !n.Byval() || n.Addrtaken() || !ssa.CanSSA(n.Type()) {
 			return false
 		}
-		t := n.Type()
-		if !t.IsInteger() && !t.IsPtr() && !t.IsUnsafePtr() && !t.IsFloat() {
+		if slotShape(n.Type()) != first {
 			return false
 		}
-		if t.IsFloat() {
-			hasFloat = true
-		}
 	}
-	// Floats are only routed through the 1-capture per-type
-	// intrinsics (wasm3MakeClosureInline1F{32,64}); a closure that
-	// mixes floats with other captures lacks an intrinsic in
-	// walkClosure and would fall back to the legacy path there,
-	// leaving the body's predicate disagreeing. Restrict here so
-	// the two sides match.
-	if hasFloat && len(fn.ClosureVars) != 1 {
+	if first == shapeF32 && len(fn.ClosureVars) > 4 {
 		return false
 	}
 	return true

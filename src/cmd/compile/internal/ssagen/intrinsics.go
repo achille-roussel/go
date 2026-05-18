@@ -291,6 +291,19 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	add("runtime", "wasm3MakeClosureInline6", makeInlineN(6), sys.ArchWasm3)
 	add("runtime", "wasm3MakeClosureInline7", makeInlineN(7), sys.ArchWasm3)
 	add("runtime", "wasm3MakeClosureInline8", makeInlineN(8), sys.ArchWasm3)
+	// Multi-arity F32 / F64 variants: same makeInlineN
+	// constructor — the SSA op is shape-agnostic, args[2..]
+	// carry whatever the runtime decl typed them as.
+	add("runtime", "wasm3MakeClosureInline2F64", makeInlineN(2), sys.ArchWasm3)
+	add("runtime", "wasm3MakeClosureInline3F64", makeInlineN(3), sys.ArchWasm3)
+	add("runtime", "wasm3MakeClosureInline4F64", makeInlineN(4), sys.ArchWasm3)
+	add("runtime", "wasm3MakeClosureInline5F64", makeInlineN(5), sys.ArchWasm3)
+	add("runtime", "wasm3MakeClosureInline6F64", makeInlineN(6), sys.ArchWasm3)
+	add("runtime", "wasm3MakeClosureInline7F64", makeInlineN(7), sys.ArchWasm3)
+	add("runtime", "wasm3MakeClosureInline8F64", makeInlineN(8), sys.ArchWasm3)
+	add("runtime", "wasm3MakeClosureInline2F32", makeInlineN(2), sys.ArchWasm3)
+	add("runtime", "wasm3MakeClosureInline3F32", makeInlineN(3), sys.ArchWasm3)
+	add("runtime", "wasm3MakeClosureInline4F32", makeInlineN(4), sys.ArchWasm3)
 
 	addF("internal/runtime/math", "MulUintptr",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {

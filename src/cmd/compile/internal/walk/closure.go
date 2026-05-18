@@ -160,23 +160,16 @@ func walkClosure(clo *ir.ClosureExpr, init *ir.Nodes) ir.Node {
 		// the 1-capture form is wired; multi-capture closures fall
 		// through to the legacy wasm3WrapClosure path.
 		if n := len(clofn.ClosureVars); n >= 1 && n <= 8 && wasm3AllScalarByVal(clofn.ClosureVars) {
-			// Special-case the 1-float-capture forms via per-type
-			// intrinsics (wasm3MakeClosureInline1F32 /
-			// MakeClosureInline1F64): floats can't pass through
-			// the uintptr-typed cap0 of the generic InlineN, but
-			// the SSA op shape is the same — args[2] just carries
-			// the native float SSA value rather than an uintptr.
-			// Multi-capture mixed-shape combinations stay on the
-			// legacy wasm3WrapClosure path until per-shape multi-
-			// arity intrinsics land.
-			if n == 1 && clofn.ClosureVars[0].Type().IsFloat() {
-				var fnName string
-				switch clofn.ClosureVars[0].Type().Size() {
-				case 4:
-					fnName = "wasm3MakeClosureInline1F32"
-				case 8:
-					fnName = "wasm3MakeClosureInline1F64"
-				default:
+			// Pick an intrinsic by the shape group of all
+			// captures. All same-precision floats go through
+			// the F32 / F64 multi-arity intrinsics; all integers
+			// or pointers go through the uintptr-arg InlineN.
+			// Mixed shapes (e.g. one int + one float) have no
+			// intrinsic and fall through to legacy.
+			shape := wasm3CaptureShape(clofn.ClosureVars)
+			if shape != wasm3ShapeMixed {
+				fnName, ok := wasm3InlineIntrinsicName(n, shape)
+				if !ok {
 					goto wasm3LegacyClosure
 				}
 				fn := typecheck.LookupRuntime(fnName)
@@ -184,24 +177,15 @@ func walkClosure(clo *ir.ClosureExpr, init *ir.Nodes) ir.Node {
 				fnSym := ir.NewUnaryExpr(base.Pos, ir.OCFUNC, clofn.Nname)
 				fnSym.SetType(types.Types[types.TUINTPTR])
 				fnSym = typecheck.Expr(fnSym).(*ir.UnaryExpr)
-				call := typecheck.Call(base.Pos, fn, []ir.Node{closureType, fnSym, clofn.ClosureVars[0].Outer}, false).(*ir.CallExpr)
+				args := make([]ir.Node, 0, 2+n)
+				args = append(args, closureType, fnSym)
+				for _, cv := range clofn.ClosureVars {
+					args = append(args, wasm3CaptureArg(cv.Outer, shape))
+				}
+				call := typecheck.Call(base.Pos, fn, args, false).(*ir.CallExpr)
 				call.SetType(clo.Type())
 				return walkExpr(call, init)
 			}
-			fnName := "wasm3MakeClosureInline" + strconv.Itoa(n)
-			fn := typecheck.LookupRuntime(fnName)
-			closureType := reflectdata.TypePtrAt(base.Pos, clo.Type())
-			fnSym := ir.NewUnaryExpr(base.Pos, ir.OCFUNC, clofn.Nname)
-			fnSym.SetType(types.Types[types.TUINTPTR])
-			fnSym = typecheck.Expr(fnSym).(*ir.UnaryExpr)
-			args := make([]ir.Node, 0, 2+n)
-			args = append(args, closureType, fnSym)
-			for _, cv := range clofn.ClosureVars {
-				args = append(args, wasm3CaptureAsUintptr(cv.Outer))
-			}
-			call := typecheck.Call(base.Pos, fn, args, false).(*ir.CallExpr)
-			call.SetType(clo.Type())
-			return walkExpr(call, init)
 		}
 	wasm3LegacyClosure:
 
@@ -283,6 +267,85 @@ func wasm3AllScalarByVal(vars []*ir.Name) bool {
 func wasm3MethodValueFitsInline(rcvr ir.Node) bool {
 	t := rcvr.Type()
 	return t.IsInteger() || t.IsPtr() || t.IsUnsafePtr()
+}
+
+// wasm3CaptureShape identifies which intrinsic family a closure's
+// captures collectively map to. Mixed shapes (e.g. one int + one
+// float) have no single-typed N-ary intrinsic in runtime.go and
+// fall back to the legacy wasm3WrapClosure heap path.
+type wasm3CapShape int
+
+const (
+	wasm3ShapeUintptr wasm3CapShape = iota // all int/ptr — uintptr-arg InlineN
+	wasm3ShapeF32                          // all float32 — InlineN F32
+	wasm3ShapeF64                          // all float64 — InlineN F64
+	wasm3ShapeMixed                        // multi-shape, no intrinsic
+)
+
+func wasm3CaptureShape(vars []*ir.Name) wasm3CapShape {
+	if len(vars) == 0 {
+		return wasm3ShapeMixed
+	}
+	first := wasm3SlotShape(vars[0].Type())
+	for _, v := range vars[1:] {
+		if wasm3SlotShape(v.Type()) != first {
+			return wasm3ShapeMixed
+		}
+	}
+	return first
+}
+
+// wasm3SlotShape returns the per-capture shape for a Go type.
+// Integers, pointers, and unsafe.Pointer all collapse to
+// wasm3ShapeUintptr because walkClosure passes them as uintptr
+// through wasm3CaptureAsUintptr. Floats split by precision.
+// Anything else returns wasm3ShapeMixed as a sentinel — the
+// caller's predicate has already rejected such captures.
+func wasm3SlotShape(t *types.Type) wasm3CapShape {
+	switch {
+	case t.IsInteger(), t.IsPtr(), t.IsUnsafePtr():
+		return wasm3ShapeUintptr
+	case t.IsFloat() && t.Size() == 4:
+		return wasm3ShapeF32
+	case t.IsFloat() && t.Size() == 8:
+		return wasm3ShapeF64
+	}
+	return wasm3ShapeMixed
+}
+
+// wasm3InlineIntrinsicName returns the runtime decl for an N-ary
+// shape-homogeneous captures-in-struct intrinsic, or false if no
+// such intrinsic exists today (e.g. the F32 multi-arity matrix
+// stops at 4).
+func wasm3InlineIntrinsicName(n int, shape wasm3CapShape) (string, bool) {
+	base := "wasm3MakeClosureInline" + strconv.Itoa(n)
+	switch shape {
+	case wasm3ShapeUintptr:
+		return base, true
+	case wasm3ShapeF64:
+		return base + "F64", true
+	case wasm3ShapeF32:
+		if n > 4 {
+			// Only Inline{1..4}F32 are declared in runtime.go;
+			// higher arities fall back. F32 captures in real
+			// code are rare enough that 4 covers the bulk.
+			return "", false
+		}
+		return base + "F32", true
+	}
+	return "", false
+}
+
+// wasm3CaptureArg converts a capture expression to the IR node
+// that walkClosure pushes as the corresponding arg to the
+// intrinsic. uintptr-shape captures go through
+// wasm3CaptureAsUintptr; float-shape captures pass through as-is
+// (the intrinsic's parameter is natively float-typed).
+func wasm3CaptureArg(captured ir.Node, shape wasm3CapShape) ir.Node {
+	if shape == wasm3ShapeUintptr {
+		return wasm3CaptureAsUintptr(captured)
+	}
+	return captured
 }
 
 // wasm3CaptureAsUintptr converts an arbitrary integer- or pointer-

@@ -228,18 +228,45 @@ func walkMethodValue(n *ir.SelectorExpr, init *ir.Nodes) ir.Node {
 
 	addr := typecheck.NodAddr(clos)
 	addr.SetEsc(n.Esc())
-
-	// Force type conversion from *struct to the func type.
-	cfn := typecheck.ConvNop(addr, n.Type())
-
-	// non-escaping temp to use, if any.
-	if x := n.Prealloc; x != nil {
+	// Stage G: skip on wasm3 — same reasoning as walkClosure: the
+	// Prealloc would land in the linear-memory SP frame, which the
+	// wasm3 ABI can't pass as the anyref-shaped funcvalue/closureCtx
+	// arg downstream callers now expect. Forcing the {F,R} struct
+	// through runtime.newobject (Esc=EscHeap) puts it on the bump
+	// heap; wasm3WrapClosure then wraps the i64 captures-ptr in the
+	// wasmgc `(ref $closureCtx)`. The method wrapper (-fm) reads R
+	// off CTXT+8 via an ordinary linear-memory load, which is just a
+	// (Get CTXT; I64Load $8) the encoder already handles.
+	if buildcfg.GOARCH == "wasm3" {
+		addr.SetEsc(ir.EscHeap)
+	} else if x := n.Prealloc; x != nil {
 		if !types.Identical(typ, x.Type()) {
 			panic("partial call type does not match order's assigned type")
 		}
 		addr.Prealloc = x
 		n.Prealloc = nil
 	}
+
+	if buildcfg.GOARCH == "wasm3" {
+		// Stage G: mirror walkClosure's wasm3 path. The method value
+		// `&{F, R}` is allocated on the bump heap via ONEW (forced by
+		// the Prealloc bypass above), then wrapped in a wasmgc
+		// closureCtx by wasm3WrapClosure. CTXT at the call site is
+		// the i64 captures-ptr to the {F, R} struct, which the -fm
+		// wrapper dereferences off offset 8 to recover the receiver.
+		fn := typecheck.LookupRuntime("wasm3WrapClosure")
+		closureType := reflectdata.TypePtrAt(base.Pos, n.Type())
+		fnSym := ir.NewUnaryExpr(base.Pos, ir.OCFUNC, methodValueWrapper(n))
+		fnSym.SetType(types.Types[types.TUINTPTR])
+		fnSym = typecheck.Expr(fnSym).(*ir.UnaryExpr)
+		captures := typecheck.ConvNop(addr, types.Types[types.TUNSAFEPTR])
+		call := typecheck.Call(base.Pos, fn, []ir.Node{closureType, fnSym, captures}, false).(*ir.CallExpr)
+		call.SetType(n.Type())
+		return walkExpr(call, init)
+	}
+
+	// Force type conversion from *struct to the func type.
+	cfn := typecheck.ConvNop(addr, n.Type())
 
 	return walkExpr(cfn, init)
 }

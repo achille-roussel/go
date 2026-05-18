@@ -32,8 +32,9 @@ import "unsafe"
 // a `*g` whose linear-memory shape isn't populated, and the write
 // wrapper's `if overrideWrite != nil` indirect-call probe stores a
 // func-pointer load into an anyref-typed local that fails wasm
-// validation. Direct write1 is the single fd_write syscall path,
-// which we've already validated.
+// validation. Direct write1 is the single fd_write syscall path.
+// The wasm3 backend correctly drops write1's int32 return at the
+// void-context call site, so no return-value workaround is needed.
 //
 // gwrite3Scratch is sized for the largest single print payload we
 // expect (panic banner, fatal-error stack header). Longer writes are
@@ -51,18 +52,5 @@ func gwrite(b []byte) {
 	for i := 0; i < n; i++ {
 		gwrite3Scratch[i] = b[i]
 	}
-	// Stash write1's int32 return through a package-global instead
-	// of dropping it inline. The wasm3 obj backend miscompiles a
-	// trailing void-context call whose callee returns a value: it
-	// `local.set`s the result into local 0, which on gwrite is the
-	// `b []byte` anyref param — failing wasm validation with
-	// "expected anyref, found i64". Routing the int32 through a
-	// global sink forces the backend down the value-flow path that
-	// is correct.
-	gwrite3LastN = write1(2, unsafe.Pointer(&gwrite3Scratch[0]), int32(n))
+	write1(2, unsafe.Pointer(&gwrite3Scratch[0]), int32(n))
 }
-
-// gwrite3LastN is the int32 return of the most recent write1 call
-// made by gwrite. It exists only to keep that return value on a
-// non-discarded value-flow path; see the comment in gwrite.
-var gwrite3LastN int32

@@ -540,6 +540,19 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 						localSetIdx(s, idx)
 						placed = true
 					}
+				} else {
+					// Void-context call: no SSA reader for result i.
+					// Falling through to setReg would stash the value
+					// into a register-local; the wasm3 obj-encoder's
+					// reg → local mapping can place that local at the
+					// same slot as a caller param of an incompatible
+					// wasm type (e.g. on a `func gwrite(b []byte)`
+					// whose only param is anyref-typed local 0, an
+					// unused i32 call result lands at `local.set 0`
+					// — i64 into anyref, failing validation). Drop
+					// the value instead so no local store happens.
+					s.Prog(wasm.ADrop)
+					placed = true
 				}
 				if !placed {
 					setReg(s, regs[i].reg)

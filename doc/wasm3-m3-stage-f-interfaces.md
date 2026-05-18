@@ -320,12 +320,35 @@ directly — bypassing `runtime.writeErrData` (which reads
 `g.m.dying` off a `*g` shape M2 hasn't populated) and
 `runtime.write` (whose `if overrideWrite != nil` indirect-call
 probe stores a func-pointer load into an anyref local, failing
-validation). One sharp edge surfaced: the wasm3 obj backend
-miscompiles a trailing void-context call whose callee returns a
-value — it emits `local.set 0` on the call's i32 result, which
-on a func with anyref param 0 fails validation with "expected
-anyref, found i64". Worked around by stashing `write1`'s return
-in a package-global (`gwrite3LastN`) instead of dropping it
-inline; a proper backend fix belongs in a separate cycle.
-`/tmp/wasm3-gwrite` (`print("ptr: ", &g, "\n")` exercising
-printhex → gwrite) now prints the address and `ok`.
+validation). `/tmp/wasm3-gwrite` (`print("ptr: ", &g, "\n")`
+exercising printhex → gwrite) now prints the address and `ok`.
+
+**Void-context call result drop** ✅ landed (ac072c6486). The
+wasm3 backend's call-result-pop loop unconditionally stashed
+each result into a register-local. For results with no `OpSelectN`
+consumer (e.g. `_ = f()`, or an expression-statement call to a
+non-void function), the register-local landed at the obj-encoder's
+assigned slot, which could alias with a caller param of an
+incompatible wasm type — gwrite's trailing `write1(...)` was the
+canary, emitting `local.set 0` on the i32 return that aliased
+gwrite's anyref `b []byte` param 0. Fix: when `selectN[i]` is
+nil, emit `drop` instead of falling through to `setReg`. Retires
+the `gwrite3LastN` workaround from the previous commit.
+
+**i64-shaped TFUNC closure call via `call_indirect`** ✅ landed
+(85a3ecbf73). A `var f func(...)` at package scope is stored in
+linear memory as the symbol-value-encoded i64 codeptr (the same
+`funcid << 16` shape interface dispatch uses), and wasm3place
+classifies the loaded result as i64. The closure-call codegen
+treated every TFUNC-typed closure arg as a wasmgc closureCtx
+ref — `ref.cast (ref $closureCtx)` against an i64 stack value
+failed validation. Discriminate by the closure arg's actual SSA
+value type (`ssa.Wasm3IsAnyrefValue`); on the i64 path, skip the
+CTXT/CTXT_REF setup and route through the same `call_indirect`
+path as interface dispatch (`drop dummy codeptr; push i64;
+i64.const 16; i64.shr_u; i32.wrap_i64; call_indirect
+<synthetic-funcsig>`). `/tmp/wasm3-funcvar` exercises the
+read-and-nil-dispatch pattern (the same shape as `runtime.write`'s
+`if overrideWrite != nil` probe) end-to-end. The store path
+(assigning a closure literal to a global var) is still blocked
+on the symmetric i64-store-of-anyref problem.

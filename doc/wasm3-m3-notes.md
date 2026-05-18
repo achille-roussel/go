@@ -940,16 +940,31 @@ Not yet landed:
   plus the SP-relative AGet encoder. Investigation cost: 2-3
   focused sessions.
 
-- **Captures inside the closureCtx struct**. Today captures live
-  in a linear-memory &struct{} fetched via CTXT; could move into
-  the wasmgc closureCtx itself once the body's capture-access
-  codegen is taught to read struct.get on the closure ref
-  parameter. Removes the linear-memory allocation per closure
-  but requires changing the body's calling convention to receive
-  the closure ref as a parameter (currently CTXT global), plus a
-  per-(closure func type) closureCtx struct shape (today it's
-  one struct per signature; captures-in-struct needs one per
-  closure's distinct capture set). Pure optimisation.
+- **Captures inside the closureCtx struct**. Today closures-with-
+  captures allocate twice: `&struct{F, captures...}` on the bump
+  heap (via runtime.newobject), then `(funcref, ptr-to-captures)`
+  wasmgc struct around it. Captures-in-struct would coalesce into
+  one allocation by adding the capture fields directly to the
+  wasmgc closureCtx and have the body access them via
+  `struct.get` on a closure-ref parameter. Requires three
+  coordinated pieces:
+    1. Per-closure (not per-signature) `$closureCtx_<closure>`
+       struct shape — each `func(){...}` literal gets its own
+       wasmgc type holding `(ref $funcType)` + one field per
+       captured variable, typed to match.
+    2. Body calling-convention change: the synthetic closure
+       function gains a leading anyref parameter holding the
+       closure-ref, replacing the current CTXT-i64 indirection.
+       attachWasmType injects the param; OpWasm3LoweredGetClosurePtr
+       reads it instead of `global.get $CTXT`.
+    3. Capture-access SSA rewrite: today the body emits
+       `OffPtr(GetClosurePtr, off) + Load`. Replace this with a
+       `OpWasm3GetClosureField` op carrying the field index, and
+       lower to `struct.get $closureCtx <fieldIdx>`.
+  All three pieces are surgically scoped, but they have to land
+  together — partial coverage would leave the body and call
+  site disagreeing on closure shape. Pure optimisation; closures
+  work today without it.
 
 Stage G summary: the function-value pipeline is complete for
 bare top-level functions (with singleton-optimised

@@ -461,12 +461,18 @@ func asmb2_3(ctxt *ld.Link, ldr *loader.Loader) {
 	writeTypeSec3(ctxt, m.table)
 	writeImportSec3(ctxt, m.imports)
 	writeFunctionSec3(ctxt, m.funcs)
+	// Stage F: emit a funcref table covering every function in
+	// the module, used by call_indirect at interface-method
+	// dispatch sites. Without this, the obj-encoder bails on
+	// ACALL TYPE_NONE (indirect calls with codeptr on the
+	// wasm stack) and the calling function's body becomes an
+	// unreachable stub. See doc/wasm3-m3-stage-f-interfaces.md.
+	writeTableSec3(ctxt, len(m.imports), len(m.funcs))
 	writeMemorySec(ctxt, ldr)
 	writeGlobalSec3(ctxt, ldr, m, hostImportMap)
 	writeExportSec(ctxt, ldr, len(m.imports))
-	if refFns := collectWasm3RefFuncs(ctxt, ldr, len(m.imports)); len(refFns) > 0 {
-		writeElementSec3DeclaredFuncs(ctxt, refFns)
-	}
+	refFns := collectWasm3RefFuncs(ctxt, ldr, len(m.imports))
+	writeElementSec3(ctxt, refFns, len(m.imports), len(m.funcs))
 	writeCodeSec3(ctxt, m.funcs)
 	writeDataSec(ctxt)
 	writeProducerSec(ctxt)
@@ -505,21 +511,83 @@ func collectWasm3RefFuncs(ctxt *ld.Link, ldr *loader.Loader, numImports int) []u
 	return out
 }
 
-// writeElementSec3DeclaredFuncs emits a single passive-declared
-// element segment listing every funcidx referenced via ref.func.
-// Encoding (wasm spec, section 9):
-//   0x09 <size> 0x01 <num-elems>
-//     0x03 <elemkind=0x00> <vec(funcidx)>
-// where 0x03 is the "passive declared" flag and 0x00 is funcref.
-func writeElementSec3DeclaredFuncs(ctxt *ld.Link, funcIndices []uint64) {
+// writeElementSec3 emits the element section: an active segment
+// populating table 0 with every native function, plus (when any
+// ref.func opcodes were emitted) a passive-declared segment
+// listing the explicitly-referenced funcidxs. The active segment
+// is mandatory for Stage F's call_indirect-based interface
+// dispatch path — without it the table reads return ref.null and
+// every interface call would trap.
+//
+// Encoding for the active segment (flags=0x00):
+//   0x00 <expr> <vec(funcidx)>
+// where <expr> = i32.const 0 + end. The offset begins at table
+// index 0; entry positions match wasm function indices. Imports
+// occupy entries [0..numImports); they're initialised to ref.null
+// funcref via a separate flags=0x05 passive-typed-elem segment
+// rather than being placed in the table at module init, because
+// imports can't appear in an active funcref segment unless they
+// are first declared, which is itself the role of the declared
+// segment below.
+//
+// For the declared segment (flags=0x03):
+//   0x03 <elemkind=0x00> <vec(funcidx)>
+func writeElementSec3(ctxt *ld.Link, declaredFuncs []uint64, numImports, numFns int) {
 	sizeOffset := writeSecHeader(ctxt, sectionElement)
-	writeUleb128(ctxt.Out, 1) // number of element segments
-	ctxt.Out.WriteByte(0x03)  // flags: passive | declared
-	ctxt.Out.WriteByte(0x00)  // elemkind: funcref
-	writeUleb128(ctxt.Out, uint64(len(funcIndices)))
-	for _, idx := range funcIndices {
-		writeUleb128(ctxt.Out, idx)
+	nSegments := uint64(1) // active segment populating native funcs
+	if len(declaredFuncs) > 0 {
+		nSegments++
 	}
+	writeUleb128(ctxt.Out, nSegments)
+
+	// Active segment: table 0, offset = funcValueOffset, vec =
+	// every native function. Offset == funcValueOffset matches Go's
+	// per-function symbol-value encoding (Value = (funcOrdinal +
+	// funcValueOffset) << 16), so an interface-method codeptr
+	// loaded from an itab + `>> 16` yields the table index
+	// directly with no additional arithmetic. Table entries
+	// [0, funcValueOffset) and [funcValueOffset+numFns, len) stay
+	// ref.null funcref from the table's zero-initialisation —
+	// they correspond to imports (never call_indirect'd today) and
+	// out-of-range codeptrs (a runtime trap is the right behaviour
+	// for those anyway).
+	ctxt.Out.WriteByte(0x00) // flags: active, table 0, funcref
+	writeI32Const(ctxt.Out, funcValueOffset)
+	ctxt.Out.WriteByte(0x0b) // end of offset expression
+	writeUleb128(ctxt.Out, uint64(numFns))
+	for i := 0; i < numFns; i++ {
+		writeUleb128(ctxt.Out, uint64(numImports+i))
+	}
+
+	if len(declaredFuncs) > 0 {
+		// Passive-declared segment: validates ref.func operands.
+		ctxt.Out.WriteByte(0x03) // flags: passive | declared
+		ctxt.Out.WriteByte(0x00) // elemkind: funcref
+		writeUleb128(ctxt.Out, uint64(len(declaredFuncs)))
+		for _, idx := range declaredFuncs {
+			writeUleb128(ctxt.Out, idx)
+		}
+	}
+
+	writeSecSize(ctxt, sizeOffset)
+}
+
+// writeTableSec3 emits a single anyfunc (funcref) table sized to
+// cover every function index in the module. Element 0 corresponds
+// to import 0, element numImports corresponds to the first native
+// function, etc. The element section then populates the native-
+// function entries via an active segment (see writeElementSec3);
+// import entries stay ref.null funcref unless a future stage
+// declares them explicitly. Interface method dispatch reads the
+// codeptr (an i64 holding the function's symbol address in
+// wasm3's `funcidx << 16` encoding), shifts it down to the
+// funcidx, and `call_indirect`s through this table.
+func writeTableSec3(ctxt *ld.Link, numImports, numFns int) {
+	sizeOffset := writeSecHeader(ctxt, sectionTable)
+	writeUleb128(ctxt.Out, 1) // number of tables
+	ctxt.Out.WriteByte(0x70)  // elemtype: anyfunc (funcref)
+	ctxt.Out.WriteByte(0x00)  // no max
+	writeUleb128(ctxt.Out, uint64(funcValueOffset+numFns))
 	writeSecSize(ctxt, sizeOffset)
 }
 

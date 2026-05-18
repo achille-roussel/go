@@ -20,6 +20,7 @@ import (
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
 	"cmd/internal/obj/wasm"
+	"cmd/internal/src"
 )
 
 /*
@@ -449,14 +450,33 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			callRef.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(funcIdx)}
 			callRef.Pos = v.Pos
 		} else {
-			// Other indirect calls (interface dispatch, etc.) keep
-			// the legacy ACALL TYPE_NONE path until Stage F lands.
+			// Stage F (doc/wasm3-m3-stage-f-interfaces.md): an
+			// indirect call where the codeptr is on the wasm
+			// stack — typically the funcref loaded from an itab
+			// at an interface method dispatch. Emit
+			// `<codeptr i64>; i64.const 16; i64.shr_u; i32.wrap;
+			// call_indirect <typeidx> <table=0>`. The codeptr's
+			// `funcid << 16` encoding (see assignAddress in the
+			// wasm linker) means `>> 16` recovers the table
+			// index directly: writeElementSec3 populates the
+			// table starting at offset funcValueOffset, the same
+			// constant that's baked into the symbol-value
+			// encoding.
 			getValue64(s, v.Args[0])
-			p := s.Prog(obj.ACALL)
-			p.To = obj.Addr{Type: obj.TYPE_NONE}
-			p.Pos = v.Pos
+			p1 := s.Prog(wasm.AI64Const)
+			p1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: 16}
+			s.Prog(wasm.AI64ShrU)
+			s.Prog(wasm.AI32WrapI64)
+			pCall := s.Prog(wasm.ACallIndirect)
+			ft := wasm3SyntheticFuncType(call)
+			pCall.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterFuncSig(s.FuncInfo(), ft))}
+			pCall.Pos = v.Pos
 			if v.Op == ssa.OpWasm3LoweredTailCallInter {
-				p.As = obj.ARET
+				// Tail call: ACallIndirect followed by RET works
+				// for now (no return_call_indirect on every engine
+				// we target yet). Treated as a normal call by the
+				// register-result-pop loop below.
+				// TODO: emit return_call_indirect once supported.
 			}
 		}
 
@@ -1523,6 +1543,27 @@ func wasm3FuncTypeOf(t *types.Type) *types.Type {
 		return t
 	}
 	return nil
+}
+
+// wasm3SyntheticFuncType reconstructs a *types.Type matching the
+// call's wasm-level signature from its abi.ABIParamResultInfo.
+// Used by OpWasm3LoweredInterCall codegen to register a funcType
+// for the call_indirect typeidx immediate. The receiver (if the
+// callee is a method) is already the first entry in InParams() at
+// this stage, so the synthesized func type has no receiver and
+// each param flows through tryPrimitiveAttach / loweredStorages
+// like any other function signature would.
+func wasm3SyntheticFuncType(call *ssa.AuxCall) *types.Type {
+	info := call.ABIInfo()
+	var params []*types.Field
+	for _, p := range info.InParams() {
+		params = append(params, types.NewField(src.NoXPos, nil, p.Type))
+	}
+	var results []*types.Field
+	for _, p := range info.OutParams() {
+		results = append(results, types.NewField(src.NoXPos, nil, p.Type))
+	}
+	return types.NewSignature(nil, params, results)
 }
 
 // wasm3RegisterStructAux extracts the *types.Type from v.Aux and

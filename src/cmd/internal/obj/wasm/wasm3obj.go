@@ -749,6 +749,27 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 				Sym:  p.To.Sym,
 			})
 
+		case ACallIndirect:
+			// Stage F: indirect call via the funcref table (table 0,
+			// declared by writeTableSec3). The wasm encoding is
+			//   0x11 <typeidx> <tableidx>
+			// where typeidx is a wasm3-internal index into the
+			// per-function wasmgc.Table (R_WASMTYPE-relocated by the
+			// linker), and tableidx is 0. The compiler-side caller
+			// puts the function-table index on the wasm operand
+			// stack before this op.
+			if p.From.Type != obj.TYPE_CONST {
+				return nil, false
+			}
+			writeOpcode(w, ACallIndirect)
+			relocs = append(relocs, obj.Reloc{
+				Type: objabi.R_WASMTYPE,
+				Off:  int32(w.Len()),
+				Siz:  1,
+				Add:  p.From.Offset,
+			})
+			writeUleb128(w, 0) // tableidx
+
 		case ANot:
 			writeOpcode(w, AI32Eqz)
 

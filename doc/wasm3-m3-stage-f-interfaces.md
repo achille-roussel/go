@@ -209,12 +209,47 @@ subsequent step extends functionality.
 
 ## Verification ladder
 
-1. `/tmp/wasm3-iface` (simple interface call, int return) —
-   compiles + runs.
-2. Method dispatch through interface to a value-receiver method.
-3. Type assertion `x.(T)` — happy path.
-4. Comma-ok type assertion `x, ok := i.(T)`.
-5. Interface switch `switch x := i.(type)`.
-6. Empty interface `interface{}` / `any` round-trip.
-7. `error` interface (the most common interface in stdlib).
-8. `io.Reader` / `io.Writer` (used by `print` machinery).
+1. `/tmp/wasm3-iface` (simple interface call) — ✅ landed
+   (923a31faf0). `bump(c Counter) int` returns 101, 102. Both
+   the int-returning and string-returning (`Sound() string`)
+   forms run end-to-end.
+2. Method dispatch through interface to a **value-receiver
+   method** — ✅ verified with `/tmp/wasm3-ifaceval`:
+   `Square{side:5}.Area() = 25`, `Rect{w:3,h:4}.Area() = 12`.
+3. Comma-ok **type assertion** `x, ok := i.(*T)` — ✅ verified
+   with `/tmp/wasm3-ifaceassert`: `describe(*Dog{name:"rex"})`
+   prints "dog: rex"; `describe(*Cat{})` prints "other: meow".
+4. Interface switch `switch x := i.(type)`.
+5. Empty interface `interface{}` / `any` round-trip.
+6. `error` interface (the most common interface in stdlib).
+7. `io.Reader` / `io.Writer` (used by `print` machinery).
+
+## Status (2026-05-18)
+
+Steps 1–3 of the ladder land via the **call_indirect-based
+dispatch path**:
+
+- Linker emits a funcref table sized to `funcValueOffset + numFns`,
+  populated via an active element segment whose offset matches
+  Go's wasm symbol-value encoding. The codeptr loaded from an
+  itab + `>> 16` lands at the right table entry with zero
+  arithmetic.
+- Obj-encoder handles `ACallIndirect`.
+- SSA codegen at OpWasm3LoweredInterCall pushes `i64.const 16;
+  i64.shr_u; i32.wrap; call_indirect <typeidx> <0>`.
+- Runtime iface equality helpers (`interequal`, `nilinterequal`,
+  `efaceeq`, `ifaceeq`) are stubbed via `alg_iface_wasm3.go` so
+  programs that include them in their reachable set compile;
+  they trap if actually called (interface equality isn't on the
+  current ladder).
+
+This puts wasm3 on the simpler-of-the-two-approaches: the itab
+stays a linear-memory struct, codeptrs stay i64 values, and the
+funcref table bridges between them at call sites. The "full
+wasmgc itab" Approach A from the plan above is deferred — it
+would buy size + GC tracking but is significantly more invasive,
+and call_indirect is canonical wasm for this use case.
+
+Still ahead on the ladder: type-switch, empty-interface round-
+trip, `error`, `io.Reader`. Each may surface new runtime helpers
+that need their own `_wasm3.go` shadows.

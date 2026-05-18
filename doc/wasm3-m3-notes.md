@@ -842,55 +842,71 @@ linksym producer) lands as its own commit.
 Landed:
 
 - **Piece 5 (obj-encoder support)** — `f77198200e`. `ARefFunc`
-  emits opcode 0xD2 + R_CALL-relocated funcidx; `ACallRef` and
-  `AReturnCallRef` emit opcode 0x14 / 0x15 + R_WASMTYPE-relocated
-  typeidx. Tested via the existing obj-encoder cases; not yet
-  exercised end-to-end by an SSA consumer.
-- **Piece 2 (type collector partial)** — `collectClosureCtx`
-  added alongside the existing `collectSignature`. Returns the
-  table index of a one-field struct `(struct (ref $funcType))`
-  subtyping `$go.object`. Tested in
-  `TestCollectClosureCtx`; not yet wired to an `OpAddr`-of-PFUNC
-  caller (Piece 1 still needed to consume it).
+  emits opcode 0xD2 + reloc; `ACallRef` and `AReturnCallRef`
+  emit opcode 0x14 / 0x15 + R_WASMTYPE-relocated typeidx.
+- **Piece 2 (type collector)** — `bf7b5d071b`. `collectClosureCtx`
+  returns the table index of a one-field struct
+  `(struct (ref $funcType))` subtyping `$go.object`. Memoised by
+  `*types.Type`.
+- **Pieces 1 + 3 + 4 (end-to-end bare-func case)** — `1148ce0b08`.
+  New SSA op `OpWasm3FuncValue` (aux=*obj.LSym, anyref-typed
+  per-value local) emits `ref.func $sym; struct.new $closureCtx`.
+  ssagen produces it for PFUNC on wasm3. TFUNC ABI lowers to one
+  WasmAnyref field. `OpWasm3LoweredClosureCall` codegen, when
+  the closure's *types.Type is func or *func, drops the SSA
+  codeptr arg and emits `ref.cast (ref $closureCtx); struct.get
+  $closureCtx 0; call_ref $funcType`. ssagen suppresses the
+  rawLoad of the codeptr on wasm3 for func-typed closures (passes
+  a dummy const 0 for the OpClosureLECall arg shape). The
+  R_WASMREFFUNC reloc — distinct from R_CALL — marks `ref.func`
+  targets so the linker can emit a passive-declared element
+  segment, satisfying wasm 3.0's "every ref.func target must be
+  declared" validation requirement.
+
+End-to-end verification: the funcval test
+(`/tmp/wasm3-funcval/main.go`) now prints
+
+    add: 8
+    sub: 2
+
+on `wasmtime --wasm gc -W function-references=y`. M2 14/14
+regression passes; hello / algos / sortMe audit programs produce
+their expected output and wasm-tools validate clean.
+
+Wasmtime invocation note: the audit programs now reference
+`function-references` proposal opcodes even though their Go source
+never uses function values directly. This is closure-call DCE
+residue — the runtime contains closures-with-captures call paths
+that fall through to the legacy ACALL TYPE_NONE → wasm1
+trampoline; that path doesn't run today, but the code section
+still encodes the ref.func references the linker generated. Will
+revisit once closures-with-captures are also relooped onto
+call_ref. Until then run with `-W function-references=y`.
 
 Not yet landed:
 
-- **Piece 1** (funcvalue representation). Touches
-  `ssagen/ssa.go:3082` — when `n.Class == ir.PFUNC` on wasm3,
-  produce a new SSA op `OpWasm3FuncValue` with `aux = n.Linksym()`
-  (the *function's own* LSym, not `staticdata.FuncLinksym`'s
-  closure-data sym) and value type `n.Type()`. Codegen for the
-  new op calls `c.collectClosureCtx(n.Type())` to register the
-  closure struct, then emits `ref.func $name; struct.new
-  $closureCtx`. The result lands in an anyref-typed per-value
-  local.
-- **Piece 3** (TFUNC ABI to anyref). Change the `TFUNC` case in
-  `flatPrimitiveFields` from one i64 to `WasmAnyref`. Conditional
-  on Pieces 1 + 4 landing in the same commit — flipping the ABI
-  without the producer/consumer breaks every call site that
-  passes a function value (the validator rejects "expected
-  anyref, found i64").
-- **Piece 4** (indirect call lowering). In `ssaGenValue` for
-  `OpWasm3LoweredClosureCall`, replace the current `obj.ACALL`
-  TYPE_NONE emission with: `local.get $closure_anyref; ref.cast
-  (ref $closureCtx); struct.get $closureCtx 0; <push args>;
-  call_ref $funcType`. The `$funcType` typeidx is derived from
-  the call's `ABIInfo` via a new helper that registers the
-  signature with the per-function `typeCollector`.
 - **Piece 6** (static closure singletons). For top-level
   functions used as values, the closure object is a singleton —
   `add` always materialises to the same `(ref $closureCtx)`
   instance. A wasm `global $main.add.f (ref $closureCtx)` plus a
   module-init that runs `struct.new` once would avoid the per-
-  reference allocation. Deferred — first cut just emits a fresh
-  `struct.new` at each materialisation site, which is correct
-  but allocates on the GC heap once per evaluation.
-
-The next session's first commit should be the
-Piece-1 + Piece-3 + Piece-4 combined change, since the three
-pieces depend on each other. After that, the funcval test
-program (`/tmp/wasm3-funcval/main.go`) should print
-`add: 8\nsub: 2\n` on `wasmtime --wasm gc`.
+  reference allocation. Current behaviour: a fresh `struct.new`
+  at each materialisation site, correct but allocates on the GC
+  heap once per evaluation. Future enhancement.
+- **Closures with captures**. Runtime code constructs closures
+  via `&struct{F uintptr, captures...}{}` literals — a *struct
+  pointer with the code pointer in linear memory. These take
+  the legacy ACALL TYPE_NONE path and don't actually run on
+  wasm3. Real fix: lower these constructions to a wasmgc
+  `struct.new $closureCtx_with_captures` and route the call
+  through the call_ref path. Requires changing the SSA-level
+  closure-construction lowering, plus extending
+  `collectClosureCtx` to add capture fields after the funcref.
+  Sized as one session for the bare flow + another for capture
+  data flow into the body.
+- **Method values, bound methods**. Same shape as bare
+  functions today, plus a receiver capture. Falls under the
+  closures-with-captures bucket.
 
 ## Blocker for the wasip1 test harness — `go test` produces invalid wasm
 

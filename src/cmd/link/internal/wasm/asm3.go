@@ -479,16 +479,33 @@ func writeFunctionSec3(ctxt *ld.Link, fns []*wasm3Func) {
 
 // writeGlobalSec3 writes the global section for wasm3. GOARCH=wasm needs
 // eight globals for its virtual machine (SP, CTXT, g, RET0-3, PAUSE);
-// wasm3 has typed functions and host-managed stacks, so it needs only
-// the linear-memory bump-allocator pointer (doc/wasm3-m2-design.md
-// §12.6). The bump pointer starts at runtime.end, fixed up below once
-// the compiler emits the allocator; for now it is a single mutable i32.
+// wasm3 has typed functions and host-managed stacks, so it needs only:
+//
+//	global 0 (i32, mutable): the linear-memory bump-allocator pointer
+//	  (doc/wasm3-m2-design.md §12.6). Starts at runtime.end, fixed up
+//	  below once the compiler emits the allocator.
+//
+//	global 1 (i64, mutable): CTXT — used by closure-with-captures
+//	  calls to pass the captures pointer from the call site to the
+//	  closure body. The call site executes `global.set 1` with the
+//	  captures pointer (extracted via struct.get from the wasmgc
+//	  closureCtx); the body reads it via `global.get 1` and follows
+//	  the legacy CTXT-relative load pattern to access individual
+//	  captures. Bare top-level functions (no captures) do not touch
+//	  this global. Stage G prerequisite.
 func writeGlobalSec3(ctxt *ld.Link) {
 	sizeOffset := writeSecHeader(ctxt, sectionGlobal)
-	writeUleb128(ctxt.Out, 1) // number of globals
+	writeUleb128(ctxt.Out, 2) // number of globals
+	// global 0: bump pointer (i32, mutable).
 	ctxt.Out.WriteByte(I32)
 	ctxt.Out.WriteByte(0x01) // mutable
 	writeI32Const(ctxt.Out, 0)
+	ctxt.Out.WriteByte(0x0b) // end
+	// global 1: CTXT (i64, mutable).
+	ctxt.Out.WriteByte(I64)
+	ctxt.Out.WriteByte(0x01) // mutable
+	ctxt.Out.WriteByte(0x42) // i64.const
+	ctxt.Out.WriteByte(0x00) // value 0
 	ctxt.Out.WriteByte(0x0b) // end
 	writeSecSize(ctxt, sizeOffset)
 }

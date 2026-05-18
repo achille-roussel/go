@@ -670,11 +670,16 @@ func (c *typeCollector) collectSignature(ft *types.Type) int {
 
 // collectClosureCtx reserves and returns the table index of the wasmgc
 // struct that represents a Go function value of type ft. Stage G models
-// a function value as `(ref $go.closure.<sig>)`, a struct whose first
-// field is `(ref $go.func.<sig>)` — the function-type-typed reference
-// the indirect-call site invokes via call_ref. Future closure work adds
-// captured-variable fields after the first; bare top-level functions
-// have only the first field.
+// a function value as `(ref $go.closure.<sig>)`, a struct with:
+//
+//	0: (ref $go.func.<sig>) — the funcref invoked via call_ref at the
+//	   indirect-call site.
+//	1: i64                  — a linear-memory captures-block pointer.
+//	   Zero (nil) for bare top-level functions; for closures with
+//	   captures, points at the &struct{captures...} layout walkClosure
+//	   constructs. The indirect-call site copies this into the wasm3
+//	   CTXT global so the closure body's existing CTXT-relative load
+//	   path keeps working.
 func (c *typeCollector) collectClosureCtx(ft *types.Type) int {
 	if ft.Kind() != types.TFUNC {
 		panic("wasm3: collectClosureCtx on non-function type " + ft.Kind().String())
@@ -682,8 +687,6 @@ func (c *typeCollector) collectClosureCtx(ft *types.Type) int {
 	if idx, ok := c.closureCtxs[ft]; ok {
 		return idx
 	}
-	// collectSignature may grow the table by inserting the funcType
-	// entry, so register that first and only then reserve our index.
 	funcIdx := c.collectSignature(ft)
 	idx := len(c.table)
 	c.closureCtxs[ft] = idx
@@ -693,6 +696,7 @@ func (c *typeCollector) collectClosureCtx(ft *types.Type) int {
 		Super: wasmgc.TypeGoObject,
 		Fields: []wasmgc.Field{
 			{Storage: wasmgc.RefStorage(funcIdx, false), Mutable: false},
+			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: false},
 		},
 	})
 	return idx

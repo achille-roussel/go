@@ -313,14 +313,36 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			// point so it gets a target PC.
 			s.Prog(wasm.ARESUMEPOINT)
 		}
-		// Stage G: bare-function closure calls on wasm3 don't need CTXT
-		// (no captured variables). Skip the setReg(CTXT) and let the
-		// call_ref emission below handle the funcref extraction. When
-		// captures land, this restores the closure pointer to whatever
-		// register the closure body reads via — though for wasm3 that's
-		// more likely a struct.get on the closure ref than a CTXT reg.
+		// Stage G: for wasm3 closure calls (closure arg is func or
+		// *func), set CTXT from the closureCtx struct's captures
+		// pointer (field 1). For bare functions, this stores zero
+		// — harmless. For closures with captures, this gives the
+		// callee body access to its captures via the existing
+		// CTXT-relative load path. The setReg goes through the
+		// wasm3GlobalIndex helper in the obj-encoder, which now
+		// recognises REG_CTXT and emits `global.set 1`.
+		//
+		// The legacy path (closure arg is *struct{F, captures...})
+		// also sets CTXT from the closure pointer directly. Those
+		// calls take the wasm1 trampoline below (which still bails)
+		// but at least the setReg now succeeds rather than failing
+		// the encoder.
 		if v.Op == ssa.OpWasm3LoweredClosureCall {
-			// no-op; see below
+			if wasm3FuncTypeOf(v.Args[1].Type) != nil {
+				closureArg := v.Args[1]
+				funcType := wasm3FuncTypeOf(closureArg.Type)
+				closureCtxIdx := wasm3RegisterClosureCtx(s.FuncInfo(), funcType)
+				getValue64(s, closureArg)
+				cast := s.Prog(wasm.ARefCast)
+				cast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(closureCtxIdx)}
+				get := s.Prog(wasm.AStructGet)
+				get.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(closureCtxIdx)}
+				get.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
+				setReg(s, wasm.REG_CTXT)
+			} else {
+				getValue64(s, v.Args[1])
+				setReg(s, wasm.REG_CTXT)
+			}
 		}
 
 		// M2 cutover, Stage C.2: bridge Go's register ABI to wasm's
@@ -390,32 +412,16 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 				p.As = obj.ARET
 			}
 		} else if v.Op == ssa.OpWasm3LoweredClosureCall && wasm3FuncTypeOf(v.Args[1].Type) != nil {
-			// Stage G: lower the indirect closure call to
-			//   local.get $closure_anyref
-			//   ref.cast (ref $closureCtx)
-			//   struct.get $closureCtx 0
-			//   call_ref $funcType
-			// The register args are already on the stack from the
-			// loop above; call_ref consumes them plus the funcref.
+			// Stage G closure call. Drop the dummy codeptr arg,
+			// then extract the funcref from the closureCtx and
+			// call_ref. v.Args[0] is the dummy SSA-level codeptr
+			// (constInt(0) from ssagen's wasm3 path); consume +
+			// drop to balance OnWasmStack.
 			//
-			// v.Args[0] is the dummy SSA-level codeptr (a const 0
-			// emitted by ssagen on wasm3 — see ssagen/ssa.go's
-			// OCALLFUNC closure case). Consume it via getValue64 +
-			// drop to keep the OnWasmStack accounting balanced even
-			// though we don't use the value at the wasm level.
-			//
-			// Gated on closureArg's type being func or *func: the
-			// new path covers bare PFUNC-derived funcvalues
-			// (OpWasm3FuncValue) only. Closures with captured
-			// variables — runtime code constructs them as
-			// &struct{F uintptr, captures...} literals at the SSA
-			// level, with closureArg.Type a struct pointer — still
-			// take the legacy ACALL TYPE_NONE path. Those calls
-			// don't actually run on wasm3 (the legacy path bails to
-			// the wasm1 trampoline which the runtime doesn't set
-			// up), but the runtime functions that use this pattern
-			// are mostly DCE-cold; landing the bare case end-to-end
-			// is the Stage G first slice, captures are a follow-up.
+			// The CTXT-set (struct.get field 1 → global.set 1) for
+			// closures-with-captures already happened above the
+			// register-args loop; see wasm3SetClosureCtxFromArg
+			// (called from the pre-args branch).
 			getValue64(s, v.Args[0])
 			s.Prog(wasm.ADrop)
 			closureArg := v.Args[1]
@@ -993,12 +999,14 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterArrayAux(s, v))}
 
 	case ssa.OpWasm3FuncValue:
-		// M3 Stage G: materialise a function value as `(ref
-		// $go.closure.<sig>)`. Emit `ref.func $sym` to load the
-		// function reference, then `struct.new $closureCtx` to box
-		// it in the closure-context struct. The default case's
-		// localSetIdx fall-through stores the resulting ref in v's
-		// per-value local (typed anyref by wasm3ValueType).
+		// M3 Stage G: materialise a bare function value as `(ref
+		// $go.closure.<sig>)`. Emit
+		//   ref.func $sym         ;; field 0: (ref $funcType)
+		//   i64.const 0           ;; field 1: captures pointer = nil
+		//   struct.new $closureCtx
+		// The captures pointer is zero because a bare top-level
+		// function has no captured variables; the call site reads
+		// it as CTXT but the body never dereferences CTXT.
 		sym, ok := v.Aux.(*obj.LSym)
 		if !ok {
 			v.Fatalf("OpWasm3FuncValue: v.Aux is not *obj.LSym: %T", v.Aux)
@@ -1010,6 +1018,30 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		closureIdx := wasm3RegisterClosureCtx(s.FuncInfo(), ft)
 		pf := s.Prog(wasm.ARefFunc)
 		pf.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: sym}
+		i64Const(s, 0)
+		pn := s.Prog(wasm.AStructNew)
+		pn.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(closureIdx)}
+
+	case ssa.OpWasm3MakeClosureRef:
+		// M3 Stage G closures: wrap a linear-memory captures struct
+		// in a wasmgc `(ref $go.closure.<sig>)`. Emit
+		//   ref.func $sym             ;; field 0: (ref $funcType)
+		//   <push captures (i64)>     ;; field 1: captures pointer
+		//   struct.new $closureCtx
+		// arg0 is the i64 captures pointer (the address of the
+		// &struct{F, X0, ...} layout walkClosure constructs).
+		sym, ok := v.Aux.(*obj.LSym)
+		if !ok {
+			v.Fatalf("OpWasm3MakeClosureRef: v.Aux is not *obj.LSym: %T", v.Aux)
+		}
+		ft := wasm3FuncTypeOf(v.Type)
+		if ft == nil {
+			v.Fatalf("OpWasm3MakeClosureRef: v.Type is not a func or *func: %v", v.Type)
+		}
+		closureIdx := wasm3RegisterClosureCtx(s.FuncInfo(), ft)
+		pf := s.Prog(wasm.ARefFunc)
+		pf.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: sym}
+		getValue64(s, v.Args[0])
 		pn := s.Prog(wasm.AStructNew)
 		pn.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(closureIdx)}
 

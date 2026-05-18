@@ -35,6 +35,27 @@ import (
 	"sync"
 )
 
+// wasm3GlobalIndex returns the wasm3 module's global index for a Go
+// "register" that is implemented as a wasm global rather than a
+// per-function local. The wasm3 linker emits two globals (see
+// cmd/link/internal/wasm/asm3.go writeGlobalSec3):
+//
+//	0: i32 — linear-memory bump-allocator pointer.
+//	1: i64 — CTXT, used by closure-with-captures calls to pass the
+//	   captures pointer from the call site to the closure body.
+//
+// REG_SP today still flows through the legacy linear-memory frame
+// path (the wasm3 backend rarely emits Get/Set REG_SP directly), so
+// it's not exposed here. Only REG_CTXT is recognised; adding REG_SP
+// would also require updating callers that assume SP is i32.
+func wasm3GlobalIndex(reg int16) (uint64, bool) {
+	switch reg {
+	case REG_CTXT:
+		return 1, true
+	}
+	return 0, false
+}
+
 // Wasm3StructuredPlan is the relooper output the compiler-side
 // publishes to the obj-side encoder. When present for a given LSym,
 // encodeWasm3Body bypasses the legacy wasm3AnalyzeCFG dispatch-mode
@@ -540,6 +561,11 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 				})
 				break
 			}
+			if gidx, ok := wasm3GlobalIndex(p.From.Reg); ok {
+				writeOpcode(w, AGlobalGet)
+				writeUleb128(w, gidx)
+				break
+			}
 			idx, isLocal := localOf[p.From.Reg]
 			if !isLocal {
 				return nil, false
@@ -548,6 +574,14 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 			writeUleb128(w, idx)
 
 		case ASet, ATee:
+			if gidx, ok := wasm3GlobalIndex(p.To.Reg); ok {
+				if p.As != ASet {
+					return nil, false // global.tee doesn't exist
+				}
+				writeOpcode(w, AGlobalSet)
+				writeUleb128(w, gidx)
+				break
+			}
 			idx, isLocal := localOf[p.To.Reg]
 			if !isLocal {
 				return nil, false

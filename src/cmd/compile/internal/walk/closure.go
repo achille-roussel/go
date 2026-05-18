@@ -7,9 +7,11 @@ package walk
 import (
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/ir"
+	"cmd/compile/internal/reflectdata"
 	"cmd/compile/internal/typecheck"
 	"cmd/compile/internal/types"
 	"cmd/internal/src"
+	"internal/buildcfg"
 )
 
 // directClosureCall rewrites a direct call of a function literal into
@@ -128,9 +130,6 @@ func walkClosure(clo *ir.ClosureExpr, init *ir.Nodes) ir.Node {
 	addr := typecheck.NodAddr(clos)
 	addr.SetEsc(clo.Esc())
 
-	// Force type conversion from *struct to the func type.
-	cfn := typecheck.ConvNop(addr, clo.Type())
-
 	// non-escaping temp to use, if any.
 	if x := clo.Prealloc; x != nil {
 		if !types.Identical(typ, x.Type()) {
@@ -139,6 +138,38 @@ func walkClosure(clo *ir.ClosureExpr, init *ir.Nodes) ir.Node {
 		addr.Prealloc = x
 		clo.Prealloc = nil
 	}
+
+	if buildcfg.GOARCH == "wasm3" {
+		// Stage G: wrap the linear-memory captures struct in a
+		// wasmgc `(ref $go.closure.<sig>)`. The compiler intrinsifies
+		// runtime.wasm3WrapClosure at the SSA layer into
+		// OpWasm3MakeClosureRef, which emits `ref.func $sym;
+		// getValue captures; struct.new $closureCtx` and produces an
+		// anyref-typed value. ConvNop the unsafe.Pointer return to
+		// the user's closure func type at the wasm signature
+		// boundary; SSA sees both as i64-shaped wires at this stage,
+		// but the wasm3 backend's per-value local for the result is
+		// anyref (per wasm3ValueType OpWasm3MakeClosureRef case).
+		fn := typecheck.LookupRuntime("wasm3WrapClosure")
+		closureType := reflectdata.TypePtrAt(base.Pos, clo.Type())
+		fnSym := ir.NewUnaryExpr(base.Pos, ir.OCFUNC, clofn.Nname)
+		fnSym.SetType(types.Types[types.TUINTPTR])
+		fnSym = typecheck.Expr(fnSym).(*ir.UnaryExpr)
+		captures := typecheck.ConvNop(addr, types.Types[types.TUNSAFEPTR])
+		call := typecheck.Call(base.Pos, fn, []ir.Node{closureType, fnSym, captures}, false).(*ir.CallExpr)
+		// Force the call expression's type to the closure func type
+		// so the SSA intrinsic (which fires on this OCALLFUNC) can
+		// read n.Type() to recover the func type for the
+		// OpWasm3MakeClosureRef's v.Type. The actual runtime decl
+		// returns unsafe.Pointer; this override is a lie that holds
+		// because the intrinsic short-circuits the call before any
+		// runtime body or call ABI is observed.
+		call.SetType(clo.Type())
+		return walkExpr(call, init)
+	}
+
+	// Force type conversion from *struct to the func type.
+	cfn := typecheck.ConvNop(addr, clo.Type())
 
 	return walkExpr(cfn, init)
 }

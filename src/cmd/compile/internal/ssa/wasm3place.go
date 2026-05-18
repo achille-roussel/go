@@ -231,7 +231,7 @@ func wasm3ValueType(v *Value) byte {
 		OpWasm3ArrayNew, OpWasm3ArrayNewDefault,
 		OpWasm3RefNull, OpWasm3RefCast,
 		OpWasm3StackArray, OpWasm3MakeSlice, OpWasm3SubSlice,
-		OpWasm3FuncValue:
+		OpWasm3FuncValue, OpWasm3MakeClosureRef:
 		return wasm3ValAnyref
 	case OpArgIntReg:
 		if wasm3OpArgIsRefParam(v) {
@@ -247,6 +247,15 @@ func wasm3ValueType(v *Value) byte {
 			return wasm3ValF64
 		}
 		return wasm3ValF64
+	}
+	// Stage G: a SSA value whose Go type is func or *func represents a
+	// wasmgc closure ref (see ssagen PFUNC handling and walkClosure
+	// wrap). The per-value local must be anyref so OpWasm3LoweredClosureCall
+	// can ref.cast it to the typed closureCtx struct. The wasm signature
+	// for a TFUNC param/result is also anyref (flatPrimitiveFields), so
+	// the call-result -> local copy is well-typed.
+	if t.Kind() == types.TFUNC || (t.IsPtr() && t.Elem() != nil && t.Elem().Kind() == types.TFUNC) {
+		return wasm3ValAnyref
 	}
 	return wasm3ValI64
 }

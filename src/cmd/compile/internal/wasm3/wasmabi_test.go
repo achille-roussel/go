@@ -245,8 +245,8 @@ func TestCollectClosureCtx(t *testing.T) {
 	if got.Super != wasmgc.TypeGoObject {
 		t.Errorf("super = %d, want TypeGoObject (%d)", got.Super, wasmgc.TypeGoObject)
 	}
-	if len(got.Fields) != 1 {
-		t.Fatalf("fields = %d, want 1", len(got.Fields))
+	if len(got.Fields) != 2 {
+		t.Fatalf("fields = %d, want 2", len(got.Fields))
 	}
 	if !got.Fields[0].Storage.IsRef() {
 		t.Errorf("first field = %+v, want a ref", got.Fields[0])
@@ -255,6 +255,9 @@ func TestCollectClosureCtx(t *testing.T) {
 	if c.table[funcIdx].Kind != wasmgc.KindFunc {
 		t.Errorf("first field points at table[%d] kind=%d, want KindFunc",
 			funcIdx, c.table[funcIdx].Kind)
+	}
+	if got.Fields[1].Storage.IsRef() {
+		t.Errorf("second field = %+v, want a primitive i64 (captures pointer)", got.Fields[1])
 	}
 
 	// Memoized: collecting the same func type again returns the same

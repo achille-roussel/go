@@ -368,9 +368,25 @@ func init() {
 		// closure-data linksym StaticData FuncLinksym produces). v.Type
 		// is the Go *func(...) type so the closure-context typeidx is
 		// derivable at codegen time via wasm3RegisterClosureCtxAux.
-		// Codegen emits `ref.func $sym; struct.new $closureCtx`; the
-		// result lands in an anyref-typed per-value local.
+		// Codegen emits `ref.func $sym; i64.const 0; struct.new
+		// $closureCtx`; the second field is the captures pointer,
+		// nil for bare top-level functions. Result lands in an
+		// anyref-typed per-value local.
 		{name: "FuncValue", argLength: 0, reg: gp01, aux: "Sym", symEffect: "Addr", rematerializeable: true, typ: "BytePtr"},
+
+		// M3 Stage G closures: materialise a closure value as `(ref
+		// $go.closure.<sig>)` wrapping a linear-memory captures
+		// struct. v.Aux is the synthetic function's *obj.LSym; arg0
+		// is the i64 captures pointer (the address of the &struct{F,
+		// X0, ...} layout walkClosure constructs and SSA pre-
+		// populates via field stores). v.Type is the user's *func or
+		// func type, used to derive the closureCtx index. Codegen
+		// emits `ref.func $sym; getValue captures; struct.new
+		// $closureCtx`. The 2-field $closureCtx (funcref + captures-
+		// ptr) lets the indirect-call site stash the captures-ptr in
+		// the wasm3 CTXT global so the body's CTXT-relative load
+		// path keeps working.
+		{name: "MakeClosureRef", argLength: 1, reg: gp11, aux: "Sym", symEffect: "Addr", typ: "BytePtr"},
 	}
 
 	archs = append(archs, arch{

@@ -14,6 +14,7 @@ import (
 	"cmd/compile/internal/ssa"
 	"cmd/compile/internal/typecheck"
 	"cmd/compile/internal/types"
+	"cmd/internal/obj"
 	"cmd/internal/sys"
 )
 
@@ -195,6 +196,35 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		return nil
 	}
 	add("runtime", "wasm3SliceCopy", wasm3SliceCopyIntrinsic, sys.ArchWasm3)
+
+	// Stage G closures: lower runtime.wasm3WrapClosure(funcsym, captures)
+	// to OpWasm3MakeClosureRef. The funcsym arg is an OCFUNC IR node
+	// that lowers to OpAddr of the function's LSym; we extract the
+	// LSym from there and pass the captures pointer through as the
+	// op's single SSA arg. The result type is the user's closure func
+	// type (set via LookupRuntime's *any substitution at walkClosure).
+	wasm3WrapClosureIntrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		// args[0] = closure type descriptor (ignored at SSA; the
+		// closure type is read from n.Type(), which walkClosure
+		// overrode to be the user's func type rather than the
+		// runtime decl's unsafe.Pointer return).
+		// args[1] = funcsym (OpAddr of the function's LSym).
+		// args[2] = captures pointer (i64).
+		if len(args) != 3 {
+			s.Fatalf("wasm3WrapClosure intrinsic: expected 3 args, got %d", len(args))
+		}
+		funcsymArg := args[1]
+		if funcsymArg.Op != ssa.OpAddr {
+			s.Fatalf("wasm3WrapClosure intrinsic: arg[1] not OpAddr (got %v); walkClosure must pass OCFUNC", funcsymArg.Op)
+		}
+		sym, ok := funcsymArg.Aux.(*obj.LSym)
+		if !ok || sym == nil {
+			s.Fatalf("wasm3WrapClosure intrinsic: arg[1].Aux is not *obj.LSym: %T", funcsymArg.Aux)
+		}
+		v := s.newValue1A(ssa.OpWasm3MakeClosureRef, n.Type(), sym, args[2])
+		return v
+	}
+	add("runtime", "wasm3WrapClosure", wasm3WrapClosureIntrinsic, sys.ArchWasm3)
 
 	addF("internal/runtime/math", "MulUintptr",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {

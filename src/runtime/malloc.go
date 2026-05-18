@@ -2121,7 +2121,15 @@ func memclrNoHeapPointersChunked(size uintptr, x unsafe.Pointer) {
 	const chunkBytes = 256 * 1024
 	vsize := v + size
 	for voff := v; voff < vsize; voff = voff + chunkBytes {
-		if getg().preempt {
+		// wasm3 is single-goroutine in M2 — there's no preemption
+		// to yield to, and the mcall(goschedguarded_m) the default
+		// would use trips the same defer-closure-storage clash as
+		// runtime.throw's systemstack closure (closureCtx ref vs
+		// linear-memory autotmp). Skip the preemption check
+		// entirely; revisit when M4 lands goroutines. The
+		// goarch.IsWasm3 constant compiles to 0/1 so the check
+		// dead-folds away on non-wasm3 builds.
+		if goarch.IsWasm3 == 0 && getg().preempt {
 			// may hold locks, e.g., profiling
 			goschedguarded()
 		}

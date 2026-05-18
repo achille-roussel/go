@@ -40,14 +40,14 @@ import (
 // per-function local. The wasm3 linker emits two globals (see
 // cmd/link/internal/wasm/asm3.go writeGlobalSec3):
 //
-//	0: i32 — linear-memory bump-allocator pointer.
+//	0: i32 — linear-memory bump-allocator pointer / SP.
 //	1: i64 — CTXT, used by closure-with-captures calls to pass the
 //	   captures pointer from the call site to the closure body.
 //
-// REG_SP today still flows through the legacy linear-memory frame
-// path (the wasm3 backend rarely emits Get/Set REG_SP directly), so
-// it's not exposed here. Only REG_CTXT is recognised; adding REG_SP
-// would also require updating callers that assume SP is i32.
+// REG_SP is excluded here because SP-relative AGet needs offset
+// arithmetic (global.get 0 → i64.extend → +offset), not a plain
+// global.get; that's handled by a dedicated case in the AGet
+// encoder.
 func wasm3GlobalIndex(reg int16) (uint64, bool) {
 	switch reg {
 	case REG_CTXT:

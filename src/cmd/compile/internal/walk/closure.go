@@ -131,7 +131,14 @@ func walkClosure(clo *ir.ClosureExpr, init *ir.Nodes) ir.Node {
 	addr.SetEsc(clo.Esc())
 
 	// non-escaping temp to use, if any.
-	if x := clo.Prealloc; x != nil {
+	// Stage G: skip on wasm3 — the Prealloc temp is an SP-relative
+	// auto slot in the linear-memory frame, which wasm3 doesn't
+	// model (it has no Go stack frame; autos go to per-function wasm
+	// locals or to the bump heap). Forcing escape sends the closure
+	// captures struct through runtime.newobject onto the bump heap,
+	// where wasm3WrapClosure can wrap the i64 pointer it returns
+	// into the wasmgc closureCtx.
+	if x := clo.Prealloc; x != nil && buildcfg.GOARCH != "wasm3" {
 		if !types.Identical(typ, x.Type()) {
 			panic("closure type does not match order's assigned type")
 		}

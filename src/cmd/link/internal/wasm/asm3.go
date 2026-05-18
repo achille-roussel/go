@@ -48,6 +48,43 @@ type wasm3Module struct {
 	table   wasmgc.Table // the merged GC + function type table
 	funcs   []*wasm3Func
 	imports []*wasm3Func
+
+	// closureSingletons records, per (function symbol, closureCtx
+	// type index) pair, the assigned wasm-global index of the
+	// closure-singleton for that pair. Built lazily during
+	// writeWasm3FuncBody as R_WASMCLOSURESINGLETON relocations are
+	// processed; consumed by writeGlobalSec3 to emit one
+	// `(struct.new $closureCtx (ref.func $sym) (i64.const 0))`
+	// global per pair, and again at reloc resolution time so the
+	// `global.get` operand patches to the right index.
+	closureSingletons     map[wasm3SingletonKey]uint64
+	closureSingletonOrder []wasm3SingletonKey
+}
+
+// wasm3SingletonKey identifies a closure-singleton uniquely by the
+// function it references and the closureCtx struct type.
+type wasm3SingletonKey struct {
+	sym         loader.Sym
+	globalCtxIx int
+}
+
+// getOrAllocSingleton returns the wasm global index assigned to the
+// closure-singleton for (sym, globalCtxIx). The global is allocated
+// the first time the pair is seen; subsequent calls return the same
+// index. The wasm bump-pointer global occupies index 0 and CTXT
+// occupies 1, so singletons start at index 2.
+func (m *wasm3Module) getOrAllocSingleton(sym loader.Sym, globalCtxIx int) uint64 {
+	key := wasm3SingletonKey{sym: sym, globalCtxIx: globalCtxIx}
+	if m.closureSingletons == nil {
+		m.closureSingletons = map[wasm3SingletonKey]uint64{}
+	}
+	if idx, ok := m.closureSingletons[key]; ok {
+		return idx
+	}
+	idx := uint64(2 + len(m.closureSingletonOrder)) // 0=bump, 1=CTXT, then singletons
+	m.closureSingletons[key] = idx
+	m.closureSingletonOrder = append(m.closureSingletonOrder, key)
+	return idx
 }
 
 type wasm3Func struct {
@@ -305,7 +342,7 @@ func asmb2_3(ctxt *ld.Link, ldr *loader.Loader) {
 			wfn.WriteByte(0x0b)  // end
 			buildid = ldr.Data(fn)
 		} else {
-			writeWasm3FuncBody(ctxt, ldr, fn, wfn, hostImportMap, remap)
+			writeWasm3FuncBody(ctxt, ldr, fn, wfn, hostImportMap, remap, m)
 		}
 
 		name := nameRegexp.ReplaceAllString(ldr.SymName(fn), "_")
@@ -323,7 +360,7 @@ func asmb2_3(ctxt *ld.Link, ldr *loader.Loader) {
 	writeImportSec3(ctxt, m.imports)
 	writeFunctionSec3(ctxt, m.funcs)
 	writeMemorySec(ctxt, ldr)
-	writeGlobalSec3(ctxt)
+	writeGlobalSec3(ctxt, ldr, m, hostImportMap)
 	writeExportSec(ctxt, ldr, len(m.imports))
 	if refFns := collectWasm3RefFuncs(ctxt, ldr, len(m.imports)); len(refFns) > 0 {
 		writeElementSec3DeclaredFuncs(ctxt, refFns)
@@ -392,7 +429,11 @@ func writeElementSec3DeclaredFuncs(ctxt *ld.Link, funcIndices []uint64) {
 // table for the function's wasmgc.Table — used by R_WASMTYPE
 // relocations on 0xFB-prefixed GC opcodes (struct.new, struct.get,
 // etc.). Empty for functions whose signature uses only primitive types.
-func writeWasm3FuncBody(ctxt *ld.Link, ldr *loader.Loader, fn loader.Sym, wfn *bytes.Buffer, hostImportMap map[loader.Sym]int64, remap []int) {
+//
+// `m` provides the module-level singleton registry; R_WASMCLOSURESINGLETON
+// relocs allocate (or look up) one wasm global per (function sym,
+// closureCtx type) pair via m.getOrAllocSingleton.
+func writeWasm3FuncBody(ctxt *ld.Link, ldr *loader.Loader, fn loader.Sym, wfn *bytes.Buffer, hostImportMap map[loader.Sym]int64, remap []int, m *wasm3Module) {
 	relocs := ldr.Relocs(fn)
 	P := ldr.Data(fn)
 	off := int32(0)
@@ -425,6 +466,23 @@ func writeWasm3FuncBody(ctxt *ld.Link, ldr *loader.Loader, fn loader.Sym, wfn *b
 			writeSleb128(wfn, int64(len(hostImportMap))+ldr.SymValue(rs)>>16-funcValueOffset)
 		case objabi.R_WASMIMPORT:
 			writeSleb128(wfn, hostImportMap[rs])
+		case objabi.R_WASMCLOSURESINGLETON:
+			// Stage G singleton: r.Sym names the function whose
+			// closure-singleton this global.get fetches; r.Add is
+			// the per-package closureCtx struct type index, which
+			// the function's wasmgc.Table remap translates to the
+			// module-global type index. (sym, globalCtxIx) is the
+			// dedup key for getOrAllocSingleton — first occurrence
+			// allocates a new wasm global; subsequent occurrences
+			// reuse it.
+			pkgIx := int(r.Add())
+			if pkgIx < 0 || pkgIx >= len(remap) {
+				ldr.Errorf(fn, "R_WASMCLOSURESINGLETON per-package index %d out of range for remap len %d", pkgIx, len(remap))
+				continue
+			}
+			globalCtxIx := remap[pkgIx]
+			gidx := m.getOrAllocSingleton(rs, globalCtxIx)
+			writeUleb128(wfn, gidx)
 		case objabi.R_WASMTYPE:
 			// The relocation's Add carries the per-package type
 			// index; remap to the module-global index using the
@@ -487,15 +545,21 @@ func writeFunctionSec3(ctxt *ld.Link, fns []*wasm3Func) {
 //
 //	global 1 (i64, mutable): CTXT — used by closure-with-captures
 //	  calls to pass the captures pointer from the call site to the
-//	  closure body. The call site executes `global.set 1` with the
-//	  captures pointer (extracted via struct.get from the wasmgc
-//	  closureCtx); the body reads it via `global.get 1` and follows
-//	  the legacy CTXT-relative load pattern to access individual
-//	  captures. Bare top-level functions (no captures) do not touch
-//	  this global. Stage G prerequisite.
-func writeGlobalSec3(ctxt *ld.Link) {
+//	  closure body. Stage G prerequisite.
+//
+//	globals 2..N (typed-ref `(ref $closureCtx_T)`, immutable): one
+//	  per (function symbol, closureCtx type) pair referenced via
+//	  OpWasm3FuncValue. Initialised by a constant expression
+//	  `(struct.new $closureCtx (ref.func $sym) (i64.const 0))` so
+//	  bare-function references compile to `global.get` instead of a
+//	  per-evaluation `struct.new`. The singletons are populated by
+//	  m.getOrAllocSingleton as writeWasm3FuncBody walks each
+//	  function's R_WASMCLOSURESINGLETON relocations (must run before
+//	  this).
+func writeGlobalSec3(ctxt *ld.Link, ldr *loader.Loader, m *wasm3Module, hostImportMap map[loader.Sym]int64) {
 	sizeOffset := writeSecHeader(ctxt, sectionGlobal)
-	writeUleb128(ctxt.Out, 2) // number of globals
+	nGlobals := uint64(2 + len(m.closureSingletonOrder))
+	writeUleb128(ctxt.Out, nGlobals)
 	// global 0: bump pointer (i32, mutable).
 	ctxt.Out.WriteByte(I32)
 	ctxt.Out.WriteByte(0x01) // mutable
@@ -507,8 +571,32 @@ func writeGlobalSec3(ctxt *ld.Link) {
 	ctxt.Out.WriteByte(0x42) // i64.const
 	ctxt.Out.WriteByte(0x00) // value 0
 	ctxt.Out.WriteByte(0x0b) // end
+	// globals 2..N: closure singletons.
+	for _, key := range m.closureSingletonOrder {
+		// valtype = (ref null $closureCtx). The "null" form (0x63)
+		// is required because struct.new's result is non-null but
+		// global initializers accept either form; (ref null $t) is
+		// the more permissive declaration. Encoding:
+		//   0x63 <typeidx-sleb33>
+		ctxt.Out.WriteByte(0x63) // ref null typeidx
+		writeSleb128(ctxt.Out, int64(key.globalCtxIx))
+		ctxt.Out.WriteByte(0x00) // immutable
+		// init expression: struct.new $closureCtx
+		//                     (ref.func $sym)
+		//                     (i64.const 0)
+		funcidx := int64(len(hostImportMap)) + ldr.SymValue(key.sym)>>16 - funcValueOffset
+		ctxt.Out.WriteByte(0xD2) // ref.func
+		writeUleb128(ctxt.Out, uint64(funcidx))
+		ctxt.Out.WriteByte(0x42) // i64.const
+		writeSleb128(ctxt.Out, 0)
+		ctxt.Out.WriteByte(0xFB) // GC prefix
+		ctxt.Out.WriteByte(0x00) // struct.new sub-opcode
+		writeUleb128(ctxt.Out, uint64(key.globalCtxIx))
+		ctxt.Out.WriteByte(0x0b) // end
+	}
 	writeSecSize(ctxt, sizeOffset)
 }
+
 
 // writeCodeSec3 writes the function bodies.
 func writeCodeSec3(ctxt *ld.Link, fns []*wasm3Func) {

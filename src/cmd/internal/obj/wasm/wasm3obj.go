@@ -705,6 +705,28 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 		case ANot:
 			writeOpcode(w, AI32Eqz)
 
+		case AGlobalGet:
+			// Stage G singleton: global.get of a closure-singleton
+			// global. The compiler emits this via OpWasm3FuncValue
+			// codegen with From={TYPE_MEM, NAME_EXTERN, Sym=funcLSym,
+			// Offset=per-package closureCtx type index}. The linker
+			// allocates one wasm global per unique (Sym, global type
+			// index) pair (initialised via `struct.new $closureCtx
+			// (ref.func $sym) (i64.const 0)`) and patches in the
+			// resolved global index via R_WASMCLOSURESINGLETON.
+			if p.From.Type != obj.TYPE_MEM ||
+				(p.From.Name != obj.NAME_EXTERN && p.From.Name != obj.NAME_STATIC) {
+				return nil, false
+			}
+			writeOpcode(w, AGlobalGet)
+			relocs = append(relocs, obj.Reloc{
+				Type: objabi.R_WASMCLOSURESINGLETON,
+				Off:  int32(w.Len()),
+				Siz:  1, // variable-sized; the linker writes the global index
+				Sym:  p.From.Sym,
+				Add:  p.From.Offset,
+			})
+
 		default:
 			// Specific operand-carrying ops (wasmgc struct.* / array.* /
 			// ref.*) need their operand encoding handled BEFORE the

@@ -456,6 +456,20 @@ const (
 	// between the export and code sections.
 	R_WASMREFFUNC
 
+	// R_WASMCLOSURESINGLETON (GOARCH=wasm3 only) resolves to the
+	// wasm global index of the closure-singleton for a (function
+	// symbol, closure-context type) pair. Sym names the function;
+	// Add is the per-package wasmgc type index of the closureCtx
+	// struct (the same encoding the function's wasmgc.Table uses,
+	// remapped by the per-function table to a module-global type
+	// index at link time). The linker collects every unique
+	// (sym, global-type-idx) pair into one wasm global per pair,
+	// initialised by a `(struct.new $closureCtx (ref.func $sym)
+	// (i64.const 0))` constant expression. OpWasm3FuncValue codegen
+	// emits `global.get` carrying this reloc to fetch the singleton
+	// instead of allocating a fresh struct.new per evaluation.
+	R_WASMCLOSURESINGLETON
+
 	// R_WEAK marks the relocation as a weak reference.
 	// A weak relocation does not make the symbol it refers to reachable,
 	// and is only honored by the linker if the symbol is in some other way

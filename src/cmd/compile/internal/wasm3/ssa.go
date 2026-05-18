@@ -999,14 +999,15 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterArrayAux(s, v))}
 
 	case ssa.OpWasm3FuncValue:
-		// M3 Stage G: materialise a bare function value as `(ref
-		// $go.closure.<sig>)`. Emit
-		//   ref.func $sym         ;; field 0: (ref $funcType)
-		//   i64.const 0           ;; field 1: captures pointer = nil
-		//   struct.new $closureCtx
-		// The captures pointer is zero because a bare top-level
-		// function has no captured variables; the call site reads
-		// it as CTXT but the body never dereferences CTXT.
+		// M3 Stage G: a bare function value is a closure-singleton
+		// — the same `(ref $closureCtx)` for every evaluation of
+		// the same PFUNC reference. Emit `global.get $singleton`;
+		// the linker materialises one wasm global per (sym,
+		// closureCtx-type) pair with init expression
+		// `(struct.new $closureCtx (ref.func $sym) (i64.const 0))`
+		// and resolves the R_WASMCLOSURESINGLETON reloc to that
+		// global's index. Saves a struct.new allocation per
+		// evaluation versus the inline construction.
 		sym, ok := v.Aux.(*obj.LSym)
 		if !ok {
 			v.Fatalf("OpWasm3FuncValue: v.Aux is not *obj.LSym: %T", v.Aux)
@@ -1016,11 +1017,13 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 			v.Fatalf("OpWasm3FuncValue: v.Type is not a func or *func: %v", v.Type)
 		}
 		closureIdx := wasm3RegisterClosureCtx(s.FuncInfo(), ft)
-		pf := s.Prog(wasm.ARefFunc)
-		pf.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: sym}
-		i64Const(s, 0)
-		pn := s.Prog(wasm.AStructNew)
-		pn.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(closureIdx)}
+		p := s.Prog(wasm.AGlobalGet)
+		p.From = obj.Addr{
+			Type:   obj.TYPE_MEM,
+			Name:   obj.NAME_EXTERN,
+			Sym:    sym,
+			Offset: int64(closureIdx),
+		}
 
 	case ssa.OpWasm3MakeClosureRef:
 		// M3 Stage G closures: wrap a linear-memory captures struct

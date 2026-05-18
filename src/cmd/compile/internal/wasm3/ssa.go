@@ -329,7 +329,7 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		// but at least the setReg now succeeds rather than failing
 		// the encoder.
 		if v.Op == ssa.OpWasm3LoweredClosureCall {
-			if wasm3FuncTypeOf(v.Args[1].Type) != nil {
+			if wasm3FuncTypeOf(v.Args[1].Type) != nil && ssa.Wasm3IsAnyrefValue(v.Args[1]) {
 				closureArg := v.Args[1]
 				funcType := wasm3FuncTypeOf(closureArg.Type)
 				closureCtxIdx := wasm3RegisterClosureCtx(s.FuncInfo(), funcType)
@@ -351,6 +351,13 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 				get.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(closureCtxIdx)}
 				get.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
 				setReg(s, wasm.REG_CTXT)
+			} else if wasm3FuncTypeOf(v.Args[1].Type) != nil {
+				// closureArg is TFUNC-typed but i64 (a raw codeptr
+				// loaded from a linear-memory global var like
+				// `var f func(...)`, not a wasmgc closureCtx ref).
+				// There are no captures — skip the CTXT/CTXT_REF
+				// setup; the i64 codeptr will be routed through
+				// call_indirect at the call-emission site below.
 			} else {
 				getValue64(s, v.Args[1])
 				setReg(s, wasm.REG_CTXT)
@@ -423,7 +430,7 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			if v.Op == ssa.OpWasm3LoweredTailCall {
 				p.As = obj.ARET
 			}
-		} else if v.Op == ssa.OpWasm3LoweredClosureCall && wasm3FuncTypeOf(v.Args[1].Type) != nil {
+		} else if v.Op == ssa.OpWasm3LoweredClosureCall && wasm3FuncTypeOf(v.Args[1].Type) != nil && ssa.Wasm3IsAnyrefValue(v.Args[1]) {
 			// Stage G closure call. Drop the dummy codeptr arg,
 			// then extract the funcref from the closureCtx and
 			// call_ref. v.Args[0] is the dummy SSA-level codeptr
@@ -449,6 +456,26 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			callRef := s.Prog(wasm.ACallRef)
 			callRef.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(funcIdx)}
 			callRef.Pos = v.Pos
+		} else if v.Op == ssa.OpWasm3LoweredClosureCall && wasm3FuncTypeOf(v.Args[1].Type) != nil {
+			// Closure call on a TFUNC value that is i64-shaped (a
+			// raw codeptr loaded from a linear-memory global like
+			// `var f func(...)`, not a wasmgc closureCtx). Route
+			// through the same call_indirect path the interface
+			// dispatch uses: drop the dummy codeptr arg, push the
+			// loaded codeptr, decode `funcidx << 16` back to the
+			// table index with `>> 16; i32.wrap`, then
+			// call_indirect on the synthetic func type.
+			getValue64(s, v.Args[0])
+			s.Prog(wasm.ADrop)
+			getValue64(s, v.Args[1])
+			p1 := s.Prog(wasm.AI64Const)
+			p1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: 16}
+			s.Prog(wasm.AI64ShrU)
+			s.Prog(wasm.AI32WrapI64)
+			pCall := s.Prog(wasm.ACallIndirect)
+			ft := wasm3SyntheticFuncType(call)
+			pCall.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterFuncSig(s.FuncInfo(), ft))}
+			pCall.Pos = v.Pos
 		} else {
 			// Stage F (doc/wasm3-m3-stage-f-interfaces.md): an
 			// indirect call where the codeptr is on the wasm

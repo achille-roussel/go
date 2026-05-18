@@ -883,6 +883,22 @@ still encodes the ref.func references the linker generated. Will
 revisit once closures-with-captures are also relooped onto
 call_ref. Until then run with `-W function-references=y`.
 
+Landed (2026-05-17 follow-up — closures with captures):
+
+- **Closures with captures** — `fb847eee19`.
+  `makeAdder(5)(10)` → 15 on wasmtime `--wasm gc -W
+  function-references=y`. walkClosure on wasm3 wraps the
+  &struct{F, captures...} literal in a runtime.wasm3WrapClosure
+  call (closureType *byte, funcsym uintptr, captures
+  unsafe.Pointer) returning unsafe.Pointer with the call's IR
+  type overridden to clo.Type(); the SSA intrinsic lowers it to
+  OpWasm3MakeClosureRef. The closureCtx grows a second i64 field
+  for the captures pointer; the call site stores this in a new
+  wasm `CTXT` global (index 1, added to writeGlobalSec3), and the
+  closure body's existing CTXT-relative capture-load path keeps
+  working. wasm3ValueType now recognises TFUNC and *TFUNC SSA
+  values so per-value locals for func-typed values are anyref.
+
 Not yet landed:
 
 - **Piece 6** (static closure singletons). For top-level
@@ -893,20 +909,18 @@ Not yet landed:
   reference allocation. Current behaviour: a fresh `struct.new`
   at each materialisation site, correct but allocates on the GC
   heap once per evaluation. Future enhancement.
-- **Closures with captures**. Runtime code constructs closures
-  via `&struct{F uintptr, captures...}{}` literals — a *struct
-  pointer with the code pointer in linear memory. These take
-  the legacy ACALL TYPE_NONE path and don't actually run on
-  wasm3. Real fix: lower these constructions to a wasmgc
-  `struct.new $closureCtx_with_captures` and route the call
-  through the call_ref path. Requires changing the SSA-level
-  closure-construction lowering, plus extending
-  `collectClosureCtx` to add capture fields after the funcref.
-  Sized as one session for the bare flow + another for capture
-  data flow into the body.
-- **Method values, bound methods**. Same shape as bare
-  functions today, plus a receiver capture. Falls under the
-  closures-with-captures bucket.
+- **Captures inside the closureCtx struct**. Today captures live
+  in a linear-memory &struct{} fetched via CTXT; could move into
+  the wasmgc closureCtx itself once the body's capture-access
+  codegen is taught to read struct.get on the closure ref
+  parameter. Removes the linear-memory allocation per closure
+  but requires changing the body's calling convention to receive
+  the closure ref as a parameter (currently CTXT global).
+- **Method values, bound methods**. Same shape as closures-with-
+  captures + a receiver capture. Should "just work" with the
+  current infrastructure since walkMethodValue uses the same
+  &struct{F, X0} literal pattern that walkClosure does, but
+  hasn't been verified end-to-end yet.
 
 ## Blocker for the wasip1 test harness — `go test` produces invalid wasm
 

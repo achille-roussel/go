@@ -81,7 +81,7 @@ func (m *wasm3Module) getOrAllocSingleton(sym loader.Sym, globalCtxIx int) uint6
 	if idx, ok := m.closureSingletons[key]; ok {
 		return idx
 	}
-	idx := uint64(2 + len(m.closureSingletonOrder)) // 0=bump, 1=CTXT, then singletons
+	idx := uint64(3 + len(m.closureSingletonOrder)) // 0=bump, 1=CTXT, 2=CTXT_REF, then singletons
 	m.closureSingletons[key] = idx
 	m.closureSingletonOrder = append(m.closureSingletonOrder, key)
 	return idx
@@ -547,7 +547,17 @@ func writeFunctionSec3(ctxt *ld.Link, fns []*wasm3Func) {
 //	  calls to pass the captures pointer from the call site to the
 //	  closure body. Stage G prerequisite.
 //
-//	globals 2..N (typed-ref `(ref $closureCtx_T)`, immutable): one
+//	global 2 (anyref, mutable): CTXT_REF — reserved for the
+//	  captures-inside-closureCtx optimisation (see
+//	  doc/wasm3-m3-captures-in-struct.md). When that optimisation
+//	  lands, indirect-call sites set this to the closureCtx ref
+//	  itself so closure-body prologues can `global.get; ref.cast;
+//	  struct.get` their captures directly. Initialised to
+//	  `ref.null any`; today no body reads or writes it, so it's a
+//	  preparatory addition that costs ~3 bytes of module text and
+//	  no instructions.
+//
+//	globals 3..N (typed-ref `(ref $closureCtx_T)`, immutable): one
 //	  per (function symbol, closureCtx type) pair referenced via
 //	  OpWasm3FuncValue. Initialised by a constant expression
 //	  `(struct.new $closureCtx (ref.func $sym) (i64.const 0))` so
@@ -558,7 +568,7 @@ func writeFunctionSec3(ctxt *ld.Link, fns []*wasm3Func) {
 //	  this).
 func writeGlobalSec3(ctxt *ld.Link, ldr *loader.Loader, m *wasm3Module, hostImportMap map[loader.Sym]int64) {
 	sizeOffset := writeSecHeader(ctxt, sectionGlobal)
-	nGlobals := uint64(2 + len(m.closureSingletonOrder))
+	nGlobals := uint64(3 + len(m.closureSingletonOrder))
 	writeUleb128(ctxt.Out, nGlobals)
 	// global 0: bump pointer (i32, mutable).
 	ctxt.Out.WriteByte(I32)
@@ -571,7 +581,14 @@ func writeGlobalSec3(ctxt *ld.Link, ldr *loader.Loader, m *wasm3Module, hostImpo
 	ctxt.Out.WriteByte(0x42) // i64.const
 	ctxt.Out.WriteByte(0x00) // value 0
 	ctxt.Out.WriteByte(0x0b) // end
-	// globals 2..N: closure singletons.
+	// global 2: CTXT_REF (anyref, mutable), init ref.null any.
+	// valtype 0x6E = anyref (wasm 3.0 reference-types proposal).
+	ctxt.Out.WriteByte(0x6E)
+	ctxt.Out.WriteByte(0x01) // mutable
+	ctxt.Out.WriteByte(0xD0) // ref.null
+	ctxt.Out.WriteByte(0x6E) // heaptype = any
+	ctxt.Out.WriteByte(0x0b) // end
+	// globals 3..N: closure singletons.
 	for _, key := range m.closureSingletonOrder {
 		// valtype = (ref null $closureCtx). The "null" form (0x63)
 		// is required because struct.new's result is non-null but

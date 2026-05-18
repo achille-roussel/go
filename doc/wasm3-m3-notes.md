@@ -837,6 +837,61 @@ Sizing: roughly two sessions, plus a third for closures with
 captures. Each piece (encoder, type-collector, ABI, lowering,
 linksym producer) lands as its own commit.
 
+### Stage G implementation status (2026-05-17)
+
+Landed:
+
+- **Piece 5 (obj-encoder support)** — `f77198200e`. `ARefFunc`
+  emits opcode 0xD2 + R_CALL-relocated funcidx; `ACallRef` and
+  `AReturnCallRef` emit opcode 0x14 / 0x15 + R_WASMTYPE-relocated
+  typeidx. Tested via the existing obj-encoder cases; not yet
+  exercised end-to-end by an SSA consumer.
+- **Piece 2 (type collector partial)** — `collectClosureCtx`
+  added alongside the existing `collectSignature`. Returns the
+  table index of a one-field struct `(struct (ref $funcType))`
+  subtyping `$go.object`. Tested in
+  `TestCollectClosureCtx`; not yet wired to an `OpAddr`-of-PFUNC
+  caller (Piece 1 still needed to consume it).
+
+Not yet landed:
+
+- **Piece 1** (funcvalue representation). Touches
+  `ssagen/ssa.go:3082` — when `n.Class == ir.PFUNC` on wasm3,
+  produce a new SSA op `OpWasm3FuncValue` with `aux = n.Linksym()`
+  (the *function's own* LSym, not `staticdata.FuncLinksym`'s
+  closure-data sym) and value type `n.Type()`. Codegen for the
+  new op calls `c.collectClosureCtx(n.Type())` to register the
+  closure struct, then emits `ref.func $name; struct.new
+  $closureCtx`. The result lands in an anyref-typed per-value
+  local.
+- **Piece 3** (TFUNC ABI to anyref). Change the `TFUNC` case in
+  `flatPrimitiveFields` from one i64 to `WasmAnyref`. Conditional
+  on Pieces 1 + 4 landing in the same commit — flipping the ABI
+  without the producer/consumer breaks every call site that
+  passes a function value (the validator rejects "expected
+  anyref, found i64").
+- **Piece 4** (indirect call lowering). In `ssaGenValue` for
+  `OpWasm3LoweredClosureCall`, replace the current `obj.ACALL`
+  TYPE_NONE emission with: `local.get $closure_anyref; ref.cast
+  (ref $closureCtx); struct.get $closureCtx 0; <push args>;
+  call_ref $funcType`. The `$funcType` typeidx is derived from
+  the call's `ABIInfo` via a new helper that registers the
+  signature with the per-function `typeCollector`.
+- **Piece 6** (static closure singletons). For top-level
+  functions used as values, the closure object is a singleton —
+  `add` always materialises to the same `(ref $closureCtx)`
+  instance. A wasm `global $main.add.f (ref $closureCtx)` plus a
+  module-init that runs `struct.new` once would avoid the per-
+  reference allocation. Deferred — first cut just emits a fresh
+  `struct.new` at each materialisation site, which is correct
+  but allocates on the GC heap once per evaluation.
+
+The next session's first commit should be the
+Piece-1 + Piece-3 + Piece-4 combined change, since the three
+pieces depend on each other. After that, the funcval test
+program (`/tmp/wasm3-funcval/main.go`) should print
+`add: 8\nsub: 2\n` on `wasmtime --wasm gc`.
+
 ## Blocker for the wasip1 test harness — `go test` produces invalid wasm
 
 `go test -c` for any package that pulls in the standard `testing`

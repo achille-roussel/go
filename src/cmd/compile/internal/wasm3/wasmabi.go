@@ -303,6 +303,16 @@ func flatPrimitiveFields(t *types.Type) ([]obj.WasmField, bool) {
 	case types.TMAP, types.TCHAN, types.TFUNC:
 		// Pointer-shaped runtime types: one i64 register at the SSA
 		// layer until the M3/M4 lowering refines them.
+		//
+		// TFUNC is a Stage G work in progress: the typeCollector now
+		// knows how to register the (ref $go.closure.<sig>) struct
+		// via collectClosureCtx, but the SSA lowering that produces
+		// a ref-typed value at PFUNC materialisation (and the
+		// matching call_ref emission at indirect-call sites) is not
+		// yet wired. Until both ends land together, TFUNC slots stay
+		// i64 so the existing OpAddr-of-FuncLinksym path that
+		// produces a linear-memory pointer continues to match the
+		// signature.
 		return []obj.WasmField{{Type: obj.WasmI64}}, true
 	}
 	return nil, false
@@ -600,5 +610,35 @@ func (c *typeCollector) collectSignature(ft *types.Type) int {
 		Results: results,
 	})
 	c.funcs[ft] = idx
+	return idx
+}
+
+// collectClosureCtx reserves and returns the table index of the wasmgc
+// struct that represents a Go function value of type ft. Stage G models
+// a function value as `(ref $go.closure.<sig>)`, a struct whose first
+// field is `(ref $go.func.<sig>)` — the function-type-typed reference
+// the indirect-call site invokes via call_ref. Future closure work adds
+// captured-variable fields after the first; bare top-level functions
+// have only the first field.
+func (c *typeCollector) collectClosureCtx(ft *types.Type) int {
+	if ft.Kind() != types.TFUNC {
+		panic("wasm3: collectClosureCtx on non-function type " + ft.Kind().String())
+	}
+	if idx, ok := c.closureCtxs[ft]; ok {
+		return idx
+	}
+	// collectSignature may grow the table by inserting the funcType
+	// entry, so register that first and only then reserve our index.
+	funcIdx := c.collectSignature(ft)
+	idx := len(c.table)
+	c.closureCtxs[ft] = idx
+	c.table = append(c.table, wasmgc.Type{
+		Name:  "go.closure." + typeName(ft),
+		Kind:  wasmgc.KindStruct,
+		Super: wasmgc.TypeGoObject,
+		Fields: []wasmgc.Field{
+			{Storage: wasmgc.RefStorage(funcIdx, false), Mutable: false},
+		},
+	})
 	return idx
 }

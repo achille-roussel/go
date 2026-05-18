@@ -31,20 +31,22 @@ import (
 // in-progress index rather than recursing forever — wasmgc.RecGroups
 // later places such cycles in a single rec group.
 type typeCollector struct {
-	table   wasmgc.Table
-	structs map[*types.Type]int // Go struct type -> table index
-	backing map[*types.Type]int // slice/array element type -> backing array index
-	boxed   map[wasmgc.Prim]int // primitive -> boxed-scalar struct index
-	funcs   map[*types.Type]int // Go func type -> func-type table index
+	table       wasmgc.Table
+	structs     map[*types.Type]int // Go struct type -> table index
+	backing     map[*types.Type]int // slice/array element type -> backing array index
+	boxed       map[wasmgc.Prim]int // primitive -> boxed-scalar struct index
+	funcs       map[*types.Type]int // Go func type -> func-type table index
+	closureCtxs map[*types.Type]int // Go func type -> closure-struct table index
 }
 
 func newTypeCollector() *typeCollector {
 	return &typeCollector{
-		table:   wasmgc.PreludeTypes(),
-		structs: make(map[*types.Type]int),
-		backing: make(map[*types.Type]int),
-		boxed:   make(map[wasmgc.Prim]int),
-		funcs:   make(map[*types.Type]int),
+		table:       wasmgc.PreludeTypes(),
+		structs:     make(map[*types.Type]int),
+		backing:     make(map[*types.Type]int),
+		boxed:       make(map[wasmgc.Prim]int),
+		funcs:       make(map[*types.Type]int),
+		closureCtxs: make(map[*types.Type]int),
 	}
 }
 

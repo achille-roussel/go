@@ -225,3 +225,46 @@ func TestCollectSignature(t *testing.T) {
 	// The whole table, func type included, must encode and validate.
 	validateModule(t, "collected-signature", wrapModule(c.table.EncodeTypeSection()))
 }
+
+func TestCollectClosureCtx(t *testing.T) {
+	// func(int, int) int — a simple two-int-in / one-int-out signature.
+	ft := sig(
+		[]*types.Type{types.Types[types.TINT], types.Types[types.TINT]},
+		[]*types.Type{types.Types[types.TINT]},
+	)
+	c := newTypeCollector()
+	cidx := c.collectClosureCtx(ft)
+
+	// The closure-context entry must be a struct subtyping go.object
+	// with exactly one field: a (ref $funcType) pointing at the
+	// matching collectSignature entry.
+	got := c.table[cidx]
+	if got.Kind != wasmgc.KindStruct {
+		t.Fatalf("collectClosureCtx produced a %d-kind entry, want KindStruct", got.Kind)
+	}
+	if got.Super != wasmgc.TypeGoObject {
+		t.Errorf("super = %d, want TypeGoObject (%d)", got.Super, wasmgc.TypeGoObject)
+	}
+	if len(got.Fields) != 1 {
+		t.Fatalf("fields = %d, want 1", len(got.Fields))
+	}
+	if !got.Fields[0].Storage.IsRef() {
+		t.Errorf("first field = %+v, want a ref", got.Fields[0])
+	}
+	funcIdx := got.Fields[0].Storage.RefType
+	if c.table[funcIdx].Kind != wasmgc.KindFunc {
+		t.Errorf("first field points at table[%d] kind=%d, want KindFunc",
+			funcIdx, c.table[funcIdx].Kind)
+	}
+
+	// Memoized: collecting the same func type again returns the same
+	// index without growing the table.
+	n := len(c.table)
+	if again := c.collectClosureCtx(ft); again != cidx || len(c.table) != n {
+		t.Errorf("re-collecting the closure ctx grew/changed the table (idx %d->%d, len %d->%d)", cidx, again, n, len(c.table))
+	}
+
+	// The whole table, closure ctx + func type included, must encode
+	// and validate.
+	validateModule(t, "collected-closure-ctx", wrapModule(c.table.EncodeTypeSection()))
+}

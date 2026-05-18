@@ -915,30 +915,18 @@ Landed (2026-05-17 follow-up — static closure singletons):
 
 Not yet landed:
 
-- **Method values, bound methods**. walkMethodValue uses the
-  same `&struct{F, X0}` literal pattern as walkClosure. The
-  obstacle is that the `&Counter{}` (and similar) struct literals
-  in test programs that use method values preferentially
-  SP-allocate via `OpAddr {auto} (SP)` slots that the wasm3 obj-
-  encoder has no encoding for. Investigation attempts:
-    1. Adding an SP-relative AGet branch in wasm3obj.go
-       (`global.get 0; i64.extend; i64.const off; i64.add`) made
-       method-value test programs compile but broke
-       `strconv.AppendComplex` validation in unrelated stdlib
-       code ("expected i64, found anyref") — some downstream
-       pattern can't tolerate the SP encoding.
-    2. Skipping `n.Prealloc` in walkMethodValue (same as the
-       walkClosure fix from add2e0e83f) doesn't help: the
-       receiver struct (`&Counter{}`, separate from the method-
-       value captures) is allocated via OCOMPLIT escape analysis
-       and stays SP-relative.
-    3. Forcing `addr.SetEsc(ir.EscHeap)` on the captures struct
-       broke `runtime.throw` validation. Some runtime internals
-       depend on the no-escape path for closures.
-  Real fix likely needs a coordinated wasm3-specific OCOMPLIT
-  walk path that always heap-allocates struct literals on wasm3,
-  plus the SP-relative AGet encoder. Investigation cost: 2-3
-  focused sessions.
+- **Method values, bound methods** — *landed (105cd2e0b4)*.
+  walkMethodValue now mirrors walkClosure's wasm3 branch:
+  `addr.SetEsc(EscHeap)` forces the `&struct{F, R}` captures
+  literal onto the bump heap, then `wasm3WrapClosure(typ, ocfunc,
+  captures)` wraps the i64 captures-ptr in a wasmgc closureCtx.
+  The compiler-generated `-fm` wrapper still reads R via CTXT+8
+  (a plain linear-memory load), so no wrapper-side change was
+  needed. Earlier failed approaches — SP-relative AGet encoder,
+  Prealloc bypass alone, EscHeap on closures generally — all
+  broke unrelated stdlib validation; this targeted EscHeap on
+  the method-value captures only is surgical enough to avoid
+  those regressions. `apply(c.Add, x)` now runs end-to-end.
 
 - **Captures inside the closureCtx struct**. Today closures-with-
   captures allocate twice: `&struct{F, captures...}` on the bump
@@ -967,11 +955,13 @@ Not yet landed:
   work today without it.
 
 Stage G summary: the function-value pipeline is complete for
-bare top-level functions (with singleton-optimised
-materialisation) and for closures with captures via the linear-
-memory captures-struct + wasmgc closureCtx wrapper. The two
-remaining items above are scoped follow-ups; the infrastructure
-is in place for each.
+bare top-level functions (singleton-optimised materialisation),
+closures with captures (linear-memory captures-struct + wasmgc
+closureCtx wrapper), and method values (same wrapper, captures
+struct forced to heap so the captures-ptr is i64-shaped). The
+one remaining item — captures-inside-closureCtx — is a pure
+allocation-coalescing optimisation; closures and method values
+work today without it.
 
 ## Blocker for the wasip1 test harness — `go test` produces invalid wasm
 

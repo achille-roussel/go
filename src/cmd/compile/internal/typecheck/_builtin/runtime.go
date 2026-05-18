@@ -200,6 +200,10 @@ func wasm3MakeClosureInline1(closureType *byte, funcsym uintptr, cap0 uintptr) u
 func wasm3MakeClosureInline2(closureType *byte, funcsym uintptr, cap0, cap1 uintptr) unsafe.Pointer
 func wasm3MakeClosureInline3(closureType *byte, funcsym uintptr, cap0, cap1, cap2 uintptr) unsafe.Pointer
 func wasm3MakeClosureInline4(closureType *byte, funcsym uintptr, cap0, cap1, cap2, cap3 uintptr) unsafe.Pointer
+func wasm3MakeClosureInline5(closureType *byte, funcsym uintptr, cap0, cap1, cap2, cap3, cap4 uintptr) unsafe.Pointer
+func wasm3MakeClosureInline6(closureType *byte, funcsym uintptr, cap0, cap1, cap2, cap3, cap4, cap5 uintptr) unsafe.Pointer
+func wasm3MakeClosureInline7(closureType *byte, funcsym uintptr, cap0, cap1, cap2, cap3, cap4, cap5, cap6 uintptr) unsafe.Pointer
+func wasm3MakeClosureInline8(closureType *byte, funcsym uintptr, cap0, cap1, cap2, cap3, cap4, cap5, cap6, cap7 uintptr) unsafe.Pointer
 func makeslicecopy(typ *byte, tolen int, fromlen int, from unsafe.Pointer) unsafe.Pointer
 func growslice(oldPtr *any, newLen, oldCap, num int, et *byte) (ary []any)
 func growsliceBuf(oldPtr *any, newLen, oldCap, num int, et *byte, buf *any, bufLen int) (ary []any)

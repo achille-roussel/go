@@ -7988,20 +7988,18 @@ func wasm3ClosureUsesCapturesInStruct(fn *ir.Func) bool {
 	if len(fn.ClosureVars) == 0 {
 		return false
 	}
-	// walkClosure wires wasm3MakeClosureInline{1,2,3,4} for 1..4
-	// integer captures; pointer captures are blocked by the body-
-	// side ptr-deref still assuming i64-shaped pointers (see the
-	// wasm3ScalarByValClosureVar comment in walk/closure.go). Body
-	// predicate must match exactly so call site and body agree on
-	// closureCtx shape.
-	if len(fn.ClosureVars) < 1 || len(fn.ClosureVars) > 4 {
+	// walkClosure wires wasm3MakeClosureInline{1..8} for up to 8
+	// integer captures. Body predicate must match exactly so call
+	// site and body agree on closureCtx shape.
+	if len(fn.ClosureVars) < 1 || len(fn.ClosureVars) > 8 {
 		return false
 	}
 	for _, n := range fn.ClosureVars {
 		if !n.Byval() || n.Addrtaken() || !ssa.CanSSA(n.Type()) {
 			return false
 		}
-		if !n.Type().IsInteger() {
+		t := n.Type()
+		if !t.IsInteger() && !t.IsPtr() && !t.IsUnsafePtr() {
 			return false
 		}
 	}

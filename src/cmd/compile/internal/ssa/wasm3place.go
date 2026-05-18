@@ -236,14 +236,13 @@ func wasm3ValueType(v *Value) byte {
 		OpWasm3LoweredGetClosureRef, OpWasm3LoweredCastClosureRef:
 		return wasm3ValAnyref
 	case OpWasm3GetClosureField:
-		// Per-capture: pointer-shaped captures lower to a ref
-		// field in the per-closure closureCtx struct, so the
-		// resulting local must be anyref. Integer captures stay
-		// i64. Falls through to the generic type-based default
-		// otherwise (no float captures wired up yet).
-		if v.Type.IsPtr() || v.Type.IsUnsafePtr() {
-			return wasm3ValAnyref
-		}
+		// All captures-in-struct fields are i64-shaped today
+		// (integer captures via wasm3.scalarPrim and pointer
+		// captures via the i64-storage exception in
+		// collectPerClosureCtx); no anyref-typed capture field
+		// exists yet. Falls through to the generic type-based
+		// default which lands at wasm3ValI64 for ints and
+		// pointers.
 	case OpArgIntReg:
 		if wasm3OpArgIsRefParam(v) {
 			return wasm3ValAnyref

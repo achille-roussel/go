@@ -812,6 +812,29 @@ func (c *typeCollector) collectPerClosureCtx(sym *obj.LSym, ft *types.Type, capt
 		{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: false},
 	}
 	for _, ct := range captureTypes {
+		// Pointer-shaped captures are stored as i64 (the linear-
+		// memory address-as-uintptr that walkClosure passes through
+		// wasm3CaptureAsUintptr) rather than as a wasmgc `(ref $T)`,
+		// because the closure body's pointer-deref code still emits
+		// `i32.wrap + i64.load` for `*c` field access. Storing the
+		// pointer as i64 lets struct.get hand back exactly what the
+		// body expects (no wasmgc ref tracking, but wasm3 has no
+		// Go GC anyway — the pointed-to object lives on the bump
+		// heap, lifetime managed externally).
+		if ct.IsPtr() || ct.IsUnsafePtr() {
+			// Match the caller-side i64 field that lowerFields
+			// produces for a uintptr arg (walkClosure converts
+			// pointer captures through wasm3CaptureAsUintptr).
+			// scalarPrim returns Mutable=true; use the same here
+			// so the body- and caller-side per-closure types are
+			// structurally identical and wasm canonicalisation
+			// (or runtime ref.cast) treats them as the same type.
+			fields = append(fields, wasmgc.Field{
+				Storage: wasmgc.PrimStorage(wasmgc.I64),
+				Mutable: true,
+			})
+			continue
+		}
 		cf := c.lowerFields(ct)
 		if len(cf) != 1 {
 			// Unsupported on the scalar-only path; caller should

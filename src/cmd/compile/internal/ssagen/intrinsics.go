@@ -279,6 +279,10 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	add("runtime", "wasm3MakeClosureInline2", makeInlineN(2), sys.ArchWasm3)
 	add("runtime", "wasm3MakeClosureInline3", makeInlineN(3), sys.ArchWasm3)
 	add("runtime", "wasm3MakeClosureInline4", makeInlineN(4), sys.ArchWasm3)
+	add("runtime", "wasm3MakeClosureInline5", makeInlineN(5), sys.ArchWasm3)
+	add("runtime", "wasm3MakeClosureInline6", makeInlineN(6), sys.ArchWasm3)
+	add("runtime", "wasm3MakeClosureInline7", makeInlineN(7), sys.ArchWasm3)
+	add("runtime", "wasm3MakeClosureInline8", makeInlineN(8), sys.ArchWasm3)
 
 	addF("internal/runtime/math", "MulUintptr",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {

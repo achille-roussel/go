@@ -159,7 +159,7 @@ func walkClosure(clo *ir.ClosureExpr, init *ir.Nodes) ir.Node {
 		// closureCtx shape is consistent on both sides. Today only
 		// the 1-capture form is wired; multi-capture closures fall
 		// through to the legacy wasm3WrapClosure path.
-		if n := len(clofn.ClosureVars); n >= 1 && n <= 4 && wasm3AllScalarByVal(clofn.ClosureVars) {
+		if n := len(clofn.ClosureVars); n >= 1 && n <= 8 && wasm3AllScalarByVal(clofn.ClosureVars) {
 			fnName := "wasm3MakeClosureInline" + strconv.Itoa(n)
 			fn := typecheck.LookupRuntime(fnName)
 			closureType := reflectdata.TypePtrAt(base.Pos, clo.Type())
@@ -216,16 +216,12 @@ func walkClosure(clo *ir.ClosureExpr, init *ir.Nodes) ir.Node {
 // ClosureVar fits the captures-in-struct path only if it's a small
 // by-value scalar with no addr-taken aliasing.
 //
-// Integer captures only for now. Pointer captures lower to a
-// `(ref $T)` field in the per-closure closureCtx struct, but the
-// body's code that *uses* the captured pointer still assumes
-// linear-memory i64 pointers (it emits `i32.wrap + load offset`
-// for field access, not `struct.get` on a typed ref) — running
-// such a body trips wasm validation with "expected i64, found
-// anyref". Until the body-side pointer-deref lowering is extended
-// to recognise wasmgc-shaped pointer locals, only integer captures
-// stay on the new path; pointers fall back to the legacy
-// wasm3WrapClosure heap-captures route.
+// Integers and pointers (TPTR, TUNSAFEPTR) qualify. Pointer
+// captures are stored as i64 (the linear-memory address-as-uintptr
+// that wasm3CaptureAsUintptr produces) in the per-closure
+// closureCtx, so the body's `i32.wrap + i64.load` pointer-deref
+// code keeps working unchanged. Float and other captures fall
+// back to the legacy wasm3WrapClosure heap-captures path.
 func wasm3ScalarByValClosureVar(v *ir.Name) bool {
 	if !v.Byval() || v.Addrtaken() {
 		return false
@@ -233,7 +229,8 @@ func wasm3ScalarByValClosureVar(v *ir.Name) bool {
 	if !ssa.CanSSA(v.Type()) {
 		return false
 	}
-	return v.Type().IsInteger()
+	t := v.Type()
+	return t.IsInteger() || t.IsPtr() || t.IsUnsafePtr()
 }
 
 // wasm3AllScalarByVal is wasm3ScalarByValClosureVar lifted over a
@@ -245,6 +242,17 @@ func wasm3AllScalarByVal(vars []*ir.Name) bool {
 		}
 	}
 	return true
+}
+
+// wasm3MethodValueFitsInline reports whether a method value with
+// receiver `rcvr` can be routed through the captures-in-struct
+// path. Receivers that lower to a single i64 storage (integer or
+// pointer) qualify; composite (string, struct, slice) receivers
+// fall back to the legacy heap-captures path so the multi-field
+// closureCtx wiring isn't needed yet.
+func wasm3MethodValueFitsInline(rcvr ir.Node) bool {
+	t := rcvr.Type()
+	return t.IsInteger() || t.IsPtr() || t.IsUnsafePtr()
 }
 
 // wasm3CaptureAsUintptr converts an arbitrary integer- or pointer-
@@ -330,15 +338,41 @@ func walkMethodValue(n *ir.SelectorExpr, init *ir.Nodes) ir.Node {
 	}
 
 	if buildcfg.GOARCH == "wasm3" {
-		// Stage G: mirror walkClosure's wasm3 path. The method value
-		// `&{F, R}` is allocated on the bump heap via ONEW (forced by
-		// the Prealloc bypass above), then wrapped in a wasmgc
-		// closureCtx by wasm3WrapClosure. CTXT at the call site is
-		// the i64 captures-ptr to the {F, R} struct, which the -fm
-		// wrapper dereferences off offset 8 to recover the receiver.
+		// doc/wasm3-m3-captures-in-struct.md: the method value's
+		// single capture is the receiver `n.X`. If it's pointer-
+		// shaped (the common case — every method value on a value
+		// or pointer receiver) we take the captures-in-struct path,
+		// passing the receiver address directly to
+		// wasm3MakeClosureInline1. The -fm wrapper body, also
+		// compiled on wasm3, has exactly one ClosureVar (the
+		// receiver), so its body prologue auto-uses the matching
+		// GetClosureField path via wasm3ClosureUsesCapturesInStruct.
+		// No linear-memory `{F, R}` struct, no heap alloc, no
+		// CTXT-i64 indirection — one wasmgc struct.new per method-
+		// value evaluation.
+		wrapper := methodValueWrapper(n)
+		if wasm3MethodValueFitsInline(n.X) {
+			fn := typecheck.LookupRuntime("wasm3MakeClosureInline1")
+			closureType := reflectdata.TypePtrAt(base.Pos, n.Type())
+			fnSym := ir.NewUnaryExpr(base.Pos, ir.OCFUNC, wrapper)
+			fnSym.SetType(types.Types[types.TUINTPTR])
+			fnSym = typecheck.Expr(fnSym).(*ir.UnaryExpr)
+			cap0 := wasm3CaptureAsUintptr(n.X)
+			call := typecheck.Call(base.Pos, fn, []ir.Node{closureType, fnSym, cap0}, false).(*ir.CallExpr)
+			call.SetType(n.Type())
+			return walkExpr(call, init)
+		}
+
+		// Stage G (legacy): mirror walkClosure's wasm3 path. The
+		// method value `&{F, R}` is allocated on the bump heap via
+		// ONEW (forced by the Prealloc bypass above), then wrapped
+		// in a wasmgc closureCtx by wasm3WrapClosure. CTXT at the
+		// call site is the i64 captures-ptr to the {F, R} struct,
+		// which the -fm wrapper dereferences off offset 8 to
+		// recover the receiver.
 		fn := typecheck.LookupRuntime("wasm3WrapClosure")
 		closureType := reflectdata.TypePtrAt(base.Pos, n.Type())
-		fnSym := ir.NewUnaryExpr(base.Pos, ir.OCFUNC, methodValueWrapper(n))
+		fnSym := ir.NewUnaryExpr(base.Pos, ir.OCFUNC, wrapper)
 		fnSym.SetType(types.Types[types.TUINTPTR])
 		fnSym = typecheck.Expr(fnSym).(*ir.UnaryExpr)
 		captures := typecheck.ConvNop(addr, types.Types[types.TUNSAFEPTR])

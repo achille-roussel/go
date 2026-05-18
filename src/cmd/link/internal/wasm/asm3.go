@@ -215,16 +215,25 @@ func (m *wasm3Module) mergeTable(pkgTableBytes []byte) []int {
 	for i := 0; i < wasmgc.NumPreludeTypes && i < len(pkg); i++ {
 		remap[i] = i
 	}
-	// Reserve module slots for every program type in the per-package
-	// table first, so pass 2's nested-ref remapping always lands.
+	// Single pass: for each non-prelude type in dependency order,
+	// compute its remapped form (refs into already-merged indices),
+	// then either dedupe against an existing structurally-identical
+	// entry or append. The per-package table is emitted in
+	// dependency order by typeCollector — every type's refs point
+	// to earlier per-pkg indices, all of which have already been
+	// remapped on this pass — so the deduper can see the fully
+	// canonical form before deciding.
+	//
+	// Self-referential types (the box-via-ref shape a recursive Go
+	// struct produces) lose dedup on the self-ref leg: the type's
+	// remapped form contains a forward ref to its own about-to-be-
+	// assigned module index. We detect this with a tombstone
+	// sentinel placed before remapping; if a self-ref is detected,
+	// we append unconditionally rather than risk a wrong dedup.
+	const selfRefSentinel = -42
 	for i := wasmgc.NumPreludeTypes; i < len(pkg); i++ {
-		remap[i] = len(m.table)
-		m.table = append(m.table, wasmgc.Type{})
-	}
-	// Pass 2: fill the reserved slots with remapped types.
-	for i := wasmgc.NumPreludeTypes; i < len(pkg); i++ {
+		remap[i] = selfRefSentinel
 		t := pkg[i]
-		dst := remap[i]
 		remappedT := wasmgc.Type{
 			Name:    t.Name,
 			Kind:    t.Kind,
@@ -234,20 +243,113 @@ func (m *wasm3Module) mergeTable(pkgTableBytes []byte) []int {
 		if t.Super >= 0 {
 			remappedT.Super = int(remap[int(t.Super)])
 		}
+		hasSelfRef := remappedT.Super == selfRefSentinel
 		for _, f := range t.Fields {
 			f.Storage = remapStorage(f.Storage, remap)
+			if f.Storage.IsRef() && f.Storage.RefType == selfRefSentinel {
+				hasSelfRef = true
+			}
 			remappedT.Fields = append(remappedT.Fields, f)
 		}
 		remappedT.Elem = remapStorage(t.Elem, remap)
+		if remappedT.Elem.IsRef() && remappedT.Elem.RefType == selfRefSentinel {
+			hasSelfRef = true
+		}
 		for _, p := range t.Params {
-			remappedT.Params = append(remappedT.Params, remapStorage(p, remap))
+			pr := remapStorage(p, remap)
+			if pr.IsRef() && pr.RefType == selfRefSentinel {
+				hasSelfRef = true
+			}
+			remappedT.Params = append(remappedT.Params, pr)
 		}
 		for _, r := range t.Results {
-			remappedT.Results = append(remappedT.Results, remapStorage(r, remap))
+			rr := remapStorage(r, remap)
+			if rr.IsRef() && rr.RefType == selfRefSentinel {
+				hasSelfRef = true
+			}
+			remappedT.Results = append(remappedT.Results, rr)
 		}
-		m.table[dst] = remappedT
+		if hasSelfRef {
+			// Patch self-refs and append without dedup. The
+			// self-ref pattern is rare (only recursive Go
+			// structs); skipping dedup keeps the encoding
+			// correct.
+			dst := len(m.table)
+			fixupSelfRefs(&remappedT, selfRefSentinel, dst)
+			m.table = append(m.table, remappedT)
+			remap[i] = dst
+			continue
+		}
+		// Dedupe: scan m.table for a structurally-identical entry
+		// (ignoring the Name field, which is debug-only). Linear
+		// search is O(N*M) but the table is small in practice — a
+		// few hundred entries per module — and avoiding a hash
+		// keeps the comparison logic close to typesEqual.
+		if existing, ok := findEqualType(m.table, remappedT); ok {
+			remap[i] = existing
+			continue
+		}
+		remap[i] = len(m.table)
+		m.table = append(m.table, remappedT)
 	}
 	return remap
+}
+
+// fixupSelfRefs rewrites every selfRefSentinel inside t to the given
+// concrete index. Used by the self-referential append path in
+// mergeTable.
+func fixupSelfRefs(t *wasmgc.Type, sentinel, real int) {
+	if t.Super == sentinel {
+		t.Super = real
+	}
+	for i := range t.Fields {
+		if t.Fields[i].Storage.IsRef() && t.Fields[i].Storage.RefType == sentinel {
+			t.Fields[i].Storage.RefType = real
+		}
+	}
+	if t.Elem.IsRef() && t.Elem.RefType == sentinel {
+		t.Elem.RefType = real
+	}
+	for i := range t.Params {
+		if t.Params[i].IsRef() && t.Params[i].RefType == sentinel {
+			t.Params[i].RefType = real
+		}
+	}
+	for i := range t.Results {
+		if t.Results[i].IsRef() && t.Results[i].RefType == sentinel {
+			t.Results[i].RefType = real
+		}
+	}
+}
+
+// findEqualType returns the index of a wasmgc.Type structurally
+// equivalent to want (ignoring the Name field), or false if none.
+func findEqualType(table wasmgc.Table, want wasmgc.Type) (int, bool) {
+	for i, t := range table {
+		if t.Kind != want.Kind || t.Super != want.Super || t.ElemMut != want.ElemMut {
+			continue
+		}
+		if !storagesEqual(t.Params, want.Params) || !storagesEqual(t.Results, want.Results) {
+			continue
+		}
+		if t.Elem != want.Elem {
+			continue
+		}
+		if len(t.Fields) != len(want.Fields) {
+			continue
+		}
+		match := true
+		for j := range t.Fields {
+			if t.Fields[j] != want.Fields[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i, true
+		}
+	}
+	return -1, false
 }
 
 // remapStorage rewrites a wasmgc.Storage's RefType from a per-package

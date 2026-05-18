@@ -304,47 +304,16 @@ func c128equal(p, q unsafe.Pointer) bool {
 func strequal(p, q unsafe.Pointer) bool {
 	return *(*string)(p) == *(*string)(q)
 }
-func interequal(p, q unsafe.Pointer) bool {
-	x := *(*iface)(p)
-	y := *(*iface)(q)
-	return x.tab == y.tab && ifaceeq(x.tab, x.data, y.data)
-}
-func nilinterequal(p, q unsafe.Pointer) bool {
-	x := *(*eface)(p)
-	y := *(*eface)(q)
-	return x._type == y._type && efaceeq(x._type, x.data, y.data)
-}
-func efaceeq(t *_type, x, y unsafe.Pointer) bool {
-	if t == nil {
-		return true
-	}
-	eq := t.Equal
-	if eq == nil {
-		panic(errorString("comparing uncomparable type " + toRType(t).string()))
-	}
-	if t.IsDirectIface() {
-		// Direct interface types are ptr, chan, map, func, and single-element structs/arrays thereof.
-		// Maps and funcs are not comparable, so they can't reach here.
-		// Ptrs, chans, and single-element items can be compared directly using ==.
-		return x == y
-	}
-	return eq(x, y)
-}
-func ifaceeq(tab *itab, x, y unsafe.Pointer) bool {
-	if tab == nil {
-		return true
-	}
-	t := tab.Type
-	eq := t.Equal
-	if eq == nil {
-		panic(errorString("comparing uncomparable type " + toRType(t).string()))
-	}
-	if t.IsDirectIface() {
-		// See comment in efaceeq.
-		return x == y
-	}
-	return eq(x, y)
-}
+// interequal, nilinterequal, efaceeq, ifaceeq live in
+// alg_iface_default.go for non-wasm3 builds and have wasm3-specific
+// trapping shadows in alg_iface_wasm3.go. They read a func-typed
+// field (the type descriptor's Equal) off a linear-memory `*_type`
+// struct; the resulting func-pointer SSA value is anyref-typed on
+// wasm3 (per wasm3ValueType's TFUNC case), but the load itself is
+// i64.load, which trips wasm validation. Stage F
+// (doc/wasm3-m3-stage-f-interfaces.md) rewrites the interface
+// machinery onto a wasmgc itab / type model where the load becomes
+// struct.get and returns a typed ref directly.
 
 // Testing adapters for hash quality tests (see hash_test.go)
 //

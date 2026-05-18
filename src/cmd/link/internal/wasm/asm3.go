@@ -31,6 +31,7 @@ import (
 	"cmd/link/internal/ld"
 	"cmd/link/internal/loader"
 	"fmt"
+	"sort"
 )
 
 // asmb3 collects the linear-memory data sections, exactly as asmb does
@@ -324,12 +325,63 @@ func asmb2_3(ctxt *ld.Link, ldr *loader.Loader) {
 	writeMemorySec(ctxt, ldr)
 	writeGlobalSec3(ctxt)
 	writeExportSec(ctxt, ldr, len(m.imports))
+	if refFns := collectWasm3RefFuncs(ctxt, ldr, len(m.imports)); len(refFns) > 0 {
+		writeElementSec3DeclaredFuncs(ctxt, refFns)
+	}
 	writeCodeSec3(ctxt, m.funcs)
 	writeDataSec(ctxt)
 	writeProducerSec(ctxt)
 	if !*ld.FlagS {
 		writeNameSec3(ctxt, len(m.imports), m.funcs)
 	}
+}
+
+// collectWasm3RefFuncs walks every reachable function's relocations
+// for R_WASMREFFUNC entries and returns the deduplicated, sorted
+// list of module-global funcidx values of their targets. Used by
+// writeElementSec3DeclaredFuncs to emit the passive-declared element
+// segment wasm 3.0 requires to validate `ref.func` instructions.
+func collectWasm3RefFuncs(ctxt *ld.Link, ldr *loader.Loader, numImports int) []uint64 {
+	seen := make(map[uint64]bool)
+	for _, fn := range ctxt.Textp {
+		relocs := ldr.Relocs(fn)
+		for ri := 0; ri < relocs.Count(); ri++ {
+			r := relocs.At(ri)
+			if r.Type() != objabi.R_WASMREFFUNC {
+				continue
+			}
+			rs := r.Sym()
+			idx := uint64(int64(numImports) + ldr.SymValue(rs)>>16 - funcValueOffset)
+			seen[idx] = true
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]uint64, 0, len(seen))
+	for idx := range seen {
+		out = append(out, idx)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// writeElementSec3DeclaredFuncs emits a single passive-declared
+// element segment listing every funcidx referenced via ref.func.
+// Encoding (wasm spec, section 9):
+//   0x09 <size> 0x01 <num-elems>
+//     0x03 <elemkind=0x00> <vec(funcidx)>
+// where 0x03 is the "passive declared" flag and 0x00 is funcref.
+func writeElementSec3DeclaredFuncs(ctxt *ld.Link, funcIndices []uint64) {
+	sizeOffset := writeSecHeader(ctxt, sectionElement)
+	writeUleb128(ctxt.Out, 1) // number of element segments
+	ctxt.Out.WriteByte(0x03)  // flags: passive | declared
+	ctxt.Out.WriteByte(0x00)  // elemkind: funcref
+	writeUleb128(ctxt.Out, uint64(len(funcIndices)))
+	for _, idx := range funcIndices {
+		writeUleb128(ctxt.Out, idx)
+	}
+	writeSecSize(ctxt, sizeOffset)
 }
 
 // writeWasm3FuncBody copies a function's machine code into wfn,
@@ -363,6 +415,13 @@ func writeWasm3FuncBody(ctxt *ld.Link, ldr *loader.Loader, fn loader.Sym, wfn *b
 			// through the stub's wasm function index — the stub's body
 			// is itself a one-line forwarder to the host import via
 			// R_WASMIMPORT, so the extra hop is the only cost.
+			writeSleb128(wfn, int64(len(hostImportMap))+ldr.SymValue(rs)>>16-funcValueOffset)
+		case objabi.R_WASMREFFUNC:
+			// Stage G: same encoding as R_CALL (the funcidx), but the
+			// target was additionally registered as a declared
+			// function by the earlier collectWasm3RefFuncs pass so
+			// the passive-declared element segment validates the
+			// ref.func instruction.
 			writeSleb128(wfn, int64(len(hostImportMap))+ldr.SymValue(rs)>>16-funcValueOffset)
 		case objabi.R_WASMIMPORT:
 			writeSleb128(wfn, hostImportMap[rs])

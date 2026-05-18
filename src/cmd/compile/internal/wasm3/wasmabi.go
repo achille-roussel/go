@@ -300,19 +300,18 @@ func flatPrimitiveFields(t *types.Type) ([]obj.WasmField, bool) {
 			return nil, true
 		}
 		return nil, false
-	case types.TMAP, types.TCHAN, types.TFUNC:
+	case types.TFUNC:
+		// Stage G: a function value is `(ref $go.closure.<sig>)`, a
+		// struct holding `(ref $go.func.<sig>)` plus any captured
+		// variables. We declare the wasm signature field as anyref
+		// for the same reasons as slices (per-function-package typed
+		// indices, anyref-typed per-value locals at the call site).
+		// The indirect-call site downcasts to the typed struct via
+		// ref.cast before extracting the funcref for call_ref.
+		return []obj.WasmField{{Type: obj.WasmAnyref}}, true
+	case types.TMAP, types.TCHAN:
 		// Pointer-shaped runtime types: one i64 register at the SSA
 		// layer until the M3/M4 lowering refines them.
-		//
-		// TFUNC is a Stage G work in progress: the typeCollector now
-		// knows how to register the (ref $go.closure.<sig>) struct
-		// via collectClosureCtx, but the SSA lowering that produces
-		// a ref-typed value at PFUNC materialisation (and the
-		// matching call_ref emission at indirect-call sites) is not
-		// yet wired. Until both ends land together, TFUNC slots stay
-		// i64 so the existing OpAddr-of-FuncLinksym path that
-		// produces a linear-memory pointer continues to match the
-		// signature.
 		return []obj.WasmField{{Type: obj.WasmI64}}, true
 	}
 	return nil, false
@@ -414,6 +413,62 @@ func wasm3RegisterStruct(fi *obj.FuncInfo, t *types.Type) uint32 {
 // collector.
 func wasm3StashCollector(fi *obj.FuncInfo, c *typeCollector) {
 	wasm3LiveCollector.Store(fi, c)
+}
+
+// wasm3RegisterClosureCtx is the closure-context counterpart of
+// wasm3RegisterStruct / wasm3RegisterArrayBacking: it registers the
+// wasmgc `(struct (ref $funcType))` Stage G uses to represent a Go
+// function value of type ft, returning its module-internal type
+// index. Used by OpWasm3FuncValue codegen (struct.new $closureCtx)
+// and by OpWasm3LoweredClosureCall codegen (ref.cast (ref
+// $closureCtx); struct.get $closureCtx 0; call_ref $funcType).
+func wasm3RegisterClosureCtx(fi *obj.FuncInfo, ft *types.Type) uint32 {
+	if fi == nil {
+		base.Fatalf("wasm3RegisterClosureCtx: fi is nil")
+	}
+	cAny, ok := wasm3LiveCollector.Load(fi)
+	var c *typeCollector
+	if ok {
+		c = cAny.(*typeCollector)
+	} else {
+		c = newTypeCollector()
+		wasm3LiveCollector.Store(fi, c)
+		if fi.WasmType == nil {
+			fi.WasmType = &obj.WasmType{}
+		}
+	}
+	idx := c.collectClosureCtx(ft)
+	var b bytes.Buffer
+	c.table.Write(&b)
+	fi.WasmType.Table = b.Bytes()
+	return uint32(idx)
+}
+
+// wasm3RegisterFuncSig returns the wasmgc func-type index for ft,
+// registering both the funcType and (as a side-effect of
+// collectClosureCtx) the closureCtx struct. Used by
+// OpWasm3LoweredClosureCall codegen for the call_ref typeidx
+// immediate.
+func wasm3RegisterFuncSig(fi *obj.FuncInfo, ft *types.Type) uint32 {
+	if fi == nil {
+		base.Fatalf("wasm3RegisterFuncSig: fi is nil")
+	}
+	cAny, ok := wasm3LiveCollector.Load(fi)
+	var c *typeCollector
+	if ok {
+		c = cAny.(*typeCollector)
+	} else {
+		c = newTypeCollector()
+		wasm3LiveCollector.Store(fi, c)
+		if fi.WasmType == nil {
+			fi.WasmType = &obj.WasmType{}
+		}
+	}
+	idx := c.collectSignature(ft)
+	var b bytes.Buffer
+	c.table.Write(&b)
+	fi.WasmType.Table = b.Bytes()
+	return uint32(idx)
 }
 
 // wasm3RegisterArrayBacking is the array.* counterpart of

@@ -446,6 +446,16 @@ const (
 	// 0xFB-prefixed instructions such as struct.new and struct.get.
 	R_WASMTYPE
 
+	// R_WASMREFFUNC (GOARCH=wasm3 only) resolves to the module-global
+	// function index, like R_CALL, but additionally marks the target
+	// function as one that must be declared in an element segment so
+	// that `ref.func` against it validates. The wasm 3.0 spec requires
+	// every function referenced by `ref.func` to appear in the
+	// "declared functions" set; the linker collects R_WASMREFFUNC
+	// targets into one passive-declared element segment emitted
+	// between the export and code sections.
+	R_WASMREFFUNC
+
 	// R_WEAK marks the relocation as a weak reference.
 	// A weak relocation does not make the symbol it refers to reachable,
 	// and is only honored by the linker if the symbol is in some other way

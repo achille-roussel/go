@@ -3080,6 +3080,17 @@ func (s *state) exprCheckPtr(n ir.Node, checkPtrOK bool) *ssa.Value {
 	case ir.ONAME:
 		n := n.(*ir.Name)
 		if n.Class == ir.PFUNC {
+			if buildcfg.GOARCH == "wasm3" {
+				// M3 Stage G: a top-level function value lowers to a
+				// `(ref $go.closure.<sig>)` via OpWasm3FuncValue,
+				// which the codegen emits as `ref.func $sym;
+				// struct.new $closureCtx`. v.Aux is the function's
+				// own LSym (not staticdata.FuncLinksym's closure-
+				// data sym); v.Type is *T (the func-value pointer
+				// type) so codegen can derive the closure-context
+				// typeidx from v.Type.Elem().
+				return s.entryNewValue1A(ssa.OpWasm3FuncValue, types.NewPtr(n.Type()), n.Linksym(), s.sb)
+			}
 			// "value" of a function is the address of the function's closure
 			sym := staticdata.FuncLinksym(n)
 			return s.entryNewValue1A(ssa.OpAddr, types.NewPtr(n.Type()), sym, s.sb)
@@ -5148,12 +5159,38 @@ func (s *state) call(n *ir.CallExpr, k callKind, returnResultAddr bool, deferExt
 			aux := ssa.StaticAuxCall(ir.Syms.Newproc, s.f.ABIDefault.ABIAnalyzeTypes(ACArgs, ACResults))
 			call = s.newValue0A(ssa.OpStaticLECall, aux.LateExpansionResultType(), aux) // TODO paramResultInfo for Newproc
 		case closure != nil:
-			// rawLoad because loading the code pointer from a
-			// closure is always safe, but IsSanitizerSafeAddr
-			// can't always figure that out currently, and it's
-			// critical that we not clobber any arguments already
-			// stored onto the stack.
-			codeptr = s.rawLoad(types.Types[types.TUINTPTR], closure)
+			// Stage G: on wasm3 a closure that came from a bare
+			// PFUNC reference has type *func(...) (produced by
+			// OpWasm3FuncValue). For those, the closure is a
+			// `(ref $closureCtx)` — not a linear-memory address —
+			// so there is no code pointer to load. The backend's
+			// OpWasm3LoweredClosureCall codegen emits `struct.get
+			// $closureCtx 0; call_ref $funcType` to extract and
+			// invoke the funcref. Pass a dummy zero codeptr so
+			// OpClosureLECall has its expected (codeptr, closure)
+			// arg shape; the wasm3 codegen drops arg[0].
+			//
+			// Closures with captures (constructed by runtime/
+			// compiler-internal code as &struct{F uintptr, captures
+			// ...}{} literals) have a *struct closure type instead;
+			// they keep the legacy codeptr-load path. The wasm3
+			// codegen falls back to the wasm1 indirect-call
+			// trampoline for those (still broken at runtime; a
+			// closure-with-captures rewrite is Stage G follow-up
+			// work).
+			closIsFuncRef := buildcfg.GOARCH == "wasm3" &&
+				(closure.Type.Kind() == types.TFUNC ||
+					(closure.Type.IsPtr() && closure.Type.Elem() != nil && closure.Type.Elem().Kind() == types.TFUNC))
+			if closIsFuncRef {
+				codeptr = s.constInt(types.Types[types.TUINTPTR], 0)
+			} else {
+				// rawLoad because loading the code pointer from a
+				// closure is always safe, but IsSanitizerSafeAddr
+				// can't always figure that out currently, and it's
+				// critical that we not clobber any arguments already
+				// stored onto the stack.
+				codeptr = s.rawLoad(types.Types[types.TUINTPTR], closure)
+			}
 			aux := ssa.ClosureAuxCall(callABI.ABIAnalyzeTypes(ACArgs, ACResults))
 			call = s.newValue2A(ssa.OpClosureLECall, aux.LateExpansionResultType(), aux, codeptr, closure)
 		case codeptr != nil:

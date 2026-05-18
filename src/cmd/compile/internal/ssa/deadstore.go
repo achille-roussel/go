@@ -267,11 +267,17 @@ func elimDeadAutosGeneric(f *Func) {
 	visit := func(v *Value) (changed bool) {
 		args := v.Args
 		switch v.Op {
-		case OpAddr, OpLocalAddr, OpWasm3StackArray:
+		case OpAddr, OpLocalAddr, OpWasm3StackArray, OpWasm3FuncValue:
 			// Propagate the address if it points to an auto.
 			// OpWasm3StackArray is wasm3's substitute for
 			// OpLocalAddr on TARRAY PAUTO autos — see
 			// doc/wasm3-m3-notes.md Stage D.
+			// OpWasm3FuncValue carries a *obj.LSym (a top-level
+			// function symbol, never an auto), so the *ir.Name type
+			// assertion below always fails and the case becomes a
+			// no-op for it. Listing it here keeps the
+			// dead-auto-elim sanity check (line ~322) from panicking
+			// on its symEffect=Addr setting.
 			n, ok := v.Aux.(*ir.Name)
 			if !ok || (n.Class != ir.PAUTO && !isABIInternalParam(f, n)) {
 				return

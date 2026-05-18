@@ -695,17 +695,21 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 
 			case ARefFunc:
 				// ref.func $funcidx — materialises a (ref $funcType)
-				// value referencing the named function. The funcidx is
-				// patched in at link time via R_CALL, the same reloc
-				// the direct-call case uses; the wasm encoding is a
-				// single leb128 funcidx after the opcode byte.
+				// value referencing the named function. The funcidx
+				// is patched in at link time via R_WASMREFFUNC, which
+				// resolves to the function's module-global index AND
+				// marks the function as one that must appear in a
+				// passive-declared element segment (wasm 3.0 requires
+				// every ref.func target to be in the "declared
+				// functions" set or validation fails with "undeclared
+				// function reference").
 				if p.From.Type != obj.TYPE_MEM ||
 					(p.From.Name != obj.NAME_EXTERN && p.From.Name != obj.NAME_STATIC) {
 					return nil, false
 				}
 				writeOpcode(w, p.As)
 				relocs = append(relocs, obj.Reloc{
-					Type: objabi.R_CALL,
+					Type: objabi.R_WASMREFFUNC,
 					Off:  int32(w.Len()),
 					Siz:  1, // variable-sized; the linker writes the function index
 					Sym:  p.From.Sym,

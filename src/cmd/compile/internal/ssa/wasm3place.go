@@ -230,7 +230,8 @@ func wasm3ValueType(v *Value) byte {
 	case OpWasm3StructNew, OpWasm3StructNewDefault,
 		OpWasm3ArrayNew, OpWasm3ArrayNewDefault,
 		OpWasm3RefNull, OpWasm3RefCast,
-		OpWasm3StackArray, OpWasm3MakeSlice, OpWasm3SubSlice:
+		OpWasm3StackArray, OpWasm3MakeSlice, OpWasm3SubSlice,
+		OpWasm3FuncValue:
 		return wasm3ValAnyref
 	case OpArgIntReg:
 		if wasm3OpArgIsRefParam(v) {

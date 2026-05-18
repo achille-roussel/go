@@ -361,6 +361,16 @@ func init() {
 		// Renamed-runtime-symbol avoids the inlining-clone-key
 		// pitfall the direct-memmove-intrinsic attempt hit.
 		{name: "ArrayCopy", argLength: 4, reg: regInfo{inputs: []regMask{gp, gp, gp}}, aux: "Typ", typ: "Mem"},
+
+		// M3 Stage G: materialise a function value as `(ref
+		// $go.closure.<sig>)`. v.Aux is the function's own *obj.LSym
+		// (the symbol the `ref.func` opcode references, not the
+		// closure-data linksym StaticData FuncLinksym produces). v.Type
+		// is the Go *func(...) type so the closure-context typeidx is
+		// derivable at codegen time via wasm3RegisterClosureCtxAux.
+		// Codegen emits `ref.func $sym; struct.new $closureCtx`; the
+		// result lands in an anyref-typed per-value local.
+		{name: "FuncValue", argLength: 0, reg: gp01, aux: "Sym", symEffect: "Addr", rematerializeable: true, typ: "BytePtr"},
 	}
 
 	archs = append(archs, arch{

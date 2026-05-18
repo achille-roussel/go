@@ -899,6 +899,20 @@ Landed (2026-05-17 follow-up — closures with captures):
   working. wasm3ValueType now recognises TFUNC and *TFUNC SSA
   values so per-value locals for func-typed values are anyref.
 
+Landed (2026-05-17 follow-up — static closure singletons):
+
+- **Piece 6 (static closure singletons)** — `774b646497`.
+  OpWasm3FuncValue emits `global.get` of a per-(sym, closureCtx)
+  wasm global. The linker (cmd/link/internal/wasm/asm3.go)
+  collects singletons lazily via `m.getOrAllocSingleton` as
+  R_WASMCLOSURESINGLETON relocations are processed, then
+  writeGlobalSec3 emits one `(ref null $closureCtx)` immutable
+  global per pair with init expression `(struct.new $closureCtx
+  (ref.func $sym) (i64.const 0))`. Wasm 3.0 const-expr allows
+  ref.func, numeric consts, and struct.new with const-expr
+  operands, so the singleton materialises at module load. Saves
+  one heap allocation per bare-function-value evaluation.
+
 Not yet landed:
 
 - **Method values, bound methods**. walkMethodValue uses the
@@ -926,29 +940,23 @@ Not yet landed:
   plus the SP-relative AGet encoder. Investigation cost: 2-3
   focused sessions.
 
-- **Piece 6** (static closure singletons). For top-level
-  functions used as values, the closure object is a singleton —
-  `add` always materialises to the same `(ref $closureCtx)`
-  instance. A wasm `global $main.add.f (ref $closureCtx)` plus
-  a start-section init that runs `struct.new` once would avoid
-  the per-reference allocation. Current behaviour: a fresh
-  `struct.new` at each materialisation site, correct but
-  allocates on the GC heap once per evaluation. Pure
-  optimisation; no semantic change.
-
 - **Captures inside the closureCtx struct**. Today captures live
   in a linear-memory &struct{} fetched via CTXT; could move into
   the wasmgc closureCtx itself once the body's capture-access
   codegen is taught to read struct.get on the closure ref
   parameter. Removes the linear-memory allocation per closure
   but requires changing the body's calling convention to receive
-  the closure ref as a parameter (currently CTXT global).
+  the closure ref as a parameter (currently CTXT global), plus a
+  per-(closure func type) closureCtx struct shape (today it's
+  one struct per signature; captures-in-struct needs one per
+  closure's distinct capture set). Pure optimisation.
 
 Stage G summary: the function-value pipeline is complete for
-bare top-level functions and for closures with captures via the
-linear-memory captures-struct + wasmgc closureCtx wrapper. The
-three remaining items above are scoped follow-ups; the
-infrastructure is in place for each.
+bare top-level functions (with singleton-optimised
+materialisation) and for closures with captures via the linear-
+memory captures-struct + wasmgc closureCtx wrapper. The two
+remaining items above are scoped follow-ups; the infrastructure
+is in place for each.
 
 ## Blocker for the wasip1 test harness — `go test` produces invalid wasm
 

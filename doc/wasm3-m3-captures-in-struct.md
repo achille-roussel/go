@@ -377,42 +377,66 @@ The prep work is landed:
   is one extra `global.set` per call — negligible.
 - Dead-store elim recognises the new ops as sym-effect carriers.
 
-**The switch did NOT land.** An attempt to wire up walkClosure +
-the ssagen body prologue + a `wasm3MakeClosureInline1` runtime
-intrinsic compiled fine and made the `/tmp/wasm3-closure` test
-(makeAdder, one int capture) work end-to-end via the new path —
-but it crashed on stdlib `internal/runtime/exithook.Run`'s
-auto-generated `deferwrap1` / `deferwrap2` closures with:
+**The switch landed** as 4ff7b1a7c7 (1-int-capture) + 5a41024386
+(2..4-int-capture extension). End-to-end demonstration:
 
-    'Run': panic during dead auto elim
-    wasm3LookupPerClosureCtx: no collector for ...deferwrap1
+- `makeAdder(5)` with one captured int compiles to:
+  - caller: `ref.func $func1; i64.const 0; local.get $n; struct.new $closureCtx_func1` (1 wasmgc allocation, no heap captures struct).
+  - body: `global.get $CTXT_REF; ref.cast (ref $closureCtx_func1); struct.get N` per capture.
+- `makeLinear(3, 7)` with two captured ints returns
+  `f(0)=7, f(1)=10, f(10)=37` under wasmtime.
+- All prior regressions (bare funcvalues, method values, multi-
+  capture stdlib closures, pointer-capturing closures, audit
+  programs) still pass.
 
-**Root cause**: `wasm3LiveCollector` is keyed per `*obj.FuncInfo`,
-i.e. per Go function being compiled. The caller's MakeClosureRef-
-Inline call site registers the per-closure ctx in the *caller's*
-FuncInfo, but the closure body is compiled in a *different*
-FuncInfo where the registration hasn't happened. The body's
-`LoweredCastClosureRef` / `GetClosureField` codegen `Lookup`s and
-finds nothing.
+**Resolution to the per-FuncInfo registration problem**: option
+(b) — a `sync.Map`-backed side channel `Wasm3ClosureBodyCaptures`
+hosted in `cmd/internal/obj/wasm` (a leaf package both ssagen
+and wasm3 already import). ssagen stashes `Wasm3ClosureBodyInfo
+{FuncType any, Captures any}` keyed on the closure body's LSym;
+wasm3 codegen's new helper `wasm3EnsurePerClosureCtxFromSide`
+type-asserts back to `*types.Type` / `[]*types.Type`, lazy-
+registers the per-closure ctx in *this* FuncInfo's typeCollector
+on the first `LoweredCastClosureRef` / `GetClosureField` it
+encounters. The obj package stays free of compiler-internal type
+references thanks to the `any` fields.
 
-**Two viable resolutions:**
+**Bug fix surfaced during multi-capture testing**:
+`GetClosureField` re-emits `ref.cast` before each `struct.get`.
+The per-value local for `LoweredCastClosureRef` is declared
+`anyref` (wasm3place.go has no per-closure type index at
+declaration time), so a follow-on `local.get; struct.get`
+chain trips "expected (ref null $type), found anyref" once the
+first capture stops being a `local.tee` short-circuit. Cost is
+one extra `ref.cast` per access — a single type-tag compare on
+V8/wasmtime.
 
-(a) **Body-side registration**: extend the body-side ops to carry
-    the captures-types-list (or its wasmgc-storage list) as part
-    of their Aux, so codegen can call `Register` instead of
-    `Lookup`. The list is known at SSA-construction time (`fn.
-    ClosureVars` types via `lowerFields`), but isn't visible in
-    `ssagen.State` from inside `wasm3/ssa.go`. Easiest plumbing:
-    a small auxType holding `{sym *obj.LSym, fields []wasmgc.
-    Field}`, set by ssagen and consumed by codegen.
+**Remaining limitations** (each is a scoped, mechanical follow-
+up; none block the headline path):
 
-(b) **Side-channel via FuncInfo**: extend `obj.WasmType` with a
-    pre-serialised per-closure-body field list. ssagen builds it
-    at SSA-construction time (using a wasm3-package helper that
-    operates on `*types.Type` → `wasmgc.Field`), then attaches
-    to the body's `FuncInfo.WasmType`. Codegen reads it and
-    registers. Avoids changing SSA op shapes but requires a new
-    obj-level field.
-
-Approach (a) is the cleaner separation; approach (b) is the
-smaller diff. Pick when picking the work up.
+- Captures other than integers: floats and complex types aren't
+  routed through the `uintptr`-arg intrinsic; the body would
+  decode them incorrectly anyway. Falls back to the legacy
+  `wasm3WrapClosure` heap-captures path.
+- Pointer captures: the body's pointer-deref lowering still
+  emits `i32.wrap + i64.load` assuming a linear-memory pointer,
+  but a captures-in-struct field gives an anyref-shaped wasmgc
+  ref. Documented in `wasm3ScalarByValClosureVar`; needs body-
+  side pointer-deref to recognise wasmgc pointer locals.
+- More than 4 captures: bounded by the per-arity
+  `wasm3MakeClosureInlineN` intrinsics declared in
+  `runtime.go`. Extending to 5, 6, 7, ... is purely mechanical
+  (one runtime decl + one `add(...,sys.ArchWasm3)` per arity).
+- Method-value `-fm` wrappers: still on the legacy
+  `wasm3WrapClosure` path; they're auto-generated bodies and
+  haven't been routed through the captures-in-struct prologue
+  yet.
+- Cross-package per-signature `closureCtx` types are duplicated
+  (one per FuncInfo that registers them). The wasm engines
+  canonicalise structurally-equivalent rec groups so this
+  works in practice — but the type section is fatter than it
+  needs to be. The linker's `mergeTable` says: "Today the merge
+  appends each package's program types unconditionally —
+  duplicates across packages produce duplicate type-section
+  entries, which is valid wasm but redundant. Structural
+  deduplication across packages is a later refinement."

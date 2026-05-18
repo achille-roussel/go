@@ -443,7 +443,7 @@ V8/wasmtime.
   of `func(i64)->i64` and its closureCtx chain into single
   entries.
 
-**Float captures (1-capture form)** also land (2833d4bd5b):
+**Float captures (1-capture form)** land (2833d4bd5b):
 `wasm3MakeClosureInline1F32` / `wasm3MakeClosureInline1F64`
 runtime intrinsics carry a native float `cap0`, lowering to the
 same `OpWasm3MakeClosureRefInline` op. The closureCtx field
@@ -452,19 +452,37 @@ body's GetClosureField returns the matching float, and
 wasm3ValueType drops it in an F32/F64 local. Verified end-to-
 end with `makeScaler(2.0)(3.5) = 7.0`.
 
-**Remaining** (deferred, narrowly scoped):
+**Multi-capture float-homogeneous closures** land (787e7ca437):
+`wasm3MakeClosureInline{2..8}F64` and
+`wasm3MakeClosureInline{2..4}F32` runtime intrinsics. The
+predicate-side groups captures by shape (all int/ptr, all F32,
+all F64) and picks the matching N-ary intrinsic; mixed-shape
+closures (one int + one float etc.) fall back to legacy because
+that matrix is combinatorial. Verified end-to-end with
+`makeLinearF(2.0, 3.0)(5.0) = 13.0`.
 
-- **Multi-capture closures that mix floats with other types**
-  fall back to legacy. Wiring them needs combinatorial
-  per-shape intrinsics (`Inline2F64Int`, `Inline3IntF64Ptr`,
-  ...), one per (arity, shape-tuple). Rare enough in practice
-  that the legacy heap path is an acceptable fallback;
-  walkClosure's predicate refuses these cases so the body and
-  call site stay in agreement.
-- **Composite captures** (string, slice, struct, array) still
-  go through the legacy heap-captures path. Each multi-storage
-  capture would either need its own struct-typed closureCtx
-  field or a serialise-into-flattened-fields scheme that
-  per-arity-intrinsic-with-typed-tuples would carry. Not
-  blocking the headline path; closures-over-strings etc. work,
-  just via the older allocation pattern.
+**Remaining** (deferred — blocked on separate work):
+
+- **Mixed-shape multi-capture closures** (e.g. one int + one
+  float in the same closureCtx) fall back to legacy. Per-shape
+  multi-arity intrinsics scale as 3^N (uintptr/F32/F64), so
+  wiring them needs either code-gen (an `intrinsics_gen.go`
+  build step) or a synthetic IR op that lets walkClosure pass
+  captures of arbitrary types through to SSA without
+  Go-level typecheck. Both are tractable but cross-cutting;
+  the legacy heap path remains a correct fallback for this
+  rare case.
+- **Composite captures** (string, slice, array) fail on BOTH
+  the legacy heap path AND the new captures-in-struct path —
+  not a closure design issue, but a wasm3
+  string/slice-in-heap-struct representation gap. The
+  legacy path heap-allocates a captures struct whose composite
+  fields lower to wasmgc-typed sub-fields
+  (`string → (ref $bytes, i32, i32)`), but the body reads via
+  linear-memory loads assuming `(uintptr, int)`. Simple all-
+  scalar struct captures (`struct{a, b int}`) work because
+  ABI decomposition spreads them across multiple integer
+  slots. Fixing requires aligning wasm3's heap-struct layout
+  for composites — a separate workstream in the wasm3
+  string/slice machinery, blocking neither captures-in-struct
+  for non-composite captures nor most stdlib usage.

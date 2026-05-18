@@ -461,6 +461,14 @@ closures (one int + one float etc.) fall back to legacy because
 that matrix is combinatorial. Verified end-to-end with
 `makeLinearF(2.0, 3.0)(5.0) = 13.0`.
 
+**String captures** land (d410d47022): the fix was in
+collectSignature — the closureCtx funcref type was lowering
+string params to the wasmgc shape `(ref bytes, i32, i32)` while
+the actual function body uses the linear-memory shape
+`(i64, i64)` (from attachWasmType's tryPrimitiveAttach). Now
+collectSignature mirrors attachWasmType's two-tier ordering, so
+both sides agree. `makePrefixer("hello ")(world)` runs.
+
 **Remaining** (deferred — blocked on separate work):
 
 - **Mixed-shape multi-capture closures** (e.g. one int + one
@@ -472,17 +480,18 @@ that matrix is combinatorial. Verified end-to-end with
   Go-level typecheck. Both are tractable but cross-cutting;
   the legacy heap path remains a correct fallback for this
   rare case.
-- **Composite captures** (string, slice, array) fail on BOTH
-  the legacy heap path AND the new captures-in-struct path —
-  not a closure design issue, but a wasm3
-  string/slice-in-heap-struct representation gap. The
-  legacy path heap-allocates a captures struct whose composite
-  fields lower to wasmgc-typed sub-fields
-  (`string → (ref $bytes, i32, i32)`), but the body reads via
-  linear-memory loads assuming `(uintptr, int)`. Simple all-
-  scalar struct captures (`struct{a, b int}`) work because
-  ABI decomposition spreads them across multiple integer
-  slots. Fixing requires aligning wasm3's heap-struct layout
-  for composites — a separate workstream in the wasm3
-  string/slice machinery, blocking neither captures-in-struct
-  for non-composite captures nor most stdlib usage.
+- **Slice and array captures** fail on the legacy heap path —
+  NOT a closure-specific issue: a plain `struct{s []int}`
+  passed by value to a non-closure function trips the same
+  "expected i64, found anyref" wasm validation error. Slices
+  in wasm3 use a wasmgc-typed `(ref (array T))` backing,
+  which the heap captures struct (linear-memory bytes via
+  runtime.newobject) can't store via `i64.store`. Fixing
+  this is part of the wasm3 slice-in-heap-struct workstream
+  — a sibling to the string-in-heap-struct fix that landed
+  in d410d47022 but with a deeper representation gap (slice
+  is 4 wasmgc fields vs string's 3, and slice involves an
+  array reference that the runtime allocator doesn't yet
+  bridge). Out of scope for the closure machinery itself;
+  closures-over-slices will start working as soon as the
+  underlying slice-in-struct support lands.

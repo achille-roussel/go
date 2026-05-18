@@ -764,6 +764,16 @@ func wasm3IntField(t *types.Type) (obj.WasmField, bool) {
 // signature references along the way. Every wasm3 function is emitted as
 // a native typed wasm function referencing one such entry; the linker
 // merges the per-package tables and remaps the indices.
+//
+// The signature shape must match what attachWasmType chose for the
+// actual function body. attachWasmType tries tryPrimitiveAttach first
+// (which uses the linear-memory string ABI `(i64, i64)` rather than
+// the wasmgc `(ref bytes, i32, i32)`), and only falls through to the
+// collector path when that fails. We mirror that ordering here so
+// the closureCtx's funcref type validates against `ref.func` of the
+// actual body. Without this, closures and method values that
+// capture or accept string parameters trip a ref-type mismatch at
+// `struct.new $closureCtx`.
 func (c *typeCollector) collectSignature(ft *types.Type) int {
 	if ft.Kind() != types.TFUNC {
 		panic("wasm3: collectSignature on non-function type " + ft.Kind().String())
@@ -771,7 +781,13 @@ func (c *typeCollector) collectSignature(ft *types.Type) int {
 	if idx, ok := c.funcs[ft]; ok {
 		return idx
 	}
-	params, results := c.loweredStorages(ft)
+	var params, results []wasmgc.Storage
+	if sig, ok := tryPrimitiveAttach(ft); ok {
+		params = wasmFuncTypeStorages(sig.Params)
+		results = wasmFuncTypeStorages(sig.Results)
+	} else {
+		params, results = c.loweredStorages(ft)
+	}
 	idx := len(c.table)
 	c.table = append(c.table, wasmgc.Type{
 		Name:    "go.func." + typeName(ft),
@@ -782,6 +798,34 @@ func (c *typeCollector) collectSignature(ft *types.Type) int {
 	})
 	c.funcs[ft] = idx
 	return idx
+}
+
+// wasmFuncTypeStorages converts an obj.WasmField slice (the
+// primitive-only shape attachWasmType uses) into a wasmgc.Storage
+// slice for the linker's func-type entry. Every WasmField in this
+// path is a primitive (the WasmRef cases live behind the
+// tryCollectorAttach fork, which doesn't go through here).
+func wasmFuncTypeStorages(fields []obj.WasmField) []wasmgc.Storage {
+	out := make([]wasmgc.Storage, len(fields))
+	for i, f := range fields {
+		out[i] = wasmFuncTypeStorage(f)
+	}
+	return out
+}
+
+func wasmFuncTypeStorage(f obj.WasmField) wasmgc.Storage {
+	switch f.Type {
+	case obj.WasmI32, obj.WasmPtr, obj.WasmBool:
+		return wasmgc.PrimStorage(wasmgc.I32)
+	case obj.WasmI64:
+		return wasmgc.PrimStorage(wasmgc.I64)
+	case obj.WasmF32:
+		return wasmgc.PrimStorage(wasmgc.F32)
+	case obj.WasmF64:
+		return wasmgc.PrimStorage(wasmgc.F64)
+	}
+	base.Fatalf("wasm3: wasmFuncTypeStorage: unsupported field type %v", f.Type)
+	return wasmgc.Storage{}
 }
 
 // collectPerClosureCtx reserves and returns the table index of a

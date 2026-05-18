@@ -7994,14 +7994,27 @@ func wasm3ClosureUsesCapturesInStruct(fn *ir.Func) bool {
 	if len(fn.ClosureVars) < 1 || len(fn.ClosureVars) > 8 {
 		return false
 	}
+	hasFloat := false
 	for _, n := range fn.ClosureVars {
 		if !n.Byval() || n.Addrtaken() || !ssa.CanSSA(n.Type()) {
 			return false
 		}
 		t := n.Type()
-		if !t.IsInteger() && !t.IsPtr() && !t.IsUnsafePtr() {
+		if !t.IsInteger() && !t.IsPtr() && !t.IsUnsafePtr() && !t.IsFloat() {
 			return false
 		}
+		if t.IsFloat() {
+			hasFloat = true
+		}
+	}
+	// Floats are only routed through the 1-capture per-type
+	// intrinsics (wasm3MakeClosureInline1F{32,64}); a closure that
+	// mixes floats with other captures lacks an intrinsic in
+	// walkClosure and would fall back to the legacy path there,
+	// leaving the body's predicate disagreeing. Restrict here so
+	// the two sides match.
+	if hasFloat && len(fn.ClosureVars) != 1 {
+		return false
 	}
 	return true
 }

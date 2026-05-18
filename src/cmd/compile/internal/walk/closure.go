@@ -160,6 +160,34 @@ func walkClosure(clo *ir.ClosureExpr, init *ir.Nodes) ir.Node {
 		// the 1-capture form is wired; multi-capture closures fall
 		// through to the legacy wasm3WrapClosure path.
 		if n := len(clofn.ClosureVars); n >= 1 && n <= 8 && wasm3AllScalarByVal(clofn.ClosureVars) {
+			// Special-case the 1-float-capture forms via per-type
+			// intrinsics (wasm3MakeClosureInline1F32 /
+			// MakeClosureInline1F64): floats can't pass through
+			// the uintptr-typed cap0 of the generic InlineN, but
+			// the SSA op shape is the same — args[2] just carries
+			// the native float SSA value rather than an uintptr.
+			// Multi-capture mixed-shape combinations stay on the
+			// legacy wasm3WrapClosure path until per-shape multi-
+			// arity intrinsics land.
+			if n == 1 && clofn.ClosureVars[0].Type().IsFloat() {
+				var fnName string
+				switch clofn.ClosureVars[0].Type().Size() {
+				case 4:
+					fnName = "wasm3MakeClosureInline1F32"
+				case 8:
+					fnName = "wasm3MakeClosureInline1F64"
+				default:
+					goto wasm3LegacyClosure
+				}
+				fn := typecheck.LookupRuntime(fnName)
+				closureType := reflectdata.TypePtrAt(base.Pos, clo.Type())
+				fnSym := ir.NewUnaryExpr(base.Pos, ir.OCFUNC, clofn.Nname)
+				fnSym.SetType(types.Types[types.TUINTPTR])
+				fnSym = typecheck.Expr(fnSym).(*ir.UnaryExpr)
+				call := typecheck.Call(base.Pos, fn, []ir.Node{closureType, fnSym, clofn.ClosureVars[0].Outer}, false).(*ir.CallExpr)
+				call.SetType(clo.Type())
+				return walkExpr(call, init)
+			}
 			fnName := "wasm3MakeClosureInline" + strconv.Itoa(n)
 			fn := typecheck.LookupRuntime(fnName)
 			closureType := reflectdata.TypePtrAt(base.Pos, clo.Type())
@@ -175,6 +203,7 @@ func walkClosure(clo *ir.ClosureExpr, init *ir.Nodes) ir.Node {
 			call.SetType(clo.Type())
 			return walkExpr(call, init)
 		}
+	wasm3LegacyClosure:
 
 		// Stage G (legacy): wrap the linear-memory captures struct
 		// in a wasmgc `(ref $go.closure.<sig>)`. The compiler
@@ -216,12 +245,13 @@ func walkClosure(clo *ir.ClosureExpr, init *ir.Nodes) ir.Node {
 // ClosureVar fits the captures-in-struct path only if it's a small
 // by-value scalar with no addr-taken aliasing.
 //
-// Integers and pointers (TPTR, TUNSAFEPTR) qualify. Pointer
-// captures are stored as i64 (the linear-memory address-as-uintptr
-// that wasm3CaptureAsUintptr produces) in the per-closure
-// closureCtx, so the body's `i32.wrap + i64.load` pointer-deref
-// code keeps working unchanged. Float and other captures fall
-// back to the legacy wasm3WrapClosure heap-captures path.
+// Integers, pointers (TPTR, TUNSAFEPTR), and floats qualify.
+// Pointer captures are stored as i64 (the linear-memory address-
+// as-uintptr that wasm3CaptureAsUintptr produces). Float captures
+// are pushed natively (the call site uses wasm3MakeClosureInline1F*
+// intrinsics) — only in the 1-capture case, since per-shape multi-
+// arity intrinsics aren't wired yet. Multi-capture float-bearing
+// closures fall back to the legacy wasm3WrapClosure path.
 func wasm3ScalarByValClosureVar(v *ir.Name) bool {
 	if !v.Byval() || v.Addrtaken() {
 		return false
@@ -230,7 +260,7 @@ func wasm3ScalarByValClosureVar(v *ir.Name) bool {
 		return false
 	}
 	t := v.Type()
-	return t.IsInteger() || t.IsPtr() || t.IsUnsafePtr()
+	return t.IsInteger() || t.IsPtr() || t.IsUnsafePtr() || t.IsFloat()
 }
 
 // wasm3AllScalarByVal is wasm3ScalarByValClosureVar lifted over a

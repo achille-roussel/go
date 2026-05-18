@@ -248,6 +248,14 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		return s.newValue1A(ssa.OpWasm3MakeClosureRefInline, n.Type(), sym, args[2])
 	}
 	add("runtime", "wasm3MakeClosureInline1", wasm3MakeClosureInline1Intrinsic, sys.ArchWasm3)
+	// Float-typed cap0 variants: the SSA op is the same;
+	// walkClosure picks F64/F32 vs uintptr based on capture
+	// type. cap0's wasm storage at the call site comes from
+	// args[2].Type, so the per-closure struct's field 2 is F32
+	// or F64 — matching what scalarPrim emits for the float-
+	// typed capture inside the body's prologue codegen.
+	add("runtime", "wasm3MakeClosureInline1F32", wasm3MakeClosureInline1Intrinsic, sys.ArchWasm3)
+	add("runtime", "wasm3MakeClosureInline1F64", wasm3MakeClosureInline1Intrinsic, sys.ArchWasm3)
 
 	// N-capture variants: same shape as Inline1, but lower into
 	// OpWasm3MakeClosureRefInline with N capture-args (the SSA op's

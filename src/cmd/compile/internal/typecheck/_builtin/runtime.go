@@ -197,6 +197,8 @@ func makeslice64(typ *byte, len int64, cap int64) unsafe.Pointer
 func wasm3SliceCopy(typ *byte, dst *any, src *any, n int)
 func wasm3WrapClosure(closureType *byte, funcsym uintptr, captures unsafe.Pointer) unsafe.Pointer
 func wasm3MakeClosureInline1(closureType *byte, funcsym uintptr, cap0 uintptr) unsafe.Pointer
+func wasm3MakeClosureInline1F32(closureType *byte, funcsym uintptr, cap0 float32) unsafe.Pointer
+func wasm3MakeClosureInline1F64(closureType *byte, funcsym uintptr, cap0 float64) unsafe.Pointer
 func wasm3MakeClosureInline2(closureType *byte, funcsym uintptr, cap0, cap1 uintptr) unsafe.Pointer
 func wasm3MakeClosureInline3(closureType *byte, funcsym uintptr, cap0, cap1, cap2 uintptr) unsafe.Pointer
 func wasm3MakeClosureInline4(closureType *byte, funcsym uintptr, cap0, cap1, cap2, cap3 uintptr) unsafe.Pointer

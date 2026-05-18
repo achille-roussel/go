@@ -901,6 +901,24 @@ Landed (2026-05-17 follow-up — closures with captures):
 
 Not yet landed:
 
+- **Method values, bound methods**. walkMethodValue uses the
+  same `&struct{F, X0}` literal pattern as walkClosure. Adding
+  the same wasm3WrapClosure wrap to walkMethodValue is
+  straightforward; the obstacle is that method values
+  preferentially heap-pin via `OpAddr {sym} (SP)` SP-relative
+  auto slots which the obj-encoder doesn't have an SP encoding
+  for. A trial SP-relative AGet branch in wasm3obj.go (`global.get
+  0; i64.extend; i64.const off; i64.add`) made the method-value
+  test compile but broke `strconv.AppendComplex` validation
+  ("expected i64, found anyref") — some downstream stdlib pattern
+  is incompatible. Needs investigation: trace the
+  AppendComplex validation failure to root cause; likely an
+  unexpected anyref → i64 implicit conversion that the SP
+  branch surfaced. Closures handled this by skipping Prealloc
+  entirely on wasm3 (add2e0e83f) so the closure heap-allocates
+  via newobject — applying the same skip to walkMethodValue is
+  the first thing to try.
+
 - **Piece 6** (static closure singletons). For top-level
   functions used as values, the closure object is a singleton —
   `add` always materialises to the same `(ref $closureCtx)`
@@ -909,6 +927,7 @@ Not yet landed:
   reference allocation. Current behaviour: a fresh `struct.new`
   at each materialisation site, correct but allocates on the GC
   heap once per evaluation. Future enhancement.
+
 - **Captures inside the closureCtx struct**. Today captures live
   in a linear-memory &struct{} fetched via CTXT; could move into
   the wasmgc closureCtx itself once the body's capture-access
@@ -916,11 +935,6 @@ Not yet landed:
   parameter. Removes the linear-memory allocation per closure
   but requires changing the body's calling convention to receive
   the closure ref as a parameter (currently CTXT global).
-- **Method values, bound methods**. Same shape as closures-with-
-  captures + a receiver capture. Should "just work" with the
-  current infrastructure since walkMethodValue uses the same
-  &struct{F, X0} literal pattern that walkClosure does, but
-  hasn't been verified end-to-end yet.
 
 ## Blocker for the wasip1 test harness — `go test` produces invalid wasm
 

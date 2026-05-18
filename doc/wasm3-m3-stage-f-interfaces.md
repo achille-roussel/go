@@ -250,6 +250,28 @@ wasmgc itab" Approach A from the plan above is deferred — it
 would buy size + GC tracking but is significantly more invasive,
 and call_indirect is canonical wasm for this use case.
 
-Still ahead on the ladder: type-switch, empty-interface round-
-trip, `error`, `io.Reader`. Each may surface new runtime helpers
-that need their own `_wasm3.go` shadows.
+**Step 4 (type switch)** works for the body of the switch
+itself but exposes a pre-existing `&CompLit{}`-on-SP issue at
+the caller. `/tmp/wasm3-typeswitch2` (concrete instances
+constructed via helper functions that return `*Dog`, `*Cat`,
+`*Cow`) prints `canine` / `feline` / `other` correctly through
+`switch a.(type)`. The original `/tmp/wasm3-typeswitch`
+(constructs `&Dog{id:1}` inline in `main`) bails the calling
+function to `unreachable` because the literal becomes an
+SP-relative autotmp that the obj-encoder can't address. The
+same family of issue blocks closures-with-composite-captures
+and is documented as wasm3-side rather than Stage F-specific.
+
+**Step 5 (empty interface round-trip)** exposes a second
+pre-existing issue: `runtime.gwrite` fails to compile because
+its body contains a func-pointer load that emits `i64.load`
+into an anyref-typed local. Same shape as the original
+`runtime.ifaceeq` failure (and same fix would work for both
+once `runtime/type.go` moves to a wasmgc representation). For
+now, programs that include `runtime.gwrite` in their reachable
+set — anything that does `print(intervalue)` involving an
+interface — bail on `runtime.gwrite`'s body, even though
+`gwrite` itself isn't called.
+
+Step 6+ blocked by the same families; defer (also catching
+`runtime.throw`) and `error` interfaces likewise.

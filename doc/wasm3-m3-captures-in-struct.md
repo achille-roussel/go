@@ -352,3 +352,67 @@ order:
    independently take `c.Add` get the same wrapper → same closureCtx
    type → wasmgc deduplication. Should "just work" through DUPOK
    semantics + per-LSym typeCollector keying.
+
+## Implementation notes (state as of 594e7e00ef + 4b44103465)
+
+The prep work is landed:
+
+- `CTXT_REF` anyref module global (writeGlobalSec3, index 2,
+  init `ref.null any`).
+- `Wasm3GlobalIndexCtxRef` constant exposed from
+  `cmd/internal/obj/wasm/wasm3obj.go`.
+- Obj-encoder handles `AGlobalGet` / `AGlobalSet` with
+  `TYPE_CONST` literal immediate (in addition to the existing
+  `R_WASMCLOSURESINGLETON` form).
+- Four new SSA ops with full codegen: `OpWasm3MakeClosureRefInline`,
+  `OpWasm3LoweredGetClosureRef`, `OpWasm3LoweredCastClosureRef`,
+  `OpWasm3GetClosureField`. Codegen in `wasm3/ssa.go`.
+- `typeCollector.collectPerClosureCtx` registers per-closure
+  subtypes keyed on the body's LSym.
+- `wasm3RegisterPerClosureCtx` / `wasm3LookupPerClosureCtx`
+  helpers in `wasm3/wasmabi.go`.
+- `OpWasm3LoweredClosureCall` codegen now sets CTXT_REF
+  (= closure-ref) in addition to CTXT (= captures-ptr i64) at
+  every indirect call. Today no body reads CTXT_REF, so the cost
+  is one extra `global.set` per call — negligible.
+- Dead-store elim recognises the new ops as sym-effect carriers.
+
+**The switch did NOT land.** An attempt to wire up walkClosure +
+the ssagen body prologue + a `wasm3MakeClosureInline1` runtime
+intrinsic compiled fine and made the `/tmp/wasm3-closure` test
+(makeAdder, one int capture) work end-to-end via the new path —
+but it crashed on stdlib `internal/runtime/exithook.Run`'s
+auto-generated `deferwrap1` / `deferwrap2` closures with:
+
+    'Run': panic during dead auto elim
+    wasm3LookupPerClosureCtx: no collector for ...deferwrap1
+
+**Root cause**: `wasm3LiveCollector` is keyed per `*obj.FuncInfo`,
+i.e. per Go function being compiled. The caller's MakeClosureRef-
+Inline call site registers the per-closure ctx in the *caller's*
+FuncInfo, but the closure body is compiled in a *different*
+FuncInfo where the registration hasn't happened. The body's
+`LoweredCastClosureRef` / `GetClosureField` codegen `Lookup`s and
+finds nothing.
+
+**Two viable resolutions:**
+
+(a) **Body-side registration**: extend the body-side ops to carry
+    the captures-types-list (or its wasmgc-storage list) as part
+    of their Aux, so codegen can call `Register` instead of
+    `Lookup`. The list is known at SSA-construction time (`fn.
+    ClosureVars` types via `lowerFields`), but isn't visible in
+    `ssagen.State` from inside `wasm3/ssa.go`. Easiest plumbing:
+    a small auxType holding `{sym *obj.LSym, fields []wasmgc.
+    Field}`, set by ssagen and consumed by codegen.
+
+(b) **Side-channel via FuncInfo**: extend `obj.WasmType` with a
+    pre-serialised per-closure-body field list. ssagen builds it
+    at SSA-construction time (using a wasm3-package helper that
+    operates on `*types.Type` → `wasmgc.Field`), then attaches
+    to the body's `FuncInfo.WasmType`. Codegen reads it and
+    registers. Avoids changing SSA op shapes but requires a new
+    obj-level field.
+
+Approach (a) is the cleaner separation; approach (b) is the
+smaller diff. Pick when picking the work up.

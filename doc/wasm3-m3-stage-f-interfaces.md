@@ -250,17 +250,25 @@ wasmgc itab" Approach A from the plan above is deferred — it
 would buy size + GC tracking but is significantly more invasive,
 and call_indirect is canonical wasm for this use case.
 
-**Step 4 (type switch)** works for the body of the switch
-itself but exposes a pre-existing `&CompLit{}`-on-SP issue at
-the caller. `/tmp/wasm3-typeswitch2` (concrete instances
-constructed via helper functions that return `*Dog`, `*Cat`,
-`*Cow`) prints `canine` / `feline` / `other` correctly through
-`switch a.(type)`. The original `/tmp/wasm3-typeswitch`
-(constructs `&Dog{id:1}` inline in `main`) bails the calling
-function to `unreachable` because the literal becomes an
-SP-relative autotmp that the obj-encoder can't address. The
-same family of issue blocks closures-with-composite-captures
-and is documented as wasm3-side rather than Stage F-specific.
+**Step 4 (type switch)** ✅ landed (0a87276b02). Both
+`/tmp/wasm3-typeswitch` (inline `&Dog{id:1}` / `&Cat{id:2}` /
+`&Cow{id:3}`) and `/tmp/wasm3-typeswitch2` (heap-allocating
+helper functions) print `canine` / `feline` / `other`. The
+walkNew fix routes every EscNone ONEW through
+runtime.newobject on wasm3 (avoiding the `Get $autotmp(SP)`
+stackTempAddr that has no obj-encoder representation); the
+runtime.throw split into throwOnSystemstack lets that helper
+print directly on wasm3 instead of capturing the string in a
+systemstack closure that the captures-in-struct path can't
+i64.store into a stack temp.
+
+**Step 7 (`error` interface)** ✅ landed via the same fix:
+`/tmp/wasm3-error` (`type myError struct{ msg string }` with
+`func (e *myError) Error() string` returning `&myError{...}`
+from `check(failed bool) error`) prints `"err: boom\n"` /
+`"no err\n"` correctly. error is the most-used interface in
+stdlib, so unblocking it is a much bigger reach than its line
+on the ladder suggests.
 
 **Step 5 (empty interface round-trip)** exposes a chain of
 runtime functions whose bodies fail wasm validation:

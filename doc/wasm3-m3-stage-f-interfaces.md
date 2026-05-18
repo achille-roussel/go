@@ -262,16 +262,30 @@ SP-relative autotmp that the obj-encoder can't address. The
 same family of issue blocks closures-with-composite-captures
 and is documented as wasm3-side rather than Stage F-specific.
 
-**Step 5 (empty interface round-trip)** exposes a second
-pre-existing issue: `runtime.gwrite` fails to compile because
-its body contains a func-pointer load that emits `i64.load`
-into an anyref-typed local. Same shape as the original
-`runtime.ifaceeq` failure (and same fix would work for both
-once `runtime/type.go` moves to a wasmgc representation). For
-now, programs that include `runtime.gwrite` in their reachable
-set — anything that does `print(intervalue)` involving an
-interface — bail on `runtime.gwrite`'s body, even though
-`gwrite` itself isn't called.
+**Step 5 (empty interface round-trip)** exposes a chain of
+runtime functions whose bodies fail wasm validation:
+`runtime.gwrite` → `runtime.writeErrData` (passes a slice's
+wasmgc-typed backing where `*byte` is expected),
+`runtime.memclrNoHeapPointersChunked`, and likely more
+downstream. The root cause for each is wasm3's
+slice/string-in-arg ABI inconsistency: a `[]byte` parameter
+lowers to `(anyref backing, i64 len, i64 cap)` but the
+helpers' linear-memory callees (`write1(*byte, int32)`, etc.)
+expect `(i64 ptr, i32 len)`. Bridging requires copying the
+wasmgc array's contents into linear memory — out of scope for
+Stage F.
 
-Step 6+ blocked by the same families; defer (also catching
-`runtime.throw`) and `error` interfaces likewise.
+For Stage F's part, the easier wins ARE landed:
+
+- The 761bfdd862 fix to `wasm3ValueType` correctly classifies
+  a TFUNC value loaded from linear memory as i64 (not anyref),
+  matching the i64.load that produces it. This was the original
+  blocker for `runtime.ifaceeq` and the same family of `i64.load
+  → anyref-local` errors in other runtime helpers.
+- `runtime.gwrite` is a documented no-op stub
+  (gwrite_wasm3.go) — the few programs that reach it via
+  panic/print paths drop their writes silently. The proper
+  bridge belongs in the wasm3 slice-marshalling workstream.
+
+Step 6+ (`error`, `io.Reader`) blocked by the same
+slice-marshalling and defer-closure-storage families.

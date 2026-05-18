@@ -264,10 +264,34 @@ func wasm3ValueType(v *Value) byte {
 	// can ref.cast it to the typed closureCtx struct. The wasm signature
 	// for a TFUNC param/result is also anyref (flatPrimitiveFields), so
 	// the call-result -> local copy is well-typed.
-	if t.Kind() == types.TFUNC || (t.IsPtr() && t.Elem() != nil && t.Elem().Kind() == types.TFUNC) {
+	//
+	// Exception (Stage F): a TFUNC value loaded from a linear-memory
+	// struct field — typically a func-typed field of `*_type` or
+	// `*itab` — is the wasm result of `i64.load`, an i64. The local
+	// stays i64 and the call path uses call_indirect (which takes
+	// an i32 funcidx, not an anyref). Without this exception the
+	// runtime helpers that read those fields (runtime.ifaceeq,
+	// runtime.gwrite via getg().writebuf path, etc.) trip
+	// "i64.load result into anyref local" validation errors.
+	if isWasm3LoadOp(v.Op) {
+		// Loaded TFUNC and pointer-to-TFUNC values stay i64.
+		// Other types fall through to the generic categorisation.
+	} else if t.Kind() == types.TFUNC || (t.IsPtr() && t.Elem() != nil && t.Elem().Kind() == types.TFUNC) {
 		return wasm3ValAnyref
 	}
 	return wasm3ValI64
+}
+
+// isWasm3LoadOp reports whether v.Op is one of the wasm3 load
+// opcodes that produce an i64-shaped wasm result.
+func isWasm3LoadOp(op Op) bool {
+	switch op {
+	case OpWasm3I64Load, OpWasm3I64Load8U, OpWasm3I64Load8S,
+		OpWasm3I64Load16U, OpWasm3I64Load16S,
+		OpWasm3I64Load32U, OpWasm3I64Load32S:
+		return true
+	}
+	return false
 }
 
 // Wasm3IsAnyrefValue reports whether v's per-value wasm local is

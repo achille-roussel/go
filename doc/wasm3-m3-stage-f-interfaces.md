@@ -297,3 +297,17 @@ For Stage F's part, the easier wins ARE landed:
 
 Step 6+ (`error`, `io.Reader`) blocked by the same
 slice-marshalling and defer-closure-storage families.
+
+**Step 5 (empty interface boxing) follow-up** ✅ landed by
+splitting `mallocgc` into `mallocgc_default.go` (the standard
+per-P cache / GC-assisted body, `//go:build !wasm3`) and
+`mallocgc_wasm3.go` (a one-line redirect to the bump-heap
+`newobject`). Every `convT*` boxing path funnels through
+`mallocgc`; on the standard implementation those reach
+`mallocgcTiny` / `mallocgcSmallScanHeader` / `fixalloc.alloc`,
+each of which has an `f.first(f.arg, v)`-style indirect call or
+linear-memory pointer arithmetic that the wasm3 backend lowers
+to validation-failing wasm. The shim keeps the entire mcache /
+mheap / fixalloc subgraph dead-code on wasm3 — the linker DCE
+drops them and only the bump allocator survives. `/tmp/wasm3-
+anyiface` (`wrap(42)` / `wrap(7)` / `.(int)`) now prints `ok`.

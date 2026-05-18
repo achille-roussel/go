@@ -411,32 +411,50 @@ first capture stops being a `local.tee` short-circuit. Cost is
 one extra `ref.cast` per access — a single type-tag compare on
 V8/wasmtime.
 
-**Remaining limitations** (each is a scoped, mechanical follow-
-up; none block the headline path):
+**Now landed** (8cf281646d + e28bef9914):
 
-- Captures other than integers: floats and complex types aren't
-  routed through the `uintptr`-arg intrinsic; the body would
-  decode them incorrectly anyway. Falls back to the legacy
-  `wasm3WrapClosure` heap-captures path.
-- Pointer captures: the body's pointer-deref lowering still
-  emits `i32.wrap + i64.load` assuming a linear-memory pointer,
-  but a captures-in-struct field gives an anyref-shaped wasmgc
-  ref. Documented in `wasm3ScalarByValClosureVar`; needs body-
-  side pointer-deref to recognise wasmgc pointer locals.
-- More than 4 captures: bounded by the per-arity
-  `wasm3MakeClosureInlineN` intrinsics declared in
-  `runtime.go`. Extending to 5, 6, 7, ... is purely mechanical
-  (one runtime decl + one `add(...,sys.ArchWasm3)` per arity).
-- Method-value `-fm` wrappers: still on the legacy
-  `wasm3WrapClosure` path; they're auto-generated bodies and
-  haven't been routed through the captures-in-struct prologue
-  yet.
-- Cross-package per-signature `closureCtx` types are duplicated
-  (one per FuncInfo that registers them). The wasm engines
-  canonicalise structurally-equivalent rec groups so this
-  works in practice — but the type section is fatter than it
-  needs to be. The linker's `mergeTable` says: "Today the merge
-  appends each package's program types unconditionally —
-  duplicates across packages produce duplicate type-section
-  entries, which is valid wasm but redundant. Structural
-  deduplication across packages is a later refinement."
+- **1..8 captures** via `wasm3MakeClosureInline{1..8}` runtime
+  intrinsics. Multi-capture body-side prologue handles
+  arbitrary arities through the variadic
+  `OpWasm3MakeClosureRefInline` op.
+- **Pointer captures**, by storing the captured pointer as a
+  plain i64 field in the per-closure closureCtx rather than
+  `(ref $T)`. The body's `i32.wrap + i64.load` pointer-deref
+  code keeps working unchanged; wasm3 has no Go GC so the loss
+  of wasmgc ref tracking is moot. The pointer field is
+  declared mutable to match what `scalarPrim` produces for the
+  uintptr the caller side pushes (so the body- and caller-
+  side per-closure types are structurally identical and the
+  link-time deduper coalesces them).
+- **Method-value `-fm` wrappers** with integer or pointer
+  receivers route through `wasm3MakeClosureInline1`. The
+  wrapper body has one ClosureVar (the receiver) and
+  `wasm3ClosureUsesCapturesInStruct` fires on it, so the body
+  auto-uses the captures-in-struct prologue. Composite-receiver
+  method values (multi-field struct receiver) fall back to the
+  legacy heap path until multi-field captures land.
+- **Cross-package per-signature `closureCtx` dedup** via a
+  structural `findEqualType` scan in the linker's `mergeTable`.
+  The single-pass dedup replaced the prior unconditional-append
+  two-pass; self-referential types (recursive Go structs)
+  bypass the deduper through a sentinel-and-fixup mechanism.
+  Drops the wasm3-closure test's post-link type-section from 20
+  to 13 rec groups by collapsing the four per-FuncInfo copies
+  of `func(i64)->i64` and its closureCtx chain into single
+  entries.
+
+**Remaining** (deferred, low-impact):
+
+- **Float/complex captures** still fall back to the legacy
+  `wasm3WrapClosure` heap path. The blocker is the
+  `walkClosure → wasm3MakeClosureInlineN(... uintptr)` typing:
+  a `float64` argument can't reach the uintptr slot without an
+  intermediate bit-reinterpretation (`math.Float64bits`-
+  equivalent), which has no direct IR op. Two viable
+  resolutions: (a) per-type intrinsic variants
+  (combinatorial with multi-arity — `Inline2F64Int`,
+  `Inline3IntF64Ptr`, etc.); (b) add a body-side `f64.
+  reinterpret_i64` after the captures-in-struct `struct.get`
+  and an IR float-to-bits helper for `walkClosure`. Float
+  captures are rare in real Go code, so the legacy fallback
+  is acceptable.

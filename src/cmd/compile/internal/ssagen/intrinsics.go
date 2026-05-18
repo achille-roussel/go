@@ -226,6 +226,29 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	}
 	add("runtime", "wasm3WrapClosure", wasm3WrapClosureIntrinsic, sys.ArchWasm3)
 
+	// doc/wasm3-m3-captures-in-struct.md: lower
+	// runtime.wasm3MakeClosureInline1(closureType, funcsym, cap0) to
+	// OpWasm3MakeClosureRefInline. Same OCFUNC-derived LSym pattern
+	// as wasm3WrapClosure; the captures-ptr arg is replaced with the
+	// capture value directly (cap0). Used for the bounded 1-scalar-
+	// capture case; multi-capture intrinsics (Inline2, Inline3, ...)
+	// follow when more arities are wired up.
+	wasm3MakeClosureInline1Intrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		if len(args) != 3 {
+			s.Fatalf("wasm3MakeClosureInline1 intrinsic: expected 3 args, got %d", len(args))
+		}
+		funcsymArg := args[1]
+		if funcsymArg.Op != ssa.OpAddr {
+			s.Fatalf("wasm3MakeClosureInline1 intrinsic: arg[1] not OpAddr (got %v); walkClosure must pass OCFUNC", funcsymArg.Op)
+		}
+		sym, ok := funcsymArg.Aux.(*obj.LSym)
+		if !ok || sym == nil {
+			s.Fatalf("wasm3MakeClosureInline1 intrinsic: arg[1].Aux is not *obj.LSym: %T", funcsymArg.Aux)
+		}
+		return s.newValue1A(ssa.OpWasm3MakeClosureRefInline, n.Type(), sym, args[2])
+	}
+	add("runtime", "wasm3MakeClosureInline1", wasm3MakeClosureInline1Intrinsic, sys.ArchWasm3)
+
 	addF("internal/runtime/math", "MulUintptr",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			if s.config.PtrSize == 4 {

@@ -8,6 +8,7 @@ import (
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/ir"
 	"cmd/compile/internal/reflectdata"
+	"cmd/compile/internal/ssa"
 	"cmd/compile/internal/typecheck"
 	"cmd/compile/internal/types"
 	"cmd/internal/src"
@@ -147,16 +148,39 @@ func walkClosure(clo *ir.ClosureExpr, init *ir.Nodes) ir.Node {
 	}
 
 	if buildcfg.GOARCH == "wasm3" {
-		// Stage G: wrap the linear-memory captures struct in a
-		// wasmgc `(ref $go.closure.<sig>)`. The compiler intrinsifies
-		// runtime.wasm3WrapClosure at the SSA layer into
-		// OpWasm3MakeClosureRef, which emits `ref.func $sym;
-		// getValue captures; struct.new $closureCtx` and produces an
-		// anyref-typed value. ConvNop the unsafe.Pointer return to
-		// the user's closure func type at the wasm signature
-		// boundary; SSA sees both as i64-shaped wires at this stage,
-		// but the wasm3 backend's per-value local for the result is
-		// anyref (per wasm3ValueType OpWasm3MakeClosureRef case).
+		// doc/wasm3-m3-captures-in-struct.md: closures matching the
+		// scalar-by-value predicate go through
+		// wasm3MakeClosureInlineN intrinsics, which lower to
+		// OpWasm3MakeClosureRefInline — captures land directly in
+		// the wasmgc closureCtx subtype with no linear-memory
+		// captures-struct allocation. The body-side prologue at
+		// ssagen/ssa.go uses the *matching* predicate so the
+		// closureCtx shape is consistent on both sides. Today only
+		// the 1-capture form is wired; multi-capture closures fall
+		// through to the legacy wasm3WrapClosure path.
+		if len(clofn.ClosureVars) == 1 && wasm3ScalarByValClosureVar(clofn.ClosureVars[0]) {
+			fn := typecheck.LookupRuntime("wasm3MakeClosureInline1")
+			closureType := reflectdata.TypePtrAt(base.Pos, clo.Type())
+			fnSym := ir.NewUnaryExpr(base.Pos, ir.OCFUNC, clofn.Nname)
+			fnSym.SetType(types.Types[types.TUINTPTR])
+			fnSym = typecheck.Expr(fnSym).(*ir.UnaryExpr)
+			cap0 := typecheck.Conv(clofn.ClosureVars[0].Outer, types.Types[types.TUINTPTR])
+			call := typecheck.Call(base.Pos, fn, []ir.Node{closureType, fnSym, cap0}, false).(*ir.CallExpr)
+			call.SetType(clo.Type())
+			return walkExpr(call, init)
+		}
+
+		// Stage G (legacy): wrap the linear-memory captures struct
+		// in a wasmgc `(ref $go.closure.<sig>)`. The compiler
+		// intrinsifies runtime.wasm3WrapClosure at the SSA layer
+		// into OpWasm3MakeClosureRef, which emits `ref.func $sym;
+		// getValue captures; struct.new $closureCtx` and produces
+		// an anyref-typed value. ConvNop the unsafe.Pointer return
+		// to the user's closure func type at the wasm signature
+		// boundary; SSA sees both as i64-shaped wires at this
+		// stage, but the wasm3 backend's per-value local for the
+		// result is anyref (per wasm3ValueType
+		// OpWasm3MakeClosureRef case).
 		fn := typecheck.LookupRuntime("wasm3WrapClosure")
 		closureType := reflectdata.TypePtrAt(base.Pos, clo.Type())
 		fnSym := ir.NewUnaryExpr(base.Pos, ir.OCFUNC, clofn.Nname)
@@ -179,6 +203,32 @@ func walkClosure(clo *ir.ClosureExpr, init *ir.Nodes) ir.Node {
 	cfn := typecheck.ConvNop(addr, clo.Type())
 
 	return walkExpr(cfn, init)
+}
+
+// wasm3ScalarByValClosureVar mirrors the
+// wasm3ClosureUsesCapturesInStruct predicate from ssagen: a single
+// ClosureVar fits the captures-in-struct path only if it's a small
+// by-value scalar with no addr-taken aliasing.
+//
+// Today we further restrict to integer captures: walkClosure uses
+// typecheck.Conv to uintptr to feed wasm3MakeClosureInline1, and
+// the conversion only succeeds for scalar integers (pointer
+// captures need uintptr(unsafe.Pointer(p)), which IR doesn't
+// express as a single Conv). Pointer-capturing and float-
+// capturing closures fall back to the legacy wasm3WrapClosure
+// path until we either add a *byte-typed inline intrinsic or
+// build a synthetic IR node that bypasses Go-level type checks.
+func wasm3ScalarByValClosureVar(v *ir.Name) bool {
+	if !v.Byval() || v.Addrtaken() {
+		return false
+	}
+	if !ssa.CanSSA(v.Type()) {
+		return false
+	}
+	if !v.Type().IsInteger() {
+		return false
+	}
+	return true
 }
 
 // closureArgs returns a slice of expressions that can be used to

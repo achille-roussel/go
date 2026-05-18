@@ -196,6 +196,7 @@ func makeslice(typ *byte, len int, cap int) unsafe.Pointer
 func makeslice64(typ *byte, len int64, cap int64) unsafe.Pointer
 func wasm3SliceCopy(typ *byte, dst *any, src *any, n int)
 func wasm3WrapClosure(closureType *byte, funcsym uintptr, captures unsafe.Pointer) unsafe.Pointer
+func wasm3MakeClosureInline1(closureType *byte, funcsym uintptr, cap0 uintptr) unsafe.Pointer
 func makeslicecopy(typ *byte, tolen int, fromlen int, from unsafe.Pointer) unsafe.Pointer
 func growslice(oldPtr *any, newLen, oldCap, num int, et *byte) (ary []any)
 func growsliceBuf(oldPtr *any, newLen, oldCap, num int, et *byte, buf *any, bufLen int) (ary []any)

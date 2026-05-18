@@ -10,6 +10,7 @@ import (
 	"cmd/compile/internal/ir"
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
+	"cmd/internal/obj/wasm"
 	"cmd/internal/wasmgc"
 	"strconv"
 	"sync"
@@ -503,6 +504,59 @@ func wasm3LookupPerClosureCtx(fi *obj.FuncInfo, sym *obj.LSym) uint32 {
 	if !ok {
 		base.Fatalf("wasm3LookupPerClosureCtx: %v not yet registered", sym)
 	}
+	return uint32(idx)
+}
+
+// wasm3EnsurePerClosureCtxFromSide returns the per-closure closure-
+// Ctx type index for `sym` in `fi`'s collector, lazy-registering it
+// from the closure-body info ssagen published in
+// wasm.Wasm3ClosureBodyCaptures (the side channel that bridges the
+// "ssagen has *ir.Func.ClosureVars but can't import wasm3" gap;
+// see doc/wasm3-m3-captures-in-struct.md and the
+// Wasm3ClosureBodyCaptures comment in
+// cmd/internal/obj/wasm/wasm3obj.go).
+//
+// The third argument is reserved for future callers that want to
+// validate or override the func type; today it's unused — the func
+// type comes from the side-channel record alongside the captures.
+func wasm3EnsurePerClosureCtxFromSide(fi *obj.FuncInfo, sym *obj.LSym, _ *types.Type) uint32 {
+	if fi == nil {
+		base.Fatalf("wasm3EnsurePerClosureCtxFromSide: fi is nil")
+	}
+	cAny, ok := wasm3LiveCollector.Load(fi)
+	var c *typeCollector
+	if ok {
+		c = cAny.(*typeCollector)
+		if idx, found := c.perClosureCtxs[sym]; found {
+			return uint32(idx)
+		}
+	} else {
+		c = newTypeCollector()
+		wasm3LiveCollector.Store(fi, c)
+		if fi.WasmType == nil {
+			fi.WasmType = &obj.WasmType{}
+		}
+	}
+	infoAny, ok := wasm.Wasm3ClosureBodyCaptures.Load(sym)
+	if !ok {
+		base.Fatalf("wasm3EnsurePerClosureCtxFromSide: no side-channel info for %v", sym)
+	}
+	info, ok := infoAny.(*wasm.Wasm3ClosureBodyInfo)
+	if !ok {
+		base.Fatalf("wasm3EnsurePerClosureCtxFromSide: side-channel value for %v is %T, want *wasm.Wasm3ClosureBodyInfo", sym, infoAny)
+	}
+	ft, ok := info.FuncType.(*types.Type)
+	if !ok {
+		base.Fatalf("wasm3EnsurePerClosureCtxFromSide: side-channel FuncType for %v is %T, want *types.Type", sym, info.FuncType)
+	}
+	captures, ok := info.Captures.([]*types.Type)
+	if !ok {
+		base.Fatalf("wasm3EnsurePerClosureCtxFromSide: side-channel Captures for %v is %T, want []*types.Type", sym, info.Captures)
+	}
+	idx := c.collectPerClosureCtx(sym, ft, captures)
+	var b bytes.Buffer
+	c.table.Write(&b)
+	fi.WasmType.Table = b.Bytes()
 	return uint32(idx)
 }
 

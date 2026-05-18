@@ -1115,14 +1115,15 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// $go.closure.<sym>) subtype, so subsequent GetClosureField
 		// ops can struct.get its capture fields. v.Aux is the
 		// closure body's *obj.LSym; the per-closure type index is
-		// resolved through wasm3RegisterPerClosureCtx (which the
-		// closure body has already called from its prologue
-		// emission).
+		// resolved through wasm3EnsurePerClosureCtxFromSide, which
+		// lazy-registers the type in *this* function's typeCollector
+		// from the captures-list ssagen stashed in
+		// wasm.Wasm3ClosureBodyCaptures.
 		sym, ok := v.Aux.(*obj.LSym)
 		if !ok {
 			v.Fatalf("OpWasm3LoweredCastClosureRef: v.Aux is not *obj.LSym: %T", v.Aux)
 		}
-		perClosureIdx := wasm3LookupPerClosureCtx(s.FuncInfo(), sym)
+		perClosureIdx := wasm3EnsurePerClosureCtxFromSide(s.FuncInfo(), sym, v.Type)
 		getValue64(s, v.Args[0])
 		pc := s.Prog(wasm.ARefCast)
 		pc.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(perClosureIdx)}
@@ -1138,7 +1139,7 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		if !ok {
 			v.Fatalf("OpWasm3GetClosureField: v.Aux is not *obj.LSym: %T", v.Aux)
 		}
-		perClosureIdx := wasm3LookupPerClosureCtx(s.FuncInfo(), sym)
+		perClosureIdx := wasm3EnsurePerClosureCtxFromSide(s.FuncInfo(), sym, nil)
 		getValue64(s, v.Args[0])
 		pg := s.Prog(wasm.AStructGet)
 		pg.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(perClosureIdx)}

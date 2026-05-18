@@ -31,6 +31,7 @@ import (
 	"cmd/compile/internal/typecheck"
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
+	"cmd/internal/obj/wasm"
 	"cmd/internal/objabi"
 	"cmd/internal/src"
 	"cmd/internal/sys"
@@ -517,51 +518,99 @@ func buildssa(fn *ir.Func, worker int, isPgoHot bool) *ssa.Func {
 
 	// Populate closure variables.
 	if fn.Needctxt() {
-		clo := s.entryNewValue0(ssa.OpGetClosurePtr, s.f.Config.Types.BytePtr)
-		if fn.RangeParent != nil && base.Flag.N != 0 {
-			// For a range body closure, keep its closure pointer live on the
-			// stack with a special name, so the debugger can look for it and
-			// find the parent frame.
-			sym := &types.Sym{Name: ".closureptr", Pkg: types.LocalPkg}
-			cloSlot := s.curfn.NewLocal(src.NoXPos, sym, s.f.Config.Types.BytePtr)
-			cloSlot.SetUsed(true)
-			cloSlot.SetEsc(ir.EscNever)
-			cloSlot.SetAddrtaken(true)
-			s.f.CloSlot = cloSlot
-			s.vars[memVar] = s.newValue1Apos(ssa.OpVarDef, types.TypeMem, cloSlot, s.mem(), false)
-			addr := s.addr(cloSlot)
-			s.store(s.f.Config.Types.BytePtr, addr, clo)
-			// Keep it from being dead-store eliminated.
-			s.vars[memVar] = s.newValue1Apos(ssa.OpVarLive, types.TypeMem, cloSlot, s.mem(), false)
-		}
-		csiter := typecheck.NewClosureStructIter(fn.ClosureVars)
-		for {
-			n, typ, offset := csiter.Next()
-			if n == nil {
-				break
+		// wasm3 captures-in-struct path (doc/wasm3-m3-captures-in-
+		// struct.md): when every captured variable is a small by-
+		// value scalar with no addr-taken aliasing, the closure body
+		// reads its captures directly off the wasmgc closureCtx
+		// rather than via an i64 CTXT pointer into a linear-memory
+		// captures struct. The call site (OpWasm3LoweredClosureCall
+		// codegen) sets CTXT_REF = closure-ref before call_ref;
+		// here we recover that ref, cast it down to the per-closure
+		// subtype, and struct.get each capture. The matching
+		// walkClosure branch in walk/closure.go emits
+		// OpWasm3MakeClosureRefInline so the captures land in the
+		// struct fields without a linear-memory copy.
+		//
+		// Pass the captures' *types.Type list through the obj-level
+		// side channel Wasm3ClosureBodyCaptures so the wasm3 codegen
+		// for LoweredCastClosureRef / GetClosureField can register
+		// the per-closure ctx in *this* function's own FuncInfo
+		// typeCollector (the caller's MakeClosureRefInline
+		// registration is invisible across FuncInfos).
+		if buildcfg.GOARCH == "wasm3" && wasm3ClosureUsesCapturesInStruct(fn) {
+			captureTypes := make([]*types.Type, len(fn.ClosureVars))
+			for i, n := range fn.ClosureVars {
+				captureTypes[i] = n.Type()
 			}
+			// Stash both the captures-types-list and the closure
+			// body's own func signature so wasm3 codegen can derive
+			// the per-signature closureCtx base on the first
+			// LoweredCastClosureRef it encounters in this function.
+			// Stored as a struct of `any` to keep the obj-level
+			// shared point free of cmd/compile/internal/types.
+			wasm.Wasm3ClosureBodyCaptures.Store(fn.LSym, &wasm.Wasm3ClosureBodyInfo{
+				FuncType: fn.Type(),
+				Captures: captureTypes,
+			})
 
-			ptr := s.newValue1I(ssa.OpOffPtr, types.NewPtr(typ), offset, clo)
-
-			// If n is a small variable captured by value, promote
-			// it to PAUTO so it can be converted to SSA.
-			//
-			// Note: While we never capture a variable by value if
-			// the user took its address, we may have generated
-			// runtime calls that did (#43701). Since we don't
-			// convert Addrtaken variables to SSA anyway, no point
-			// in promoting them either.
-			if n.Byval() && !n.Addrtaken() && ssa.CanSSA(n.Type()) {
+			sym := fn.LSym
+			anyrefPtr := s.f.Config.Types.BytePtr
+			cloRef := s.entryNewValue0(ssa.OpWasm3LoweredGetClosureRef, anyrefPtr)
+			cloRef = s.entryNewValue1A(ssa.OpWasm3LoweredCastClosureRef, anyrefPtr, sym, cloRef)
+			for i, n := range fn.ClosureVars {
+				fld := s.entryNewValue1A(ssa.OpWasm3GetClosureField, n.Type(), sym, cloRef)
+				fld.AuxInt = int64(i)
 				n.Class = ir.PAUTO
 				fn.Dcl = append(fn.Dcl, n)
-				s.assign(n, s.load(n.Type(), ptr), false, 0)
-				continue
+				s.assign(n, fld, false, 0)
 			}
+		} else {
+			clo := s.entryNewValue0(ssa.OpGetClosurePtr, s.f.Config.Types.BytePtr)
+			if fn.RangeParent != nil && base.Flag.N != 0 {
+				// For a range body closure, keep its closure pointer live on the
+				// stack with a special name, so the debugger can look for it and
+				// find the parent frame.
+				sym := &types.Sym{Name: ".closureptr", Pkg: types.LocalPkg}
+				cloSlot := s.curfn.NewLocal(src.NoXPos, sym, s.f.Config.Types.BytePtr)
+				cloSlot.SetUsed(true)
+				cloSlot.SetEsc(ir.EscNever)
+				cloSlot.SetAddrtaken(true)
+				s.f.CloSlot = cloSlot
+				s.vars[memVar] = s.newValue1Apos(ssa.OpVarDef, types.TypeMem, cloSlot, s.mem(), false)
+				addr := s.addr(cloSlot)
+				s.store(s.f.Config.Types.BytePtr, addr, clo)
+				// Keep it from being dead-store eliminated.
+				s.vars[memVar] = s.newValue1Apos(ssa.OpVarLive, types.TypeMem, cloSlot, s.mem(), false)
+			}
+			csiter := typecheck.NewClosureStructIter(fn.ClosureVars)
+			for {
+				n, typ, offset := csiter.Next()
+				if n == nil {
+					break
+				}
 
-			if !n.Byval() {
-				ptr = s.load(typ, ptr)
+				ptr := s.newValue1I(ssa.OpOffPtr, types.NewPtr(typ), offset, clo)
+
+				// If n is a small variable captured by value, promote
+				// it to PAUTO so it can be converted to SSA.
+				//
+				// Note: While we never capture a variable by value if
+				// the user took its address, we may have generated
+				// runtime calls that did (#43701). Since we don't
+				// convert Addrtaken variables to SSA anyway, no point
+				// in promoting them either.
+				if n.Byval() && !n.Addrtaken() && ssa.CanSSA(n.Type()) {
+					n.Class = ir.PAUTO
+					fn.Dcl = append(fn.Dcl, n)
+					s.assign(n, s.load(n.Type(), ptr), false, 0)
+					continue
+				}
+
+				if !n.Byval() {
+					ptr = s.load(typ, ptr)
+				}
+				s.setHeapaddr(fn.Pos(), n, ptr)
 			}
-			s.setHeapaddr(fn.Pos(), n, ptr)
 		}
 	}
 
@@ -7920,6 +7969,45 @@ func CheckLoweredPhi(v *ssa.Value) {
 			v.Fatalf("phi arg at different location than phi: %v @ %s, but arg %v @ %s\n%s\n", v, loc, a, aloc, v.Block.Func)
 		}
 	}
+}
+
+// wasm3ClosureUsesCapturesInStruct reports whether `fn`'s closure
+// captures can all be represented as inline fields of the per-
+// closure wasmgc struct (see doc/wasm3-m3-captures-in-struct.md).
+//
+// The wasm3 captures-in-struct path requires every capture to be a
+// small SSA-able by-value scalar with no addr-taken aliasing — that
+// matches the existing PAUTO-promotion branch in the legacy
+// closure prologue. Captures of strings, slices, structs, arrays,
+// and by-reference captures (whose ClosureVar is a heap address,
+// not the value) all fall outside the path; those closures keep
+// using the linear-memory captures-struct + CTXT-i64 prologue.
+// walkClosure's wasm3 path must apply the *same* predicate so call-
+// site and body agree on which scheme the closureCtx subtype uses.
+func wasm3ClosureUsesCapturesInStruct(fn *ir.Func) bool {
+	if len(fn.ClosureVars) == 0 {
+		return false
+	}
+	// Today walkClosure only emits OpWasm3MakeClosureRefInline for
+	// the 1-capture form (wasm3MakeClosureInline1 intrinsic) AND
+	// only for integer captures (Conv-to-uintptr restriction; see
+	// the walk/closure.go predicate). Until the multi-capture and
+	// pointer-capture variants land, restrict the body-side
+	// predicate to match — otherwise the body would take the new
+	// prologue while the caller still goes through the legacy heap-
+	// captures path, leaving the body reading nothing.
+	if len(fn.ClosureVars) != 1 {
+		return false
+	}
+	for _, n := range fn.ClosureVars {
+		if !n.Byval() || n.Addrtaken() || !ssa.CanSSA(n.Type()) {
+			return false
+		}
+		if !n.Type().IsInteger() {
+			return false
+		}
+	}
+	return true
 }
 
 // CheckLoweredGetClosurePtr checks that v is the first instruction in the function's entry block,

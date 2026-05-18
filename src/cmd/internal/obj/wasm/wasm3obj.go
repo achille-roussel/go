@@ -70,6 +70,39 @@ func wasm3GlobalIndex(reg int16) (uint64, bool) {
 // hard-coding the literal.
 const Wasm3GlobalIndexCtxRef = 2
 
+// Wasm3ClosureBodyInfo carries, for a single closure body, the
+// info wasm3 codegen needs to register the per-closure closureCtx
+// type in this function's *obj.FuncInfo typeCollector (see
+// doc/wasm3-m3-captures-in-struct.md). Stashed by ssagen at SSA
+// build, read by wasm3 codegen.
+//
+// Both fields are typed `any` to keep this obj-leaf package free
+// of cmd/compile/internal/types; cmd/compile/internal/wasm3 type-
+// asserts them back to *types.Type / []*types.Type on read.
+type Wasm3ClosureBodyInfo struct {
+	FuncType any // *cmd/compile/internal/types.Type, the closure body's func signature
+	Captures any // []*cmd/compile/internal/types.Type, captures in ClosureVars order
+}
+
+// Wasm3ClosureBodyCaptures is a side-channel published by
+// cmd/compile/internal/ssagen and consumed by
+// cmd/compile/internal/wasm3 to communicate, per closure body LSym,
+// the info the body's GetClosureField / LoweredCastClosureRef
+// codegen needs to register the per-closure closureCtx in *its
+// own* FuncInfo typeCollector. The caller's
+// OpWasm3MakeClosureRefInline registration lives in a *different*
+// FuncInfo's collector and is invisible across the boundary.
+//
+// Why a side channel rather than putting captures on the SSA op
+// directly: ssagen has *ir.Func.ClosureVars at SSA build, but
+// cannot import cmd/compile/internal/wasm3 (wasm3 imports ssagen).
+// This map, hosted in cmd/internal/obj/wasm (a leaf package both
+// sides already import), bridges the gap.
+//
+// Keyed on the closure body's *obj.LSym (= fn.LSym at SSA build);
+// concurrent compilation safe via sync.Map.
+var Wasm3ClosureBodyCaptures sync.Map
+
 // Wasm3StructuredPlan is the relooper output the compiler-side
 // publishes to the obj-side encoder. When present for a given LSym,
 // encodeWasm3Body bypasses the legacy wasm3AnalyzeCFG dispatch-mode

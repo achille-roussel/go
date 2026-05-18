@@ -443,18 +443,28 @@ V8/wasmtime.
   of `func(i64)->i64` and its closureCtx chain into single
   entries.
 
-**Remaining** (deferred, low-impact):
+**Float captures (1-capture form)** also land (2833d4bd5b):
+`wasm3MakeClosureInline1F32` / `wasm3MakeClosureInline1F64`
+runtime intrinsics carry a native float `cap0`, lowering to the
+same `OpWasm3MakeClosureRefInline` op. The closureCtx field
+lands as `(field F32)` or `(field F64)` via `scalarPrim`, the
+body's GetClosureField returns the matching float, and
+wasm3ValueType drops it in an F32/F64 local. Verified end-to-
+end with `makeScaler(2.0)(3.5) = 7.0`.
 
-- **Float/complex captures** still fall back to the legacy
-  `wasm3WrapClosure` heap path. The blocker is the
-  `walkClosure → wasm3MakeClosureInlineN(... uintptr)` typing:
-  a `float64` argument can't reach the uintptr slot without an
-  intermediate bit-reinterpretation (`math.Float64bits`-
-  equivalent), which has no direct IR op. Two viable
-  resolutions: (a) per-type intrinsic variants
-  (combinatorial with multi-arity — `Inline2F64Int`,
-  `Inline3IntF64Ptr`, etc.); (b) add a body-side `f64.
-  reinterpret_i64` after the captures-in-struct `struct.get`
-  and an IR float-to-bits helper for `walkClosure`. Float
-  captures are rare in real Go code, so the legacy fallback
-  is acceptable.
+**Remaining** (deferred, narrowly scoped):
+
+- **Multi-capture closures that mix floats with other types**
+  fall back to legacy. Wiring them needs combinatorial
+  per-shape intrinsics (`Inline2F64Int`, `Inline3IntF64Ptr`,
+  ...), one per (arity, shape-tuple). Rare enough in practice
+  that the legacy heap path is an acceptable fallback;
+  walkClosure's predicate refuses these cases so the body and
+  call site stay in agreement.
+- **Composite captures** (string, slice, struct, array) still
+  go through the legacy heap-captures path. Each multi-storage
+  capture would either need its own struct-typed closureCtx
+  field or a serialise-into-flattened-fields scheme that
+  per-arity-intrinsic-with-typed-tuples would carry. Not
+  blocking the headline path; closures-over-strings etc. work,
+  just via the older allocation pattern.

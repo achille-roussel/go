@@ -640,7 +640,16 @@ func walkNew(n *ir.UnaryExpr, init *ir.Nodes) ir.Node {
 	if t.NotInHeap() {
 		base.Errorf("%v can't be allocated in Go; it is incomplete (or unallocatable)", n.Type().Elem())
 	}
-	if n.Esc() == ir.EscNone {
+	// Stage F: wasm3 has no Go SP frame; a `Get $autotmp(SP)`
+	// from stackTempAddr has no obj-encoder representation. Route
+	// every ONEW through runtime.newobject regardless of escape,
+	// so the result is a real i64 linear-memory pointer the rest
+	// of the backend can pass through CALL conventions, struct
+	// stores, etc. Cost: one bump-heap allocation per `&T{}` or
+	// `new(T)` that escape analysis would otherwise have proven
+	// stack-safe. wasm3 has no GC reclaim anyway, so this just
+	// advances the bump pointer.
+	if n.Esc() == ir.EscNone && buildcfg.GOARCH != "wasm3" {
 		if t.Size() > ir.MaxImplicitStackVarSize {
 			base.Fatalf("large ONEW with EscNone: %v", n)
 		}

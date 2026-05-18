@@ -311,3 +311,21 @@ to validation-failing wasm. The shim keeps the entire mcache /
 mheap / fixalloc subgraph dead-code on wasm3 — the linker DCE
 drops them and only the bump allocator survives. `/tmp/wasm3-
 anyiface` (`wrap(42)` / `wrap(7)` / `.(int)`) now prints `ok`.
+
+**`runtime.gwrite` slice-in-arg bridge** ✅ landed. The wasm3
+gwrite copies bytes one at a time from the wasmgc-backed `[]byte`
+into a 4 KiB linear-memory scratch buffer (`gwrite3Scratch`) and
+hands the resulting `*byte` to WASI `fd_write` via `write1`
+directly — bypassing `runtime.writeErrData` (which reads
+`g.m.dying` off a `*g` shape M2 hasn't populated) and
+`runtime.write` (whose `if overrideWrite != nil` indirect-call
+probe stores a func-pointer load into an anyref local, failing
+validation). One sharp edge surfaced: the wasm3 obj backend
+miscompiles a trailing void-context call whose callee returns a
+value — it emits `local.set 0` on the call's i32 result, which
+on a func with anyref param 0 fails validation with "expected
+anyref, found i64". Worked around by stashing `write1`'s return
+in a package-global (`gwrite3LastN`) instead of dropping it
+inline; a proper backend fix belongs in a separate cycle.
+`/tmp/wasm3-gwrite` (`print("ptr: ", &g, "\n")` exercising
+printhex → gwrite) now prints the address and `ok`.

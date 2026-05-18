@@ -13,6 +13,7 @@ import (
 	"cmd/compile/internal/types"
 	"cmd/internal/src"
 	"internal/buildcfg"
+	"strconv"
 )
 
 // directClosureCall rewrites a direct call of a function literal into
@@ -158,14 +159,19 @@ func walkClosure(clo *ir.ClosureExpr, init *ir.Nodes) ir.Node {
 		// closureCtx shape is consistent on both sides. Today only
 		// the 1-capture form is wired; multi-capture closures fall
 		// through to the legacy wasm3WrapClosure path.
-		if len(clofn.ClosureVars) == 1 && wasm3ScalarByValClosureVar(clofn.ClosureVars[0]) {
-			fn := typecheck.LookupRuntime("wasm3MakeClosureInline1")
+		if n := len(clofn.ClosureVars); n >= 1 && n <= 4 && wasm3AllScalarByVal(clofn.ClosureVars) {
+			fnName := "wasm3MakeClosureInline" + strconv.Itoa(n)
+			fn := typecheck.LookupRuntime(fnName)
 			closureType := reflectdata.TypePtrAt(base.Pos, clo.Type())
 			fnSym := ir.NewUnaryExpr(base.Pos, ir.OCFUNC, clofn.Nname)
 			fnSym.SetType(types.Types[types.TUINTPTR])
 			fnSym = typecheck.Expr(fnSym).(*ir.UnaryExpr)
-			cap0 := typecheck.Conv(clofn.ClosureVars[0].Outer, types.Types[types.TUINTPTR])
-			call := typecheck.Call(base.Pos, fn, []ir.Node{closureType, fnSym, cap0}, false).(*ir.CallExpr)
+			args := make([]ir.Node, 0, 2+n)
+			args = append(args, closureType, fnSym)
+			for _, cv := range clofn.ClosureVars {
+				args = append(args, wasm3CaptureAsUintptr(cv.Outer))
+			}
+			call := typecheck.Call(base.Pos, fn, args, false).(*ir.CallExpr)
 			call.SetType(clo.Type())
 			return walkExpr(call, init)
 		}
@@ -210,14 +216,16 @@ func walkClosure(clo *ir.ClosureExpr, init *ir.Nodes) ir.Node {
 // ClosureVar fits the captures-in-struct path only if it's a small
 // by-value scalar with no addr-taken aliasing.
 //
-// Today we further restrict to integer captures: walkClosure uses
-// typecheck.Conv to uintptr to feed wasm3MakeClosureInline1, and
-// the conversion only succeeds for scalar integers (pointer
-// captures need uintptr(unsafe.Pointer(p)), which IR doesn't
-// express as a single Conv). Pointer-capturing and float-
-// capturing closures fall back to the legacy wasm3WrapClosure
-// path until we either add a *byte-typed inline intrinsic or
-// build a synthetic IR node that bypasses Go-level type checks.
+// Integer captures only for now. Pointer captures lower to a
+// `(ref $T)` field in the per-closure closureCtx struct, but the
+// body's code that *uses* the captured pointer still assumes
+// linear-memory i64 pointers (it emits `i32.wrap + load offset`
+// for field access, not `struct.get` on a typed ref) — running
+// such a body trips wasm validation with "expected i64, found
+// anyref". Until the body-side pointer-deref lowering is extended
+// to recognise wasmgc-shaped pointer locals, only integer captures
+// stay on the new path; pointers fall back to the legacy
+// wasm3WrapClosure heap-captures route.
 func wasm3ScalarByValClosureVar(v *ir.Name) bool {
 	if !v.Byval() || v.Addrtaken() {
 		return false
@@ -225,10 +233,34 @@ func wasm3ScalarByValClosureVar(v *ir.Name) bool {
 	if !ssa.CanSSA(v.Type()) {
 		return false
 	}
-	if !v.Type().IsInteger() {
-		return false
+	return v.Type().IsInteger()
+}
+
+// wasm3AllScalarByVal is wasm3ScalarByValClosureVar lifted over a
+// ClosureVars list.
+func wasm3AllScalarByVal(vars []*ir.Name) bool {
+	for _, v := range vars {
+		if !wasm3ScalarByValClosureVar(v) {
+			return false
+		}
 	}
 	return true
+}
+
+// wasm3CaptureAsUintptr converts an arbitrary integer- or pointer-
+// shaped capture expression to a uintptr value suitable for the
+// wasm3MakeClosureInline1 runtime intrinsic. Integers go through a
+// single typecheck.Conv; pointer-shaped captures (TPTR, TUNSAFEPTR)
+// go through unsafe.Pointer first to mirror Go's
+// `uintptr(unsafe.Pointer(p))` idiom (a direct *T -> uintptr Conv
+// fails the typechecker's no-sign-mismatch rule).
+func wasm3CaptureAsUintptr(captured ir.Node) ir.Node {
+	t := captured.Type()
+	if t.IsInteger() {
+		return typecheck.Conv(captured, types.Types[types.TUINTPTR])
+	}
+	via := typecheck.ConvNop(captured, types.Types[types.TUNSAFEPTR])
+	return typecheck.Conv(via, types.Types[types.TUINTPTR])
 }
 
 // closureArgs returns a slice of expressions that can be used to

@@ -249,6 +249,37 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	}
 	add("runtime", "wasm3MakeClosureInline1", wasm3MakeClosureInline1Intrinsic, sys.ArchWasm3)
 
+	// N-capture variants: same shape as Inline1, but lower into
+	// OpWasm3MakeClosureRefInline with N capture-args (the SSA op's
+	// argLength=-1 + variadic codegen handles arbitrary N). Walk
+	// must pass exactly N+2 SSA args (closureType, funcsym, then
+	// the captures).
+	makeInlineN := func(arity int) func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		return func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			if len(args) != 2+arity {
+				s.Fatalf("wasm3MakeClosureInline%d intrinsic: expected %d args, got %d", arity, 2+arity, len(args))
+			}
+			funcsymArg := args[1]
+			if funcsymArg.Op != ssa.OpAddr {
+				s.Fatalf("wasm3MakeClosureInline%d intrinsic: arg[1] not OpAddr (got %v); walkClosure must pass OCFUNC", arity, funcsymArg.Op)
+			}
+			sym, ok := funcsymArg.Aux.(*obj.LSym)
+			if !ok || sym == nil {
+				s.Fatalf("wasm3MakeClosureInline%d intrinsic: arg[1].Aux is not *obj.LSym: %T", arity, funcsymArg.Aux)
+			}
+			caps := args[2 : 2+arity]
+			// OpWasm3MakeClosureRefInline has argLength=-1 (variadic
+			// captures); newValue0A creates the op with no args,
+			// then AddArgs attaches the N captures in order.
+			v := s.newValue0A(ssa.OpWasm3MakeClosureRefInline, n.Type(), sym)
+			v.AddArgs(caps...)
+			return v
+		}
+	}
+	add("runtime", "wasm3MakeClosureInline2", makeInlineN(2), sys.ArchWasm3)
+	add("runtime", "wasm3MakeClosureInline3", makeInlineN(3), sys.ArchWasm3)
+	add("runtime", "wasm3MakeClosureInline4", makeInlineN(4), sys.ArchWasm3)
+
 	addF("internal/runtime/math", "MulUintptr",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			if s.config.PtrSize == 4 {

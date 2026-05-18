@@ -7988,15 +7988,13 @@ func wasm3ClosureUsesCapturesInStruct(fn *ir.Func) bool {
 	if len(fn.ClosureVars) == 0 {
 		return false
 	}
-	// Today walkClosure only emits OpWasm3MakeClosureRefInline for
-	// the 1-capture form (wasm3MakeClosureInline1 intrinsic) AND
-	// only for integer captures (Conv-to-uintptr restriction; see
-	// the walk/closure.go predicate). Until the multi-capture and
-	// pointer-capture variants land, restrict the body-side
-	// predicate to match — otherwise the body would take the new
-	// prologue while the caller still goes through the legacy heap-
-	// captures path, leaving the body reading nothing.
-	if len(fn.ClosureVars) != 1 {
+	// walkClosure wires wasm3MakeClosureInline{1,2,3,4} for 1..4
+	// integer captures; pointer captures are blocked by the body-
+	// side ptr-deref still assuming i64-shaped pointers (see the
+	// wasm3ScalarByValClosureVar comment in walk/closure.go). Body
+	// predicate must match exactly so call site and body agree on
+	// closureCtx shape.
+	if len(fn.ClosureVars) < 1 || len(fn.ClosureVars) > 4 {
 		return false
 	}
 	for _, n := range fn.ClosureVars {

@@ -1135,12 +1135,22 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// *obj.LSym; v.AuxInt is the *capture index* (0-based);
 		// fields 0 (funcref) and 1 (legacy captures-ptr) come
 		// before, so the emitted field index is AuxInt + 2.
+		//
+		// We re-emit ref.cast before each struct.get: the per-value
+		// local for the LoweredCastClosureRef result is declared
+		// anyref (wasm3place.go can't reach the per-closure type
+		// index that would let it declare a typed local), so
+		// local.get yields anyref. struct.get rejects anyref input;
+		// the cast is mandatory. Cost: one ref.cast per capture
+		// access, a single type-tag compare on V8.
 		sym, ok := v.Aux.(*obj.LSym)
 		if !ok {
 			v.Fatalf("OpWasm3GetClosureField: v.Aux is not *obj.LSym: %T", v.Aux)
 		}
 		perClosureIdx := wasm3EnsurePerClosureCtxFromSide(s.FuncInfo(), sym, nil)
 		getValue64(s, v.Args[0])
+		pCast := s.Prog(wasm.ARefCast)
+		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(perClosureIdx)}
 		pg := s.Prog(wasm.AStructGet)
 		pg.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(perClosureIdx)}
 		pg.To = obj.Addr{Type: obj.TYPE_CONST, Offset: v.AuxInt + 2}

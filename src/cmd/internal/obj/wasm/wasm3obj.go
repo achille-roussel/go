@@ -720,14 +720,28 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 			writeOpcode(w, AI32Eqz)
 
 		case AGlobalGet:
-			// Stage G singleton: global.get of a closure-singleton
-			// global. The compiler emits this via OpWasm3FuncValue
-			// codegen with From={TYPE_MEM, NAME_EXTERN, Sym=funcLSym,
-			// Offset=per-package closureCtx type index}. The linker
-			// allocates one wasm global per unique (Sym, global type
-			// index) pair (initialised via `struct.new $closureCtx
-			// (ref.func $sym) (i64.const 0)`) and patches in the
-			// resolved global index via R_WASMCLOSURESINGLETON.
+			// Two emitters call this:
+			//
+			// (a) Stage G singleton: global.get of a closure-
+			//     singleton global. The compiler emits AGlobalGet
+			//     via OpWasm3FuncValue codegen with From={TYPE_MEM,
+			//     NAME_EXTERN, Sym=funcLSym, Offset=per-package
+			//     closureCtx type index}. The linker allocates one
+			//     wasm global per unique (Sym, global type index)
+			//     pair (initialised via `struct.new $closureCtx
+			//     (ref.func $sym) (i64.const 0)`) and patches in
+			//     the resolved global index via
+			//     R_WASMCLOSURESINGLETON.
+			//
+			// (b) Captures-in-struct CTXT_REF read: From=
+			//     {TYPE_CONST, Offset=Wasm3GlobalIndexCtxRef}. No
+			//     relocation; the global index is a literal that
+			//     never moves at link time.
+			if p.From.Type == obj.TYPE_CONST {
+				writeOpcode(w, AGlobalGet)
+				writeUleb128(w, uint64(p.From.Offset))
+				break
+			}
 			if p.From.Type != obj.TYPE_MEM ||
 				(p.From.Name != obj.NAME_EXTERN && p.From.Name != obj.NAME_STATIC) {
 				return nil, false
@@ -740,6 +754,16 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 				Sym:  p.From.Sym,
 				Add:  p.From.Offset,
 			})
+
+		case AGlobalSet:
+			// Captures-in-struct CTXT_REF write at indirect-call
+			// sites: From={TYPE_CONST, Offset=Wasm3GlobalIndexCtxRef}.
+			// Plain literal global index; no relocation.
+			if p.From.Type != obj.TYPE_CONST {
+				return nil, false
+			}
+			writeOpcode(w, AGlobalSet)
+			writeUleb128(w, uint64(p.From.Offset))
 
 		default:
 			// Specific operand-carrying ops (wasmgc struct.* / array.* /

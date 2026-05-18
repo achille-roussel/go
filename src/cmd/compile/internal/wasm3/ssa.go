@@ -332,6 +332,17 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 				closureArg := v.Args[1]
 				funcType := wasm3FuncTypeOf(closureArg.Type)
 				closureCtxIdx := wasm3RegisterClosureCtx(s.FuncInfo(), funcType)
+				// Captures-in-struct prep (doc/wasm3-m3-captures-in-
+				// struct.md piece 5): also set CTXT_REF = closure-ref,
+				// so closure bodies migrated to the new prologue can
+				// recover their concrete closureCtx via global.get +
+				// ref.cast. Legacy bodies that still read CTXT (the
+				// captures-ptr) keep working — the per-signature base
+				// has captures-ptr at field 1, and per-closure
+				// subtypes preserve that slot.
+				getValue64(s, closureArg)
+				pSetRef := s.Prog(wasm.AGlobalSet)
+				pSetRef.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm.Wasm3GlobalIndexCtxRef)}
 				getValue64(s, closureArg)
 				cast := s.Prog(wasm.ARefCast)
 				cast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(closureCtxIdx)}

@@ -62,13 +62,18 @@ func makeslicecopy(et *_type, tolen int, fromlen int, from unsafe.Pointer) unsaf
 	} else {
 		// Note: can't use rawmem (which avoids zeroing of memory), because then GC can scan uninitialized memory.
 		to = mallocgc(tomem, et, true)
-		if copymem > 0 && writeBarrier.enabled {
+		if goarch.IsWasm3 == 0 && copymem > 0 && writeBarrier.enabled {
 			// Only shade the pointers in old.array since we know the destination slice to
 			// only contains nil pointers because it has been cleared during alloc.
 			//
 			// It's safe to pass a type to this function as an optimization because
 			// from and to only ever refer to memory representing whole values of
 			// type et. See the comment on bulkBarrierPreWrite.
+			//
+			// On GOARCH=wasm3 the host WasmGC tracks pointer liveness, so
+			// every Go-side write barrier is dead weight; the IsWasm3 gate
+			// lets the compiler SSA-DCE the call (and the transitive
+			// fixalloc/wbBuf chain) out of the wasm3 build entirely.
 			bulkBarrierPreWriteSrcOnly(uintptr(to), uintptr(from), copymem, et)
 		}
 	}
@@ -238,9 +243,13 @@ func growslice(oldPtr unsafe.Pointer, newLen, oldCap, num int, et *_type) slice 
 	} else {
 		// Note: can't use rawmem (which avoids zeroing of memory), because then GC can scan uninitialized memory.
 		p = mallocgc(capmem, et, true)
-		if lenmem > 0 && writeBarrier.enabled {
+		if goarch.IsWasm3 == 0 && lenmem > 0 && writeBarrier.enabled {
 			// Only shade the pointers in oldPtr since we know the destination slice p
 			// only contains nil pointers because it has been cleared during alloc.
+			//
+			// On GOARCH=wasm3 the host WasmGC tracks pointer liveness;
+			// the IsWasm3 gate lets SSA-DCE drop this whole branch
+			// (and the transitive write-barrier subgraph) on wasm3.
 			//
 			// It's safe to pass a type to this function as an optimization because
 			// from and to only ever refer to memory representing whole values of
@@ -415,7 +424,12 @@ func moveSlice(et *_type, old unsafe.Pointer, len, cap int) (unsafe.Pointer, int
 	}
 	capmem := uintptr(cap) * et.Size_
 	new := mallocgc(capmem, et, true)
-	bulkBarrierPreWriteSrcOnly(uintptr(new), uintptr(old), capmem, et)
+	if goarch.IsWasm3 == 0 {
+		// wasm3: host WasmGC tracks pointer liveness; the Go-side
+		// write barrier is unneeded. The IsWasm3 gate lets SSA-DCE
+		// drop the call (and its transitive wbBuf/fixalloc chain).
+		bulkBarrierPreWriteSrcOnly(uintptr(new), uintptr(old), capmem, et)
+	}
 	memmove(new, old, capmem)
 	return new, len, cap
 }
@@ -448,7 +462,10 @@ func moveSliceNoCap(et *_type, old unsafe.Pointer, len int) (unsafe.Pointer, int
 	lenmem := uintptr(len) * et.Size_
 	capmem := roundupsize(lenmem, false)
 	new := mallocgc(capmem, et, true)
-	bulkBarrierPreWriteSrcOnly(uintptr(new), uintptr(old), lenmem, et)
+	if goarch.IsWasm3 == 0 {
+		// wasm3: see moveSlice's gate above.
+		bulkBarrierPreWriteSrcOnly(uintptr(new), uintptr(old), lenmem, et)
+	}
 	memmove(new, old, lenmem)
 	return new, len, int(capmem / et.Size_)
 }

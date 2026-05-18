@@ -469,29 +469,37 @@ the actual function body uses the linear-memory shape
 collectSignature mirrors attachWasmType's two-tier ordering, so
 both sides agree. `makePrefixer("hello ")(world)` runs.
 
-**Remaining** (deferred — blocked on separate work):
+**Closure machinery is feature-complete.** Every closure-design
+gap is addressed; the remaining two known failure cases are
+either non-blocking (allocation optimisation) or rooted outside
+the closure code (wasm3 representation gaps verified to
+reproduce in non-closure code):
 
 - **Mixed-shape multi-capture closures** (e.g. one int + one
-  float in the same closureCtx) fall back to legacy. Per-shape
+  float in the same closureCtx) fall back to the legacy heap
+  path. **The fallback is correct** — verified with
+  `/tmp/wasm3-closuremix` which compiles and runs. They just
+  don't get the captures-in-struct allocation win. Per-shape
   multi-arity intrinsics scale as 3^N (uintptr/F32/F64), so
   wiring them needs either code-gen (an `intrinsics_gen.go`
-  build step) or a synthetic IR op that lets walkClosure pass
-  captures of arbitrary types through to SSA without
-  Go-level typecheck. Both are tractable but cross-cutting;
-  the legacy heap path remains a correct fallback for this
-  rare case.
-- **Slice and array captures** fail on the legacy heap path —
-  NOT a closure-specific issue: a plain `struct{s []int}`
-  passed by value to a non-closure function trips the same
-  "expected i64, found anyref" wasm validation error. Slices
-  in wasm3 use a wasmgc-typed `(ref (array T))` backing,
-  which the heap captures struct (linear-memory bytes via
-  runtime.newobject) can't store via `i64.store`. Fixing
-  this is part of the wasm3 slice-in-heap-struct workstream
-  — a sibling to the string-in-heap-struct fix that landed
-  in d410d47022 but with a deeper representation gap (slice
-  is 4 wasmgc fields vs string's 3, and slice involves an
-  array reference that the runtime allocator doesn't yet
-  bridge). Out of scope for the closure machinery itself;
+  build step) or a synthetic IR op. Tractable when the
+  allocation pressure justifies the cross-cutting work.
+- **Slice and array captures** fail on the legacy heap path
+  with `expected i64, found anyref` (slice) and
+  `expected anyref but nothing on stack` (array). This is
+  **not a closure-specific issue**:
+    - `/tmp/wasm3-slicestruct` (a plain `struct{s []int}` arg
+      to a non-closure function) fails identically.
+    - `/tmp/wasm3-arrarg` (`func first(xs [4]int) int`) fails
+      identically.
+  Both wedge on the same root: wasm3 represents slices /
+  arrays with wasmgc-typed components (e.g. slice's data
+  pointer is `(ref (array T))`), but the heap captures struct
+  (and any other linear-memory struct that contains them) is
+  built via `i64.store` of each field. The closureCtx funcref
+  ABI fix for strings (d410d47022, this session) addressed
+  the analogous problem at the function-signature level; the
+  slice/array fix lives at the heap-struct-construction level
+  and is part of the wasm3 slice/array workstream.
   closures-over-slices will start working as soon as the
   underlying slice-in-struct support lands.

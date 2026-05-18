@@ -387,6 +387,55 @@ func init() {
 		// the wasm3 CTXT global so the body's CTXT-relative load
 		// path keeps working.
 		{name: "MakeClosureRef", argLength: 1, reg: gp11, aux: "Sym", symEffect: "Addr", typ: "BytePtr"},
+
+		// M3 Stage G captures-in-closureCtx (doc/wasm3-m3-captures-
+		// in-struct.md): materialise a closure as a per-closure
+		// `(ref $go.closure.<funcsym>)` subtype, with the captures
+		// stored *inline* in the wasmgc struct rather than on the
+		// linear-memory bump heap. v.Aux is the closure body's
+		// *obj.LSym (also keys the per-closure wasmgc type); v.Type
+		// is the user's *func/func type for closureCtx-index
+		// derivation. Args are the captured values themselves, in
+		// ClosureVars order — one anyref/i64/etc. per capture, no
+		// captures-ptr indirection. Codegen emits `ref.func $sym;
+		// <captures...>; struct.new $closureCtx_<funcsym>`. Replaces
+		// the MakeClosureRef + heap-alloc + runtime.wasm3WrapClosure
+		// pattern for closures whose bodies have been migrated to
+		// the new prologue (LoweredGetClosureRef + GetClosureField);
+		// MakeClosureRef stays for the still-CTXT-i64 method-value
+		// path.
+		{name: "MakeClosureRefInline", argLength: -1, reg: regInfo{outputs: []regMask{gp}}, aux: "Sym", symEffect: "Addr", typ: "BytePtr"},
+
+		// LoweredGetClosureRef: read the CTXT_REF anyref global
+		// (module global 2), the closure-ref the indirect-call site
+		// stored before call_ref. Used by closure-body prologues
+		// migrated to the captures-in-struct scheme to recover the
+		// concrete closureCtx value for subsequent ref.cast +
+		// struct.get on captures. rematerializeable so the prologue
+		// emits exactly one read and downstream uses see it via the
+		// per-value local.
+		{name: "LoweredGetClosureRef", reg: gp01, rematerializeable: true, typ: "BytePtr"},
+
+		// LoweredCastClosureRef: cast a plain anyref (typically from
+		// LoweredGetClosureRef) down to a concrete `(ref $go.closure.
+		// <funcsym>)`. v.Aux is the closure body's *obj.LSym, used by
+		// the obj-encoder to look up the per-closure closureCtx type
+		// index for the ref.cast operand. arg0 is the anyref value.
+		// Output is an anyref-shaped local that subsequent
+		// GetClosureField ops read from.
+		{name: "LoweredCastClosureRef", argLength: 1, reg: gp11, aux: "Sym", symEffect: "Addr", typ: "BytePtr"},
+
+		// GetClosureField: read a capture from a typed closure-ref
+		// produced by LoweredCastClosureRef. v.Aux is the closure
+		// body's *obj.LSym (for type-index lookup); v.AuxInt is the
+		// 0-based field index *within the closure's capture list*
+		// (field 0 in the wasmgc struct is the funcref, so the
+		// encoder adds 1 when emitting `struct.get $closureCtx
+		// <AuxInt+1>`). arg0 is the typed closure-ref. v.Type drives
+		// the per-value local shape — scalar captures land in an
+		// i64 local, reference captures in an anyref local, matching
+		// the wasm3ValueType dispatch.
+		{name: "GetClosureField", argLength: 1, reg: gp11, aux: "SymOff", symEffect: "Addr"},
 	}
 
 	archs = append(archs, arch{

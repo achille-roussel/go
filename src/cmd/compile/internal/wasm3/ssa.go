@@ -1048,6 +1048,91 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		pn := s.Prog(wasm.AStructNew)
 		pn.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(closureIdx)}
 
+	case ssa.OpWasm3MakeClosureRefInline:
+		// doc/wasm3-m3-captures-in-struct.md: build a closureCtx
+		// subtype `(sub $go.closure.<sig> (struct (ref $func) i64
+		// cap0 cap1 ...))` with captures stored inline rather than
+		// behind a linear-memory pointer. Emit:
+		//   ref.func $sym                ;; field 0: funcref
+		//   i64.const 0                  ;; field 1: legacy
+		//                                    captures-ptr slot
+		//                                    (kept so the per-
+		//                                    signature base type
+		//                                    stays compatible);
+		//                                    new-style bodies
+		//                                    ignore it.
+		//   <push capture0>              ;; field 2: cap0
+		//   <push capture1>              ;; field 3: cap1
+		//   ...
+		//   struct.new $closureCtx_<sym>
+		sym, ok := v.Aux.(*obj.LSym)
+		if !ok {
+			v.Fatalf("OpWasm3MakeClosureRefInline: v.Aux is not *obj.LSym: %T", v.Aux)
+		}
+		ft := wasm3FuncTypeOf(v.Type)
+		if ft == nil {
+			v.Fatalf("OpWasm3MakeClosureRefInline: v.Type is not a func or *func: %v", v.Type)
+		}
+		captureTypes := make([]*types.Type, len(v.Args))
+		for i, a := range v.Args {
+			captureTypes[i] = a.Type
+		}
+		perClosureIdx := wasm3RegisterPerClosureCtx(s.FuncInfo(), sym, ft, captureTypes)
+		pf := s.Prog(wasm.ARefFunc)
+		pf.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: sym}
+		// Legacy captures-ptr slot: 0 (new-style bodies ignore it).
+		p0 := s.Prog(wasm.AI64Const)
+		p0.From = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+		// Push captures in order.
+		for _, a := range v.Args {
+			getValue64(s, a)
+		}
+		pn := s.Prog(wasm.AStructNew)
+		pn.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(perClosureIdx)}
+
+	case ssa.OpWasm3LoweredGetClosureRef:
+		// doc/wasm3-m3-captures-in-struct.md: read the CTXT_REF
+		// anyref module global (index 2). The default case's
+		// localSetIdx fall-through stores the resulting anyref into
+		// v's per-value local (typed anyref by wasm3ValueType).
+		p := s.Prog(wasm.AGlobalGet)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm.Wasm3GlobalIndexCtxRef)}
+
+	case ssa.OpWasm3LoweredCastClosureRef:
+		// doc/wasm3-m3-captures-in-struct.md: cast a plain anyref
+		// (from LoweredGetClosureRef) down to a concrete (ref
+		// $go.closure.<sym>) subtype, so subsequent GetClosureField
+		// ops can struct.get its capture fields. v.Aux is the
+		// closure body's *obj.LSym; the per-closure type index is
+		// resolved through wasm3RegisterPerClosureCtx (which the
+		// closure body has already called from its prologue
+		// emission).
+		sym, ok := v.Aux.(*obj.LSym)
+		if !ok {
+			v.Fatalf("OpWasm3LoweredCastClosureRef: v.Aux is not *obj.LSym: %T", v.Aux)
+		}
+		perClosureIdx := wasm3LookupPerClosureCtx(s.FuncInfo(), sym)
+		getValue64(s, v.Args[0])
+		pc := s.Prog(wasm.ARefCast)
+		pc.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(perClosureIdx)}
+
+	case ssa.OpWasm3GetClosureField:
+		// doc/wasm3-m3-captures-in-struct.md: struct.get a capture
+		// from a typed closure-ref produced by
+		// LoweredCastClosureRef. v.Aux is the closure body's
+		// *obj.LSym; v.AuxInt is the *capture index* (0-based);
+		// fields 0 (funcref) and 1 (legacy captures-ptr) come
+		// before, so the emitted field index is AuxInt + 2.
+		sym, ok := v.Aux.(*obj.LSym)
+		if !ok {
+			v.Fatalf("OpWasm3GetClosureField: v.Aux is not *obj.LSym: %T", v.Aux)
+		}
+		perClosureIdx := wasm3LookupPerClosureCtx(s.FuncInfo(), sym)
+		getValue64(s, v.Args[0])
+		pg := s.Prog(wasm.AStructGet)
+		pg.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(perClosureIdx)}
+		pg.To = obj.Addr{Type: obj.TYPE_CONST, Offset: v.AuxInt + 2}
+
 	case ssa.OpWasm3SubSlice:
 		// M3 Stage E phase 3: sub-slicing via deep copy. arg0 =
 		// orig_backing (anyref), arg1 = lo (i64), arg2 = len (i64),

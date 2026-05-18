@@ -11,6 +11,7 @@ import (
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
 	"cmd/internal/wasmgc"
+	"strconv"
 	"sync"
 )
 
@@ -444,6 +445,67 @@ func wasm3RegisterClosureCtx(fi *obj.FuncInfo, ft *types.Type) uint32 {
 	return uint32(idx)
 }
 
+// wasm3RegisterPerClosureCtx registers a per-closure subtype of the
+// per-signature closureCtx, with `captureTypes`'s wasm storages
+// appended after the legacy (funcref, captures-ptr-i64) fields.
+// Keyed on `sym` (the closure body's LSym) so subsequent emissions
+// of the same closure reuse the index. doc/wasm3-m3-captures-in-
+// struct.md piece 2 — the new struct shape is:
+//
+//	(sub $go.closure.<sig> (struct
+//	    (ref $funcType)        ;; field 0 — inherited
+//	    i64                    ;; field 1 — inherited, unused
+//	    <cap0-storage>         ;; field 2
+//	    <cap1-storage>         ;; field 3
+//	    ...
+//	))
+//
+// Same lazy-init pattern as wasm3RegisterClosureCtx.
+func wasm3RegisterPerClosureCtx(fi *obj.FuncInfo, sym *obj.LSym, ft *types.Type, captureTypes []*types.Type) uint32 {
+	if fi == nil {
+		base.Fatalf("wasm3RegisterPerClosureCtx: fi is nil")
+	}
+	cAny, ok := wasm3LiveCollector.Load(fi)
+	var c *typeCollector
+	if ok {
+		c = cAny.(*typeCollector)
+	} else {
+		c = newTypeCollector()
+		wasm3LiveCollector.Store(fi, c)
+		if fi.WasmType == nil {
+			fi.WasmType = &obj.WasmType{}
+		}
+	}
+	idx := c.collectPerClosureCtx(sym, ft, captureTypes)
+	var b bytes.Buffer
+	c.table.Write(&b)
+	fi.WasmType.Table = b.Bytes()
+	return uint32(idx)
+}
+
+// wasm3LookupPerClosureCtx returns the per-closure closureCtx type
+// index previously registered for `sym` via
+// wasm3RegisterPerClosureCtx. Panics if no entry exists — the body
+// must register before any consumer (the prologue does this first,
+// then capture-access ops re-use the index). Used by
+// OpWasm3LoweredCastClosureRef and OpWasm3GetClosureField codegen,
+// which don't have the captures list at lookup time.
+func wasm3LookupPerClosureCtx(fi *obj.FuncInfo, sym *obj.LSym) uint32 {
+	if fi == nil {
+		base.Fatalf("wasm3LookupPerClosureCtx: fi is nil")
+	}
+	cAny, ok := wasm3LiveCollector.Load(fi)
+	if !ok {
+		base.Fatalf("wasm3LookupPerClosureCtx: no collector for %v", sym)
+	}
+	c := cAny.(*typeCollector)
+	idx, ok := c.perClosureCtxs[sym]
+	if !ok {
+		base.Fatalf("wasm3LookupPerClosureCtx: %v not yet registered", sym)
+	}
+	return uint32(idx)
+}
+
 // wasm3RegisterFuncSig returns the wasmgc func-type index for ft,
 // registering both the funcType and (as a side-effect of
 // collectClosureCtx) the closureCtx struct. Used by
@@ -665,6 +727,56 @@ func (c *typeCollector) collectSignature(ft *types.Type) int {
 		Results: results,
 	})
 	c.funcs[ft] = idx
+	return idx
+}
+
+// collectPerClosureCtx reserves and returns the table index of a
+// per-closure subtype of the per-signature closureCtx. Each Go
+// closure literal (or method-value -fm wrapper) keyed on its body's
+// LSym gets a wasmgc struct extending the base with one field per
+// capture, in the order they appear in fn.ClosureVars. See
+// doc/wasm3-m3-captures-in-struct.md for the design.
+//
+// Lowering of capture types: each capture's *types.Type goes through
+// lowerFields, which yields one or more wasm storages. For the
+// initial scalar-only path the helper requires every capture to
+// lower to exactly one field; multi-field captures (string, slice,
+// struct, ...) fall outside the path and the caller is responsible
+// for routing them through the legacy heap-captures route instead.
+// That refusal happens at the wasm3 walk-pass site, not here — by
+// the time collectPerClosureCtx is called, the captures are
+// guaranteed scalar.
+func (c *typeCollector) collectPerClosureCtx(sym *obj.LSym, ft *types.Type, captureTypes []*types.Type) int {
+	if idx, ok := c.perClosureCtxs[sym]; ok {
+		return idx
+	}
+	baseIdx := c.collectClosureCtx(ft) // base type, inherited fields 0 and 1
+	funcIdx := c.collectSignature(ft)
+
+	fields := []wasmgc.Field{
+		{Storage: wasmgc.RefStorage(funcIdx, false), Mutable: false},
+		{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: false},
+	}
+	for _, ct := range captureTypes {
+		cf := c.lowerFields(ct)
+		if len(cf) != 1 {
+			// Unsupported on the scalar-only path; caller should
+			// not have invoked us. Use a base type stand-in so
+			// the rest of the type-table walk still terminates,
+			// but the resulting program is malformed at the
+			// capture-access level — better to fatal here.
+			panic("wasm3: collectPerClosureCtx: capture type " + ct.String() + " lowers to " + strconv.Itoa(len(cf)) + " fields, expected 1")
+		}
+		fields = append(fields, cf[0])
+	}
+	idx := len(c.table)
+	c.perClosureCtxs[sym] = idx
+	c.table = append(c.table, wasmgc.Type{
+		Name:   "go.closure." + sym.Name,
+		Kind:   wasmgc.KindStruct,
+		Super:  baseIdx,
+		Fields: fields,
+	})
 	return idx
 }
 

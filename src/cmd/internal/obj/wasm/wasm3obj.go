@@ -37,12 +37,20 @@ import (
 
 // wasm3GlobalIndex returns the wasm3 module's global index for a Go
 // "register" that is implemented as a wasm global rather than a
-// per-function local. The wasm3 linker emits two globals (see
-// cmd/link/internal/wasm/asm3.go writeGlobalSec3):
+// per-function local. The wasm3 linker emits three fixed globals
+// plus per-singleton globals (see cmd/link/internal/wasm/asm3.go
+// writeGlobalSec3):
 //
 //	0: i32 — linear-memory bump-allocator pointer / SP.
-//	1: i64 — CTXT, used by closure-with-captures calls to pass the
-//	   captures pointer from the call site to the closure body.
+//	1: i64 — CTXT, used by legacy closure-with-captures calls to
+//	   pass the captures pointer from the call site to the closure
+//	   body. Targeted for retirement once captures-in-struct lands
+//	   for every closure path (see doc/wasm3-m3-captures-in-struct.md).
+//	2: anyref — CTXT_REF, used by captures-in-struct closure bodies
+//	   to recover their concrete closureCtx ref from the indirect-
+//	   call site. Read via wasm3GlobalIndexCtxRef in compile-side
+//	   codegen (no REG_* mapping; bodies emit AGlobalGet directly
+//	   from the OpWasm3LoweredGetClosureRef SSA op).
 //
 // REG_SP is excluded here because SP-relative AGet needs offset
 // arithmetic (global.get 0 → i64.extend → +offset), not a plain
@@ -55,6 +63,12 @@ func wasm3GlobalIndex(reg int16) (uint64, bool) {
 	}
 	return 0, false
 }
+
+// Wasm3GlobalIndexCtxRef is the index of the CTXT_REF anyref module
+// global (see writeGlobalSec3). Exposed so the compile-side codegen
+// for OpWasm3LoweredGetClosureRef can emit `global.get 2` without
+// hard-coding the literal.
+const Wasm3GlobalIndexCtxRef = 2
 
 // Wasm3StructuredPlan is the relooper output the compiler-side
 // publishes to the obj-side encoder. When present for a given LSym,

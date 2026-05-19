@@ -32,7 +32,21 @@ var wasm3HeapNext uintptr
 //
 //go:nosplit
 func newobject(typ *_type) unsafe.Pointer {
-	size := typ.Size_
+	return wasm3BumpAlloc(typ.Size_)
+}
+
+// wasm3BumpAlloc carves `size` bytes (aligned up to 8) out of the
+// wasm3Heap bump arena. The wasm3 fork's mallocgc shim and any
+// other size-keyed allocation site routes through here; newobject
+// is the type-keyed wrapper above.
+//
+// Single-goroutine wasm3 — no atomic / locking discipline needed.
+//
+//go:nosplit
+func wasm3BumpAlloc(size uintptr) unsafe.Pointer {
+	if size == 0 {
+		return unsafe.Pointer(&zerobase)
+	}
 	aligned := (size + 7) &^ 7
 	if wasm3HeapNext+aligned > uintptr(len(wasm3Heap)) {
 		// Heap exhausted. Trap with i32.div_s by 0 — cheap, no

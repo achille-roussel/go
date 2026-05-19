@@ -239,7 +239,16 @@ func growslice(oldPtr unsafe.Pointer, newLen, oldCap, num int, et *_type) slice 
 		// Only clear the part that will not be overwritten.
 		// The reflect_growslice() that calls growslice will manually clear
 		// the region not cleared here.
-		memclrNoHeapPointers(add(p, newlenmem), capmem-newlenmem)
+		//
+		// On wasm3 the bump-heap mallocgc already zeroes the returned
+		// allocation (see runtime.wasm3BumpAlloc), so the trailing
+		// clear is redundant; gate it out so memclrNoHeapPointers
+		// stays unreachable on wasm3 (its sub-word stride helpers
+		// pull in linear-memory pointer arithmetic the wasm3 backend
+		// can't lower cleanly).
+		if goarch.IsWasm3 == 0 {
+			memclrNoHeapPointers(add(p, newlenmem), capmem-newlenmem)
+		}
 	} else {
 		// Note: can't use rawmem (which avoids zeroing of memory), because then GC can scan uninitialized memory.
 		p = mallocgc(capmem, et, true)

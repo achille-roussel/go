@@ -525,25 +525,41 @@ reproduce in non-closure code):
   (`makeChecker("hello")` → closure returning `len(prefix)`)
   both run to expected output.
 
-- **Array captures** still fail with `expected anyref but
-  nothing on stack`. Not a closure-specific issue — the same
-  failure appears in `/tmp/wasm3-arrarg`
-  (`func first(xs [4]int) int` called from main). The wasm3
-  call ABI doesn't yet materialise a wasmgc array ref at the
-  call site for a TARRAY pass-by-value arg; the caller pushes
-  zero values and the callee expects `(ref $arr_T)`.
-  `captureClosureFields` for TARRAY (`AnyRefStorage`) is
-  defined but the intrinsic / walk plumbing is dormant until
-  the upstream array ABI lands. Composite captures over
-  arrays will start working as soon as it does.
+- **Array captures** ✅ landed (24f9dfb982). A `[N]int`
+  ClosureVar (1 ≤ N ≤ 8) decomposes at walk time into N scalar
+  captures via the existing `wasm3MakeClosureInlineN`
+  intrinsics — each element crosses the call boundary as an
+  i64 register arg, so the still-open array-by-value call ABI
+  isn't on the path. The body-side prologue rematerialises
+  the array with a zero-init `assign(n, nil, …)` that goes
+  through ssagen's PAUTO TARRAY → `OpWasm3StackArray` branch
+  (allocates a fresh wasmgc array backing), then N per-element
+  `assign(arr[i], GetClosureField, …)` calls populate it. The
+  body's `xs[i]` indexing reaches the array via the same
+  StackArray path it would for a regular local `var xs [N]int`.
+  `captureClosureFields` for TARRAY now emits N i64 fields
+  rather than one anyref. `/tmp/wasm3-closurearr2`
+  (`makeIndexer()` returning a closure over a local
+  `[4]int{10,20,30,40}`) prints "ok".
 
-- **Slice-literal captures**
-  (`xs := []int{1,2,3,4,5}; makeSummer(xs)`) work in the
-  closure body, but the literal initialisation itself routes
-  through `runtime.newobject` (linear-memory backing) rather
-  than `OpWasm3MakeSlice` (wasmgc backing), so the call site
-  pushes an i64 data pointer where the closureCtx expects
-  anyref. Workaround: initialise via `make()` + per-element
-  assignment. Permanent fix is the slice-literal-to-wasmgc
-  lowering in walkCompositeLit, a separate slice-workstream
-  follow-on.
+- **Slice-literal captures** ✅ landed (24f9dfb982). The wasm3
+  branch of `walk/complit.go`'s `slicelit` transforms
+  `[]T{e0, e1, ..., eN}` into `tmp := make([]T, len); tmp[i] = ei;
+  var = tmp` — `make([]T, len)` lowers through
+  `OpWasm3MakeSlice` (wasmgc backing) instead of the default
+  `*[N]T` autotmp + `runtime.newobject` (linear-memory backing)
+  that produced an i64 ptr where the closureCtx expected anyref.
+  `/tmp/wasm3-closureslice` now runs with the original
+  `[]int{1,2,3,4,5}` literal (instead of the make()+loop
+  workaround).
+
+- **Array-by-value as a function arg** is the one remaining
+  gap, but it's **not a closure issue** — `/tmp/wasm3-arrarg`
+  (`func first(xs [4]int) int` called from `main` without any
+  closures) fails identically. The wasm3 call ABI doesn't yet
+  materialise a wasmgc array ref at the call site for a TARRAY
+  pass-by-value arg; the caller pushes zero values and the
+  callee expects `(ref $arr_T)`. Fixing this would unblock
+  `/tmp/wasm3-closurearr` (which constructs the array in `main`
+  and passes it to `makeIndexer`); the closure machinery is
+  ready for it.

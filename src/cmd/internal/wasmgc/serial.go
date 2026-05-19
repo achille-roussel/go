@@ -38,11 +38,14 @@ func (table Table) Write(w *bytes.Buffer) {
 	writeStorage := func(s Storage) {
 		w.WriteByte(byte(s.Prim))
 		writeInt64(int64(s.RefType))
+		var flags byte
 		if s.RefNull {
-			w.WriteByte(1)
-		} else {
-			w.WriteByte(0)
+			flags |= 1
 		}
+		if s.AnyRef {
+			flags |= 2
+		}
+		w.WriteByte(flags)
 	}
 
 	writeUint32(uint32(len(table)))
@@ -106,7 +109,9 @@ func ReadTable(b []byte) Table {
 		var s Storage
 		s.Prim = Prim(readByte())
 		s.RefType = int(readInt64())
-		s.RefNull = readByte() != 0
+		flags := readByte()
+		s.RefNull = flags&1 != 0
+		s.AnyRef = flags&2 != 0
 		return s
 	}
 

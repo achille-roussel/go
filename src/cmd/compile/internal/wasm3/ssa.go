@@ -1144,9 +1144,23 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		if ft == nil {
 			v.Fatalf("OpWasm3MakeClosureRefInline: v.Type is not a func or *func: %v", v.Type)
 		}
-		captureTypes := make([]*types.Type, len(v.Args))
-		for i, a := range v.Args {
-			captureTypes[i] = a.Type
+		// Use the Go-level capture types from the side channel so the
+		// caller and body agree on the per-closure-ctx struct shape
+		// for composite captures (slice/string/array). For scalar
+		// captures the side-channel types and v.Args types coincide,
+		// so the caller-side count and body-side count match
+		// trivially. Walk publishes the side channel before either
+		// side runs codegen; see walkClosure's wasm3-composite branch
+		// and the body-prologue at ssagen.
+		captureTypes := wasm3CaptureTypesFromSide(sym)
+		if captureTypes == nil {
+			// Legacy fall-through: scalar captures whose walk path
+			// hasn't published yet end up here; reconstruct from
+			// v.Args (each arg is one capture).
+			captureTypes = make([]*types.Type, len(v.Args))
+			for i, a := range v.Args {
+				captureTypes[i] = a.Type
+			}
 		}
 		perClosureIdx := wasm3RegisterPerClosureCtx(s.FuncInfo(), sym, ft, captureTypes)
 		pf := s.Prog(wasm.ARefFunc)
@@ -1213,7 +1227,13 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(perClosureIdx)}
 		pg := s.Prog(wasm.AStructGet)
 		pg.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(perClosureIdx)}
-		pg.To = obj.Addr{Type: obj.TYPE_CONST, Offset: v.AuxInt + 2}
+		// AuxInt is the wasm-field offset within the captures
+		// region; the high bit (Wasm3GetClosureFieldAnyrefBit) is
+		// the anyref-typing marker — mask it off for the field
+		// index, then add 2 for the base fields (funcref + legacy
+		// captures-ptr).
+		fieldOff := ssa.Wasm3GetClosureFieldOffset(v.AuxInt)
+		pg.To = obj.Addr{Type: obj.TYPE_CONST, Offset: fieldOff + 2}
 
 	case ssa.OpWasm3SubSlice:
 		// M3 Stage E phase 3: sub-slicing via deep copy. arg0 =

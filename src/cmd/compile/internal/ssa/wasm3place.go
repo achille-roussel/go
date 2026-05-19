@@ -236,13 +236,18 @@ func wasm3ValueType(v *Value) byte {
 		OpWasm3LoweredGetClosureRef, OpWasm3LoweredCastClosureRef:
 		return wasm3ValAnyref
 	case OpWasm3GetClosureField:
-		// All captures-in-struct fields are i64-shaped today
-		// (integer captures via wasm3.scalarPrim and pointer
-		// captures via the i64-storage exception in
-		// collectPerClosureCtx); no anyref-typed capture field
-		// exists yet. Falls through to the generic type-based
-		// default which lands at wasm3ValI64 for ints and
-		// pointers.
+		// Whether a GetClosureField produces an anyref or an i64
+		// local depends on the closureCtx field type at AuxInt, not
+		// on v.Type — a slice's .array field reads back as anyref
+		// even though its IR type is `*Elem`. The body-side prologue
+		// signals this by setting an AuxInt high-bit (handled at
+		// the dedicated check below) so wasm3ValueType doesn't have
+		// to recover the field type from the side channel.
+		if v.AuxInt&wasm3GetClosureFieldAnyrefBit != 0 {
+			return wasm3ValAnyref
+		}
+		// Otherwise scalar (int/uintptr) captures stay i64 by
+		// falling through to the generic type-based default below.
 	case OpArgIntReg:
 		if wasm3OpArgIsRefParam(v) {
 			return wasm3ValAnyref
@@ -282,6 +287,26 @@ func wasm3ValueType(v *Value) byte {
 	return wasm3ValI64
 }
 
+// wasm3GetClosureFieldAnyrefBit is a high bit set on
+// OpWasm3GetClosureField's AuxInt when the captured field is
+// anyref-typed in the closureCtx (e.g. the .array of a slice
+// capture). The body-side prologue sets it for slice/string/array
+// composite captures so wasm3ValueType allocates an anyref local
+// for the result. The codegen masks it off when computing the
+// struct.get field index.
+const wasm3GetClosureFieldAnyrefBit int64 = 1 << 32
+
+// Wasm3GetClosureFieldOffset extracts the actual field-offset
+// portion of a OpWasm3GetClosureField AuxInt (clearing the anyref-
+// marker bit). Used by the wasm3 obj codegen.
+func Wasm3GetClosureFieldOffset(auxInt int64) int64 {
+	return auxInt &^ wasm3GetClosureFieldAnyrefBit
+}
+
+// Wasm3GetClosureFieldAnyrefBit is the exported flag bit so callers
+// (the wasm3 ssagen prologue) can mark composite-capture reads.
+const Wasm3GetClosureFieldAnyrefBit int64 = wasm3GetClosureFieldAnyrefBit
+
 // isWasm3LoadOp reports whether v.Op is one of the wasm3 load
 // opcodes that produce an i64-shaped wasm result.
 func isWasm3LoadOp(op Op) bool {
@@ -315,6 +340,16 @@ func Wasm3IsAnyrefValue(v *Value) bool {
 // ArrayGet/Set opcode-width choice and the wasmgc-backing-type
 // registration done by wasm3RegisterArrayAux.
 func Wasm3SliceArgElemType(v *Value) *types.Type {
+	// Closure-captured slice case: the body-side prologue emits
+	// OpWasm3GetClosureField with the anyref-marker bit set for a
+	// slice .array field. v.Type is *T (elem pointer), so v.Type.Elem()
+	// gives the elem type the rewrite rules need.
+	if v.Op == OpWasm3GetClosureField && v.AuxInt&wasm3GetClosureFieldAnyrefBit != 0 {
+		if v.Type != nil && v.Type.IsPtr() && v.Type.Elem() != nil {
+			return v.Type.Elem()
+		}
+		return nil
+	}
 	if v.Op != OpArgIntReg {
 		return nil
 	}

@@ -11,6 +11,7 @@ import (
 	"cmd/compile/internal/ssa"
 	"cmd/compile/internal/typecheck"
 	"cmd/compile/internal/types"
+	"cmd/internal/obj/wasm"
 	"cmd/internal/src"
 	"internal/buildcfg"
 	"strconv"
@@ -187,6 +188,43 @@ func walkClosure(clo *ir.ClosureExpr, init *ir.Nodes) ir.Node {
 				return walkExpr(call, init)
 			}
 		}
+		// Single-slice-capture closure. The composite-captures
+		// extension of captures-in-struct: rather than store the slice
+		// as 3 i64 fields in a runtime.newobject linear-memory block
+		// (which would i64.store the anyref backing pointer — invalid
+		// wasm), put the slice's three components into the wasmgc
+		// closureCtx subtype as (anyref backing, i64 len, i64 cap).
+		// The body's GetClosureField loop reads them back via three
+		// struct.gets + SliceMake. Predicate: exactly one ClosureVar,
+		// by-value, not addr-taken, slice-typed.
+		if len(clofn.ClosureVars) == 1 {
+			cv := clofn.ClosureVars[0]
+			if cv.Byval() && !cv.Addrtaken() && cv.Type().IsSlice() && ssa.CanSSA(cv.Type()) {
+				// Publish closure body info to the side channel up-
+				// front. Both the caller-side OpWasm3MakeClosureRefInline
+				// codegen and the body-side OpWasm3LoweredCastClosureRef /
+				// OpWasm3GetClosureField codegens read this to derive
+				// the matching per-closure-ctx struct shape (Go-level
+				// types so composite captures lower consistently on
+				// both sides). The body-side prologue at ssagen also
+				// publishes — they overwrite each other with the same
+				// content, so racing is harmless.
+				captureTypes := []*types.Type{cv.Type()}
+				wasm.Wasm3ClosureBodyCaptures.Store(clofn.Nname.Linksym(), &wasm.Wasm3ClosureBodyInfo{
+					FuncType: clofn.Type(),
+					Captures: captureTypes,
+				})
+				fn := typecheck.LookupRuntime("wasm3MakeClosureInlineSlice1", cv.Type().Elem())
+				closureType := reflectdata.TypePtrAt(base.Pos, clo.Type())
+				fnSym := ir.NewUnaryExpr(base.Pos, ir.OCFUNC, clofn.Nname)
+				fnSym.SetType(types.Types[types.TUINTPTR])
+				fnSym = typecheck.Expr(fnSym).(*ir.UnaryExpr)
+				call := typecheck.Call(base.Pos, fn, []ir.Node{closureType, fnSym, cv.Outer}, false).(*ir.CallExpr)
+				call.SetType(clo.Type())
+				return walkExpr(call, init)
+			}
+		}
+
 	wasm3LegacyClosure:
 
 		// Stage G (legacy): wrap the linear-memory captures struct

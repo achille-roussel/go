@@ -305,6 +305,39 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	add("runtime", "wasm3MakeClosureInline3F32", makeInlineN(3), sys.ArchWasm3)
 	add("runtime", "wasm3MakeClosureInline4F32", makeInlineN(4), sys.ArchWasm3)
 
+	// Single-slice-capture closure builder. The Go-level intrinsic
+	// signature is `(closureType *byte, funcsym uintptr, cap0 []any)`;
+	// at the SSA layer args[2] is a single slice value whose ptr/len/cap
+	// components feed three separate OpWasm3MakeClosureRefInline args.
+	// collectPerClosureCtx mirrors this by appending the three fields
+	// (anyref backing, i64 len, i64 cap) to the closureCtx subtype;
+	// the body's GetClosureField loop walks the same per-capture span
+	// to read them back and reassemble via OpSliceMake. Composite
+	// captures other than a single slice (multi-slice, string, array,
+	// struct, mixed) still fall back to the legacy heap path.
+	wasm3MakeClosureInlineSlice1Intrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		if len(args) != 3 {
+			s.Fatalf("wasm3MakeClosureInlineSlice1 intrinsic: expected 3 args, got %d", len(args))
+		}
+		funcsymArg := args[1]
+		if funcsymArg.Op != ssa.OpAddr {
+			s.Fatalf("wasm3MakeClosureInlineSlice1 intrinsic: arg[1] not OpAddr (got %v); walkClosure must pass OCFUNC", funcsymArg.Op)
+		}
+		sym, ok := funcsymArg.Aux.(*obj.LSym)
+		if !ok || sym == nil {
+			s.Fatalf("wasm3MakeClosureInlineSlice1 intrinsic: arg[1].Aux is not *obj.LSym: %T", funcsymArg.Aux)
+		}
+		slice := args[2]
+		elemPtrType := types.NewPtr(slice.Type.Elem())
+		ptr := s.newValue1(ssa.OpSlicePtr, elemPtrType, slice)
+		length := s.newValue1(ssa.OpSliceLen, types.Types[types.TINT], slice)
+		capacity := s.newValue1(ssa.OpSliceCap, types.Types[types.TINT], slice)
+		v := s.newValue0A(ssa.OpWasm3MakeClosureRefInline, n.Type(), sym)
+		v.AddArgs(ptr, length, capacity)
+		return v
+	}
+	add("runtime", "wasm3MakeClosureInlineSlice1", wasm3MakeClosureInlineSlice1Intrinsic, sys.ArchWasm3)
+
 	addF("internal/runtime/math", "MulUintptr",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			if s.config.PtrSize == 4 {

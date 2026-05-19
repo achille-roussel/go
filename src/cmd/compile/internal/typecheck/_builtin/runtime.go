@@ -216,6 +216,17 @@ func wasm3MakeClosureInline5(closureType *byte, funcsym uintptr, cap0, cap1, cap
 func wasm3MakeClosureInline6(closureType *byte, funcsym uintptr, cap0, cap1, cap2, cap3, cap4, cap5 uintptr) unsafe.Pointer
 func wasm3MakeClosureInline7(closureType *byte, funcsym uintptr, cap0, cap1, cap2, cap3, cap4, cap5, cap6 uintptr) unsafe.Pointer
 func wasm3MakeClosureInline8(closureType *byte, funcsym uintptr, cap0, cap1, cap2, cap3, cap4, cap5, cap6, cap7 uintptr) unsafe.Pointer
+
+// Single-slice-capture closure builder. Slice captures lower to
+// three wasm fields in the closureCtx (anyref backing, i64 len,
+// i64 cap) — the intrinsic at the SSA layer extracts those
+// three components from cap0 and feeds them to
+// OpWasm3MakeClosureRefInline. Closure body recovers the slice
+// via three struct.gets + SliceMake; see ssagen's wasm3 closure
+// prologue. cap0's element type is `any` so the *byte / *func
+// inflation in `LookupRuntime` gets the right slice shape from
+// the user's capture.
+func wasm3MakeClosureInlineSlice1(closureType *byte, funcsym uintptr, cap0 []any) unsafe.Pointer
 func makeslicecopy(typ *byte, tolen int, fromlen int, from unsafe.Pointer) unsafe.Pointer
 func growslice(oldPtr *any, newLen, oldCap, num int, et *byte) (ary []any)
 func growsliceBuf(oldPtr *any, newLen, oldCap, num int, et *byte, buf *any, bufLen int) (ary []any)

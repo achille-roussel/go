@@ -12,7 +12,6 @@ import (
 	"cmd/internal/obj"
 	"cmd/internal/obj/wasm"
 	"cmd/internal/wasmgc"
-	"strconv"
 	"sync"
 )
 
@@ -507,6 +506,76 @@ func wasm3LookupPerClosureCtx(fi *obj.FuncInfo, sym *obj.LSym) uint32 {
 	return uint32(idx)
 }
 
+// captureClosureFields returns the per-closureCtx wasm field layout
+// for one Go closure capture of type t. The shape matches the
+// CALL-signature flatPrimitiveFields shape (not the embedded-struct
+// lowerFields shape), so that the call site can push the same
+// wasm-typed locals that the closure body's signature exposes.
+//
+// Mapping:
+//   - scalar int/ptr/unsafe.Pointer → 1 i64 field (the legacy
+//     uintptr-shape encoding; the closure body's pointer-deref code
+//     still emits i32.wrap + i64.load).
+//   - float32/float64               → 1 F32 / F64 field.
+//   - slice                         → 3 fields (anyref backing, i64
+//     len, i64 cap), matching flatPrimitiveFields(TSLICE).
+//   - string                        → 2 fields (anyref bytes, i64
+//     len), matching flatPrimitiveFields(TSTRING).
+//   - array                         → 1 anyref field; the body
+//     reads it back as a typed-ref via array.get.
+//
+// Any other type panics — composite captures beyond the above are
+// caller's responsibility to gate behind the captures-in-struct
+// predicate.
+func captureClosureFields(t *types.Type) []wasmgc.Field {
+	switch {
+	case t.IsInteger(), t.IsPtr(), t.IsUnsafePtr():
+		return []wasmgc.Field{{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true}}
+	case t.IsFloat() && t.Size() == 4:
+		return []wasmgc.Field{{Storage: wasmgc.PrimStorage(wasmgc.F32), Mutable: true}}
+	case t.IsFloat() && t.Size() == 8:
+		return []wasmgc.Field{{Storage: wasmgc.PrimStorage(wasmgc.F64), Mutable: true}}
+	case t.IsSlice():
+		return []wasmgc.Field{
+			{Storage: wasmgc.AnyRefStorage(), Mutable: true},
+			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},
+			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},
+		}
+	case t.IsString():
+		return []wasmgc.Field{
+			{Storage: wasmgc.AnyRefStorage(), Mutable: true},
+			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},
+		}
+	case t.IsArray():
+		return []wasmgc.Field{{Storage: wasmgc.AnyRefStorage(), Mutable: true}}
+	}
+	base.Fatalf("wasm3: captureClosureFields: unsupported capture type %v", t)
+	return nil
+}
+
+// wasm3CaptureTypesFromSide returns the Go-level capture types
+// published to Wasm3ClosureBodyCaptures for `sym`, or nil if the
+// side channel hasn't been populated. Caller-side
+// OpWasm3MakeClosureRefInline codegen uses this so the per-closure
+// closureCtx struct shape matches what the body-side prologue will
+// register (Go-level types let composite captures lower
+// consistently on both sides).
+func wasm3CaptureTypesFromSide(sym *obj.LSym) []*types.Type {
+	infoAny, ok := wasm.Wasm3ClosureBodyCaptures.Load(sym)
+	if !ok {
+		return nil
+	}
+	info, ok := infoAny.(*wasm.Wasm3ClosureBodyInfo)
+	if !ok {
+		return nil
+	}
+	captures, ok := info.Captures.([]*types.Type)
+	if !ok {
+		return nil
+	}
+	return captures
+}
+
 // wasm3EnsurePerClosureCtxFromSide returns the per-closure closure-
 // Ctx type index for `sym` in `fi`'s collector, lazy-registering it
 // from the closure-body info ssagen published in
@@ -856,39 +925,7 @@ func (c *typeCollector) collectPerClosureCtx(sym *obj.LSym, ft *types.Type, capt
 		{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: false},
 	}
 	for _, ct := range captureTypes {
-		// Pointer-shaped captures are stored as i64 (the linear-
-		// memory address-as-uintptr that walkClosure passes through
-		// wasm3CaptureAsUintptr) rather than as a wasmgc `(ref $T)`,
-		// because the closure body's pointer-deref code still emits
-		// `i32.wrap + i64.load` for `*c` field access. Storing the
-		// pointer as i64 lets struct.get hand back exactly what the
-		// body expects (no wasmgc ref tracking, but wasm3 has no
-		// Go GC anyway — the pointed-to object lives on the bump
-		// heap, lifetime managed externally).
-		if ct.IsPtr() || ct.IsUnsafePtr() {
-			// Match the caller-side i64 field that lowerFields
-			// produces for a uintptr arg (walkClosure converts
-			// pointer captures through wasm3CaptureAsUintptr).
-			// scalarPrim returns Mutable=true; use the same here
-			// so the body- and caller-side per-closure types are
-			// structurally identical and wasm canonicalisation
-			// (or runtime ref.cast) treats them as the same type.
-			fields = append(fields, wasmgc.Field{
-				Storage: wasmgc.PrimStorage(wasmgc.I64),
-				Mutable: true,
-			})
-			continue
-		}
-		cf := c.lowerFields(ct)
-		if len(cf) != 1 {
-			// Unsupported on the scalar-only path; caller should
-			// not have invoked us. Use a base type stand-in so
-			// the rest of the type-table walk still terminates,
-			// but the resulting program is malformed at the
-			// capture-access level — better to fatal here.
-			panic("wasm3: collectPerClosureCtx: capture type " + ct.String() + " lowers to " + strconv.Itoa(len(cf)) + " fields, expected 1")
-		}
-		fields = append(fields, cf[0])
+		fields = append(fields, captureClosureFields(ct)...)
 	}
 	idx := len(c.table)
 	c.perClosureCtxs[sym] = idx

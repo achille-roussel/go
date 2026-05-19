@@ -557,12 +557,43 @@ func buildssa(fn *ir.Func, worker int, isPgoHot bool) *ssa.Func {
 			anyrefPtr := s.f.Config.Types.BytePtr
 			cloRef := s.entryNewValue0(ssa.OpWasm3LoweredGetClosureRef, anyrefPtr)
 			cloRef = s.entryNewValue1A(ssa.OpWasm3LoweredCastClosureRef, anyrefPtr, sym, cloRef)
-			for i, n := range fn.ClosureVars {
+			// AuxInt is the *wasm-field offset within the captures
+			// region* (0-based); the codegen adds 2 for the base fields
+			// (funcref + legacy captures-ptr). Scalar captures consume
+			// one wasm field; a slice capture consumes three (anyref
+			// backing, i64 len, i64 cap) and is reassembled here via
+			// OpSliceMake so the closure body sees the original Go-
+			// level slice value. Walk-side wasm3MakeClosureInlineSlice1
+			// keeps the call-site push order aligned with this loop.
+			fieldOff := int64(0)
+			for _, n := range fn.ClosureVars {
+				if n.Type().IsSlice() {
+					sliceType := n.Type()
+					elemPtrType := types.NewPtr(sliceType.Elem())
+					ptrV := s.entryNewValue1A(ssa.OpWasm3GetClosureField, elemPtrType, sym, cloRef)
+					// Mark the .array read so wasm3place gives it an
+					// anyref per-value local (matching the anyref
+					// closureCtx field that captureClosureFields built
+					// for the slice). The codegen masks off the marker
+					// bit when computing the struct.get field index.
+					ptrV.AuxInt = fieldOff | ssa.Wasm3GetClosureFieldAnyrefBit
+					lenV := s.entryNewValue1A(ssa.OpWasm3GetClosureField, types.Types[types.TINT], sym, cloRef)
+					lenV.AuxInt = fieldOff + 1
+					capV := s.entryNewValue1A(ssa.OpWasm3GetClosureField, types.Types[types.TINT], sym, cloRef)
+					capV.AuxInt = fieldOff + 2
+					sliceV := s.newValue3(ssa.OpSliceMake, sliceType, ptrV, lenV, capV)
+					n.Class = ir.PAUTO
+					fn.Dcl = append(fn.Dcl, n)
+					s.assign(n, sliceV, false, 0)
+					fieldOff += 3
+					continue
+				}
 				fld := s.entryNewValue1A(ssa.OpWasm3GetClosureField, n.Type(), sym, cloRef)
-				fld.AuxInt = int64(i)
+				fld.AuxInt = fieldOff
 				n.Class = ir.PAUTO
 				fn.Dcl = append(fn.Dcl, n)
 				s.assign(n, fld, false, 0)
+				fieldOff += 1
 			}
 		} else {
 			clo := s.entryNewValue0(ssa.OpGetClosurePtr, s.f.Config.Types.BytePtr)
@@ -7987,6 +8018,18 @@ func CheckLoweredPhi(v *ssa.Value) {
 func wasm3ClosureUsesCapturesInStruct(fn *ir.Func) bool {
 	if len(fn.ClosureVars) == 0 {
 		return false
+	}
+	// Single-slice-capture closures go through the captures-in-struct
+	// path too — walkClosure wires wasm3MakeClosureInlineSlice1, which
+	// lowers to OpWasm3MakeClosureRefInline with three flat capture
+	// args (anyref backing + i64 len + i64 cap). The body-side
+	// prologue at the GetClosureField loop above mirrors this by
+	// reading three fields and reassembling via OpSliceMake.
+	if len(fn.ClosureVars) == 1 {
+		cv := fn.ClosureVars[0]
+		if cv.Byval() && !cv.Addrtaken() && cv.Type().IsSlice() && ssa.CanSSA(cv.Type()) {
+			return true
+		}
 	}
 	// walkClosure wires wasm3MakeClosureInline{1..8} for up to 8
 	// integer captures. Body predicate must match exactly so call

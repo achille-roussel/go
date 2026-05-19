@@ -252,6 +252,20 @@ func wasm3ValueType(v *Value) byte {
 		if wasm3OpArgIsRefParam(v) {
 			return wasm3ValAnyref
 		}
+	case OpSelectN:
+		// A function call returning a slice (or another anyref-
+		// shaped composite) leaves the slice's .array on the wasm
+		// stack as anyref, but the SSA OpSelectN that extracts
+		// it has Type *Elem (a pointer) — wasm3ValueType's
+		// generic default would assign an i64 local, which then
+		// mismatches the call's anyref result and fails wasm
+		// validation at the local.set after the call. Detect the
+		// slice-component case by walking the parent call's
+		// return tuple: if the SelectN's index lands on a slice
+		// .array field, classify as anyref.
+		if wasm3SelectNIsAnyrefResult(v) {
+			return wasm3ValAnyref
+		}
 	}
 	t := v.Type
 	if t.IsFloat() {
@@ -445,6 +459,62 @@ func wasm3NumFlatFields(t *types.Type) int {
 		return n
 	}
 	return 1
+}
+
+// wasm3SelectNIsAnyrefResult reports whether v is an OpSelectN
+// extracting a value that the wasm3 call-result ABI returns as
+// anyref — specifically a slice's .array (data) component when the
+// parent call returns a slice or a composite containing a slice.
+// Used by wasm3ValueType so the per-value local matches the wasm
+// stack value the call leaves behind.
+func wasm3SelectNIsAnyrefResult(v *Value) bool {
+	if v.Op != OpSelectN {
+		return false
+	}
+	if len(v.Args) < 1 {
+		return false
+	}
+	call := v.Args[0]
+	// SelectN's AuxInt is the index into the call's flat result
+	// list. Walk the call's static result types in flat-field
+	// order; the slice's first field (data ptr) is the anyref one.
+	auxCall, ok := call.Aux.(*AuxCall)
+	if !ok || auxCall == nil {
+		return false
+	}
+	want := int(v.AuxInt)
+	cursor := 0
+	for _, p := range auxCall.abiInfo.OutParams() {
+		nFields := wasm3NumFlatFields(p.Type)
+		if cursor <= want && want < cursor+nFields {
+			return wasm3FieldIsAnyref(p.Type, want-cursor)
+		}
+		cursor += nFields
+	}
+	return false
+}
+
+// wasm3FieldIsAnyref reports whether the offset-th flat wasm field
+// of t is an anyref (the data pointer of a slice nested inside t,
+// recursively for nested structs).
+func wasm3FieldIsAnyref(t *types.Type, off int) bool {
+	if t.IsSlice() {
+		// Slice flattens to (data, len, cap); only the data field
+		// (offset 0) is anyref.
+		return off == 0
+	}
+	if !t.IsStruct() {
+		return false
+	}
+	cursor := 0
+	for _, f := range t.Fields() {
+		nFields := wasm3NumFlatFields(f.Type)
+		if cursor <= off && off < cursor+nFields {
+			return wasm3FieldIsAnyref(f.Type, off-cursor)
+		}
+		cursor += nFields
+	}
+	return false
 }
 
 // wasm3OpArgIsRefParam reports whether v is an OpArgIntReg whose

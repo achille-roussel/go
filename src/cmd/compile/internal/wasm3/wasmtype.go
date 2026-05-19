@@ -251,6 +251,22 @@ func (c *typeCollector) collectBacking(elem *types.Type) int {
 		st = wasmgc.PrimStorage(p)
 	} else if elem.Kind() == types.TPTR {
 		st = c.pointerStorage(elem.Elem())
+	} else if k := wasm3FlatStride(elem); k > 0 {
+		// Multi-i64 composite elements (string=2, interface=2,
+		// slice=3) lay out flat in an (array i64): the body's
+		// SSA-level access pattern for these is
+		// `(I64Load [off] (I64Add slice.array (I64Shl idx const)))`
+		// — linear-memory shape — which lowers cleanly to an
+		// `array.get_u` on (array i64) once the slice-of-stride
+		// rewrite rules fire. The wasmgc backing has K * len
+		// slots per slice, where K is the per-Go-elem field count
+		// (string = 2, interface = 2, slice = 3). The contiguous
+		// layout matches what Go code expects when it computes
+		// element addresses by hand (`&s[0]`-style), and avoids
+		// the per-element heap allocation the box path would do.
+		// See wasm3-m3-stage-f-interfaces.md for slice-of-composite
+		// notes.
+		st = wasmgc.PrimStorage(wasmgc.I64)
 	} else {
 		// Composite element: an array of boxed elements (rule 5). This
 		// loses contiguous value layout — one allocation per element —
@@ -265,6 +281,31 @@ func (c *typeCollector) collectBacking(elem *types.Type) int {
 		ElemMut: true,
 	})
 	return idx
+}
+
+// wasm3FlatStride reports the number of i64 slots per Go element
+// when elem is laid out flat in an (array i64) wasmgc backing.
+// Returns 0 if elem is not eligible for flat layout (scalars and
+// pointers go through their own primitive/ref storage; arrays of
+// arrays go through the box path).
+//
+// The flat representation is keyed to the SSA-level access pattern
+// the wasm3 compiler emits today for slices of composite elements:
+// each Go element is read/written as a fixed number of i64 fields
+// at multiples of 8 bytes within a 16-byte (string, interface) or
+// 24-byte (slice) stride. The wasmgc backing's (array i64) lets
+// `array.get_u $arr_T idx` consume the same indexing the body would
+// otherwise have lowered to `i64.load [off] (anyref + shifted)`.
+func wasm3FlatStride(t *types.Type) int {
+	switch t.Kind() {
+	case types.TSTRING:
+		return 2 // (data ptr, len)
+	case types.TINTER:
+		return 2 // (type ptr, data ptr)
+	case types.TSLICE:
+		return 3 // (data ptr, len, cap)
+	}
+	return 0
 }
 
 // collectBoxedScalar reserves and returns the table index of the

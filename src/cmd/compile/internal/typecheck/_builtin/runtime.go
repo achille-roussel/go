@@ -238,6 +238,14 @@ func wasm3MakeClosureInlineString1(closureType *byte, funcsym uintptr, cap0 stri
 // /tmp/wasm3-arrarg — array-by-value as a function arg).
 // captureClosureFields and the body-side prologue plumbing for
 // arrays is dormant until that upstream piece lands.
+
+// wasm3SliceBytesToString bridges `string(b)` where b is a
+// wasmgc-backed []byte (anyref .array, i64 len, i64 cap) into
+// a linear-memory-backed string. The standard slicebytetostring
+// takes a `*byte` data ptr (i64) — passing the anyref .array
+// through that ABI fails wasm validation. Wasm3 walkBytesToString
+// routes here instead.
+func wasm3SliceBytesToString(buf *[32]byte, b []byte) string
 func makeslicecopy(typ *byte, tolen int, fromlen int, from unsafe.Pointer) unsafe.Pointer
 func growslice(oldPtr *any, newLen, oldCap, num int, et *byte) (ary []any)
 func growsliceBuf(oldPtr *any, newLen, oldCap, num int, et *byte, buf *any, bufLen int) (ary []any)

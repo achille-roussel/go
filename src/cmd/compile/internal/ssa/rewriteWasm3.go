@@ -4567,6 +4567,198 @@ func rewriteValueWasm3_OpWasm3I64Load(v *Value) bool {
 		v.AddArg3(base, idx, mem)
 		return true
 	}
+	// match: (I64Load [off] sm:(MakeSlice {t} _ _ _) mem)
+	// cond: off%8 == 0 && t.Elem().IsString()
+	// result: (ArrayGet <typ.Int64> {t} sm (I64Const <typ.Int> [off/8]) mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		sm := v_0
+		if sm.Op != OpWasm3MakeSlice {
+			break
+		}
+		t := auxToType(sm.Aux)
+		mem := v_1
+		if !(off%8 == 0 && t.Elem().IsString()) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.Int64
+		v.Aux = typeToAux(t)
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v0.AuxInt = int64ToAuxInt(off / 8)
+		v.AddArg3(sm, v0, mem)
+		return true
+	}
+	// match: (I64Load [off] (I64Add sm:(MakeSlice {t} _ _ _) (I64Shl idx (I64Const [k]))) mem)
+	// cond: off == 0 && k == 4 && t.Elem().IsString()
+	// result: (ArrayGet <typ.Int64> {t} sm (I64Shl idx (I64Const <typ.Int> [1])) mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		if v_0.Op != OpWasm3I64Add {
+			break
+		}
+		_ = v_0.Args[1]
+		sm := v_0.Args[0]
+		if sm.Op != OpWasm3MakeSlice {
+			break
+		}
+		t := auxToType(sm.Aux)
+		v_0_1 := v_0.Args[1]
+		if v_0_1.Op != OpWasm3I64Shl {
+			break
+		}
+		_ = v_0_1.Args[1]
+		idx := v_0_1.Args[0]
+		v_0_1_1 := v_0_1.Args[1]
+		if v_0_1_1.Op != OpWasm3I64Const {
+			break
+		}
+		k := auxIntToInt64(v_0_1_1.AuxInt)
+		mem := v_1
+		if !(off == 0 && k == 4 && t.Elem().IsString()) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.Int64
+		v.Aux = typeToAux(t)
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Shl, typ.Int64)
+		v1 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v1.AuxInt = int64ToAuxInt(1)
+		v0.AddArg2(idx, v1)
+		v.AddArg3(sm, v0, mem)
+		return true
+	}
+	// match: (I64Load [off] (I64Add sm:(MakeSlice {t} _ _ _) (I64Shl idx (I64Const [k]))) mem)
+	// cond: off == 8 && k == 4 && t.Elem().IsString()
+	// result: (ArrayGet <typ.Int64> {t} sm (I64Or (I64Shl idx (I64Const <typ.Int> [1])) (I64Const <typ.Int> [1])) mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		if v_0.Op != OpWasm3I64Add {
+			break
+		}
+		_ = v_0.Args[1]
+		sm := v_0.Args[0]
+		if sm.Op != OpWasm3MakeSlice {
+			break
+		}
+		t := auxToType(sm.Aux)
+		v_0_1 := v_0.Args[1]
+		if v_0_1.Op != OpWasm3I64Shl {
+			break
+		}
+		_ = v_0_1.Args[1]
+		idx := v_0_1.Args[0]
+		v_0_1_1 := v_0_1.Args[1]
+		if v_0_1_1.Op != OpWasm3I64Const {
+			break
+		}
+		k := auxIntToInt64(v_0_1_1.AuxInt)
+		mem := v_1
+		if !(off == 8 && k == 4 && t.Elem().IsString()) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.Int64
+		v.Aux = typeToAux(t)
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Or, typ.Int64)
+		v1 := b.NewValue0(v.Pos, OpWasm3I64Shl, typ.Int64)
+		v2 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v2.AuxInt = int64ToAuxInt(1)
+		v1.AddArg2(idx, v2)
+		v0.AddArg2(v1, v2)
+		v.AddArg3(sm, v0, mem)
+		return true
+	}
+	// match: (I64Load [off] (I64Add base (I64Shl idx (I64Const [k]))) mem)
+	// cond: off == 0 && k == 4 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).IsString()
+	// result: (ArrayGet <typ.Int64> {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Shl idx (I64Const <typ.Int> [1])) mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		if v_0.Op != OpWasm3I64Add {
+			break
+		}
+		_ = v_0.Args[1]
+		base := v_0.Args[0]
+		v_0_1 := v_0.Args[1]
+		if v_0_1.Op != OpWasm3I64Shl {
+			break
+		}
+		_ = v_0_1.Args[1]
+		idx := v_0_1.Args[0]
+		v_0_1_1 := v_0_1.Args[1]
+		if v_0_1_1.Op != OpWasm3I64Const {
+			break
+		}
+		k := auxIntToInt64(v_0_1_1.AuxInt)
+		mem := v_1
+		if !(off == 0 && k == 4 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).IsString()) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.Int64
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Shl, typ.Int64)
+		v1 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v1.AuxInt = int64ToAuxInt(1)
+		v0.AddArg2(idx, v1)
+		v.AddArg3(base, v0, mem)
+		return true
+	}
+	// match: (I64Load [off] (I64Add base (I64Shl idx (I64Const [k]))) mem)
+	// cond: off == 8 && k == 4 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).IsString()
+	// result: (ArrayGet <typ.Int64> {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Or (I64Shl idx (I64Const <typ.Int> [1])) (I64Const <typ.Int> [1])) mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		if v_0.Op != OpWasm3I64Add {
+			break
+		}
+		_ = v_0.Args[1]
+		base := v_0.Args[0]
+		v_0_1 := v_0.Args[1]
+		if v_0_1.Op != OpWasm3I64Shl {
+			break
+		}
+		_ = v_0_1.Args[1]
+		idx := v_0_1.Args[0]
+		v_0_1_1 := v_0_1.Args[1]
+		if v_0_1_1.Op != OpWasm3I64Const {
+			break
+		}
+		k := auxIntToInt64(v_0_1_1.AuxInt)
+		mem := v_1
+		if !(off == 8 && k == 4 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).IsString()) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.Int64
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Or, typ.Int64)
+		v1 := b.NewValue0(v.Pos, OpWasm3I64Shl, typ.Int64)
+		v2 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v2.AuxInt = int64ToAuxInt(1)
+		v1.AddArg2(idx, v2)
+		v0.AddArg2(v1, v2)
+		v.AddArg3(base, v0, mem)
+		return true
+	}
+	// match: (I64Load [off] base mem)
+	// cond: off%8 == 0 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).IsString()
+	// result: (ArrayGet <typ.Int64> {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off/8]) mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		base := v_0
+		mem := v_1
+		if !(off%8 == 0 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).IsString()) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = typ.Int64
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v0.AuxInt = int64ToAuxInt(off / 8)
+		v.AddArg3(base, v0, mem)
+		return true
+	}
 	// match: (I64Load [off] (LoweredAddr {sym} [off2] (SB)) _)
 	// cond: symIsRO(sym) && isU32Bit(off+int64(off2))
 	// result: (I64Const [int64(read64(sym, off+int64(off2), config.ctxt.Arch.ByteOrder))])
@@ -6618,6 +6810,198 @@ func rewriteValueWasm3_OpWasm3I64Store(v *Value) bool {
 		v.reset(OpWasm3ArraySet)
 		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
 		v.AddArg4(base, idx, val, mem)
+		return true
+	}
+	// match: (I64Store [off] sm:(MakeSlice {t} _ _ _) val mem)
+	// cond: off%8 == 0 && t.Elem().IsString()
+	// result: (ArraySet {t} sm (I64Const <typ.Int> [off/8]) val mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		sm := v_0
+		if sm.Op != OpWasm3MakeSlice {
+			break
+		}
+		t := auxToType(sm.Aux)
+		val := v_1
+		mem := v_2
+		if !(off%8 == 0 && t.Elem().IsString()) {
+			break
+		}
+		v.reset(OpWasm3ArraySet)
+		v.Aux = typeToAux(t)
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v0.AuxInt = int64ToAuxInt(off / 8)
+		v.AddArg4(sm, v0, val, mem)
+		return true
+	}
+	// match: (I64Store [off] (I64Add sm:(MakeSlice {t} _ _ _) (I64Shl idx (I64Const [k]))) val mem)
+	// cond: off == 0 && k == 4 && t.Elem().IsString()
+	// result: (ArraySet {t} sm (I64Shl idx (I64Const <typ.Int> [1])) val mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		if v_0.Op != OpWasm3I64Add {
+			break
+		}
+		_ = v_0.Args[1]
+		sm := v_0.Args[0]
+		if sm.Op != OpWasm3MakeSlice {
+			break
+		}
+		t := auxToType(sm.Aux)
+		v_0_1 := v_0.Args[1]
+		if v_0_1.Op != OpWasm3I64Shl {
+			break
+		}
+		_ = v_0_1.Args[1]
+		idx := v_0_1.Args[0]
+		v_0_1_1 := v_0_1.Args[1]
+		if v_0_1_1.Op != OpWasm3I64Const {
+			break
+		}
+		k := auxIntToInt64(v_0_1_1.AuxInt)
+		val := v_1
+		mem := v_2
+		if !(off == 0 && k == 4 && t.Elem().IsString()) {
+			break
+		}
+		v.reset(OpWasm3ArraySet)
+		v.Aux = typeToAux(t)
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Shl, typ.Int64)
+		v1 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v1.AuxInt = int64ToAuxInt(1)
+		v0.AddArg2(idx, v1)
+		v.AddArg4(sm, v0, val, mem)
+		return true
+	}
+	// match: (I64Store [off] (I64Add sm:(MakeSlice {t} _ _ _) (I64Shl idx (I64Const [k]))) val mem)
+	// cond: off == 8 && k == 4 && t.Elem().IsString()
+	// result: (ArraySet {t} sm (I64Or (I64Shl idx (I64Const <typ.Int> [1])) (I64Const <typ.Int> [1])) val mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		if v_0.Op != OpWasm3I64Add {
+			break
+		}
+		_ = v_0.Args[1]
+		sm := v_0.Args[0]
+		if sm.Op != OpWasm3MakeSlice {
+			break
+		}
+		t := auxToType(sm.Aux)
+		v_0_1 := v_0.Args[1]
+		if v_0_1.Op != OpWasm3I64Shl {
+			break
+		}
+		_ = v_0_1.Args[1]
+		idx := v_0_1.Args[0]
+		v_0_1_1 := v_0_1.Args[1]
+		if v_0_1_1.Op != OpWasm3I64Const {
+			break
+		}
+		k := auxIntToInt64(v_0_1_1.AuxInt)
+		val := v_1
+		mem := v_2
+		if !(off == 8 && k == 4 && t.Elem().IsString()) {
+			break
+		}
+		v.reset(OpWasm3ArraySet)
+		v.Aux = typeToAux(t)
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Or, typ.Int64)
+		v1 := b.NewValue0(v.Pos, OpWasm3I64Shl, typ.Int64)
+		v2 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v2.AuxInt = int64ToAuxInt(1)
+		v1.AddArg2(idx, v2)
+		v0.AddArg2(v1, v2)
+		v.AddArg4(sm, v0, val, mem)
+		return true
+	}
+	// match: (I64Store [off] (I64Add base (I64Shl idx (I64Const [k]))) val mem)
+	// cond: off == 0 && k == 4 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).IsString()
+	// result: (ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Shl idx (I64Const <typ.Int> [1])) val mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		if v_0.Op != OpWasm3I64Add {
+			break
+		}
+		_ = v_0.Args[1]
+		base := v_0.Args[0]
+		v_0_1 := v_0.Args[1]
+		if v_0_1.Op != OpWasm3I64Shl {
+			break
+		}
+		_ = v_0_1.Args[1]
+		idx := v_0_1.Args[0]
+		v_0_1_1 := v_0_1.Args[1]
+		if v_0_1_1.Op != OpWasm3I64Const {
+			break
+		}
+		k := auxIntToInt64(v_0_1_1.AuxInt)
+		val := v_1
+		mem := v_2
+		if !(off == 0 && k == 4 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).IsString()) {
+			break
+		}
+		v.reset(OpWasm3ArraySet)
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Shl, typ.Int64)
+		v1 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v1.AuxInt = int64ToAuxInt(1)
+		v0.AddArg2(idx, v1)
+		v.AddArg4(base, v0, val, mem)
+		return true
+	}
+	// match: (I64Store [off] (I64Add base (I64Shl idx (I64Const [k]))) val mem)
+	// cond: off == 8 && k == 4 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).IsString()
+	// result: (ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Or (I64Shl idx (I64Const <typ.Int> [1])) (I64Const <typ.Int> [1])) val mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		if v_0.Op != OpWasm3I64Add {
+			break
+		}
+		_ = v_0.Args[1]
+		base := v_0.Args[0]
+		v_0_1 := v_0.Args[1]
+		if v_0_1.Op != OpWasm3I64Shl {
+			break
+		}
+		_ = v_0_1.Args[1]
+		idx := v_0_1.Args[0]
+		v_0_1_1 := v_0_1.Args[1]
+		if v_0_1_1.Op != OpWasm3I64Const {
+			break
+		}
+		k := auxIntToInt64(v_0_1_1.AuxInt)
+		val := v_1
+		mem := v_2
+		if !(off == 8 && k == 4 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).IsString()) {
+			break
+		}
+		v.reset(OpWasm3ArraySet)
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Or, typ.Int64)
+		v1 := b.NewValue0(v.Pos, OpWasm3I64Shl, typ.Int64)
+		v2 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v2.AuxInt = int64ToAuxInt(1)
+		v1.AddArg2(idx, v2)
+		v0.AddArg2(v1, v2)
+		v.AddArg4(base, v0, val, mem)
+		return true
+	}
+	// match: (I64Store [off] base val mem)
+	// cond: off%8 == 0 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).IsString()
+	// result: (ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base (I64Const <typ.Int> [off/8]) val mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		base := v_0
+		val := v_1
+		mem := v_2
+		if !(off%8 == 0 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).IsString()) {
+			break
+		}
+		v.reset(OpWasm3ArraySet)
+		v.Aux = typeToAux(types.NewSlice(Wasm3SliceArgElemType(base)))
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int)
+		v0.AuxInt = int64ToAuxInt(off / 8)
+		v.AddArg4(base, v0, val, mem)
 		return true
 	}
 	return false

@@ -679,7 +679,13 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		// The type-index operand goes via R_WASMTYPE on the array
 		// backing's typeidx.
 		idx := int64(wasm3RegisterArrayAux(s, v))
-		elemSize := v.Aux.(*types.Type).Elem().Size()
+		auxSliceTypeSet := v.Aux.(*types.Type)
+		elemSize := auxSliceTypeSet.Elem().Size()
+		// Flat-stride slice backings (string / interface / slice
+		// elem) — same i64-per-slot adjustment as OpWasm3ArrayGet.
+		if wasm3FlatStride(auxSliceTypeSet.Elem()) > 0 {
+			elemSize = 8
+		}
 		getValue64(s, v.Args[0])
 		pCast := s.Prog(wasm.ARefCast)
 		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: idx}
@@ -985,7 +991,17 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// (i64 by wasm3ValueType), with the extension polarity
 		// matching the get_u/get_s chosen (and v.Type for i32).
 		idx := int64(wasm3RegisterArrayAux(s, v))
-		elemSize := v.Aux.(*types.Type).Elem().Size()
+		auxSliceType := v.Aux.(*types.Type)
+		elemSize := auxSliceType.Elem().Size()
+		// Flat-stride slice backings (string / interface / slice
+		// elem types) lay out as (array i64) regardless of the Go
+		// elem size — each i64 slot is one sub-field of the elem.
+		// The wasm op is plain array.get on i64; the i64-extension
+		// step below also stays a no-op since the read width is
+		// already i64.
+		if wasm3FlatStride(auxSliceType.Elem()) > 0 {
+			elemSize = 8
+		}
 		signed := v.Type.IsSigned()
 		getValue64(s, v.Args[0])
 		pCast := s.Prog(wasm.ARefCast)
@@ -1064,8 +1080,21 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// The default case's localSetIdx fall-through stores the
 		// resulting ref in v's per-value local, typed anyref by
 		// wasm3ValueType's OpWasm3MakeSlice case.
+		//
+		// For multi-i64-field element types (string, interface,
+		// slice), the wasmgc backing is (array i64) with stride K
+		// per Go element (string = 2, interface = 2, slice = 3 —
+		// see wasm3FlatStride). Multiply cap by K so the backing
+		// has room for the full per-element layout the body's
+		// access rules expect.
+		sliceType := v.Aux.(*types.Type)
+		stride := wasm3FlatStride(sliceType.Elem())
 		getValue64(s, v.Args[1])
 		s.Prog(wasm.AI32WrapI64)
+		if stride > 1 {
+			i32Const(s, int32(stride))
+			s.Prog(wasm.AI32Mul)
+		}
 		p := s.Prog(wasm.AArrayNewDefault)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterArrayAux(s, v))}
 

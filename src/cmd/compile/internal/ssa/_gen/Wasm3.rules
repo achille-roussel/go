@@ -769,6 +769,83 @@
 	&& off == 0 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).Size() == 1 =>
 	(ArrayGet <typ.UInt8> {types.NewSlice(Wasm3SliceArgElemType(base))} base idx mem)
 
+// Slice-of-string element-field writes/reads via MakeSlice base
+// (the local-created slice case — `make([]string, n)` then
+// `s[i] = "hello"`). Same wasmgc-backing stride 2 model as the
+// slice-arg rules below; just a different base shape to match.
+//
+// Constant-offset accesses (e.g. tmp[k] = ... with k a compile-
+// time constant) fold the per-element byte offset (k * 16) plus
+// the field offset (0 = data, 8 = len) into a single I64Load /
+// I64Store immediate `off`. Any off that's a multiple of 8 maps
+// to wasmgc array index off/8 on the (array i64) backing.
+(I64Store [off] sm:(MakeSlice {t} _ _ _) val mem)
+	&& off%8 == 0 && t.Elem().IsString() =>
+	(ArraySet {t} sm (I64Const <typ.Int> [off/8]) val mem)
+(I64Load [off] sm:(MakeSlice {t} _ _ _) mem)
+	&& off%8 == 0 && t.Elem().IsString() =>
+	(ArrayGet <typ.Int64> {t} sm (I64Const <typ.Int> [off/8]) mem)
+
+// Variable-index field accesses (xs[i] for runtime i, byte
+// addressing pattern `base + (i << 4) + off`):
+(I64Store [off] (I64Add sm:(MakeSlice {t} _ _ _) (I64Shl idx (I64Const [k]))) val mem)
+	&& off == 0 && k == 4 && t.Elem().IsString() =>
+	(ArraySet {t} sm (I64Shl idx (I64Const <typ.Int> [1])) val mem)
+(I64Store [off] (I64Add sm:(MakeSlice {t} _ _ _) (I64Shl idx (I64Const [k]))) val mem)
+	&& off == 8 && k == 4 && t.Elem().IsString() =>
+	(ArraySet {t} sm
+		(I64Or (I64Shl idx (I64Const <typ.Int> [1])) (I64Const <typ.Int> [1])) val mem)
+(I64Load [off] (I64Add sm:(MakeSlice {t} _ _ _) (I64Shl idx (I64Const [k]))) mem)
+	&& off == 0 && k == 4 && t.Elem().IsString() =>
+	(ArrayGet <typ.Int64> {t} sm (I64Shl idx (I64Const <typ.Int> [1])) mem)
+(I64Load [off] (I64Add sm:(MakeSlice {t} _ _ _) (I64Shl idx (I64Const [k]))) mem)
+	&& off == 8 && k == 4 && t.Elem().IsString() =>
+	(ArrayGet <typ.Int64> {t} sm
+		(I64Or (I64Shl idx (I64Const <typ.Int> [1])) (I64Const <typ.Int> [1])) mem)
+
+// Slice-of-string element-field reads. A `[]string` slice's wasmgc
+// backing is (array i64) with stride 2: each Go-level string takes
+// two i64 slots (data ptr at slot 2i, len at slot 2i+1). The body
+// emits the linear-memory pattern `(I64Load [off] (I64Add base
+// (I64Shl idx (I64Const [4]))))` (16-byte stride byte addressing)
+// — these rules rewrite to the corresponding `array.get_u` on the
+// wasmgc backing.
+
+// xs[i].data: byte offset 0, wasmgc index = i << 1.
+(I64Load [off] (I64Add base (I64Shl idx (I64Const [k]))) mem)
+	&& off == 0 && k == 4 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).IsString() =>
+	(ArrayGet <typ.Int64> {types.NewSlice(Wasm3SliceArgElemType(base))} base
+		(I64Shl idx (I64Const <typ.Int> [1])) mem)
+// xs[i].len: byte offset 8, wasmgc index = (i << 1) | 1.
+(I64Load [off] (I64Add base (I64Shl idx (I64Const [k]))) mem)
+	&& off == 8 && k == 4 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).IsString() =>
+	(ArrayGet <typ.Int64> {types.NewSlice(Wasm3SliceArgElemType(base))} base
+		(I64Or (I64Shl idx (I64Const <typ.Int> [1])) (I64Const <typ.Int> [1])) mem)
+// Constant-index field reads (xs[k].field for compile-time k):
+// the byte offset folds to k*16 + field_off, and wasmgc index =
+// off/8 on the (array i64) backing.
+(I64Load [off] base mem)
+	&& off%8 == 0 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).IsString() =>
+	(ArrayGet <typ.Int64> {types.NewSlice(Wasm3SliceArgElemType(base))} base
+		(I64Const <typ.Int> [off/8]) mem)
+
+// Slice-of-string element-field writes (mirror of the reads).
+// xs[i] = s decomposes into two i64.stores at off=0 (data) and
+// off=8 (len); rewrite each to `array.set` on the (array i64)
+// backing at the matching i*2 + j offset.
+(I64Store [off] (I64Add base (I64Shl idx (I64Const [k]))) val mem)
+	&& off == 0 && k == 4 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).IsString() =>
+	(ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base
+		(I64Shl idx (I64Const <typ.Int> [1])) val mem)
+(I64Store [off] (I64Add base (I64Shl idx (I64Const [k]))) val mem)
+	&& off == 8 && k == 4 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).IsString() =>
+	(ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base
+		(I64Or (I64Shl idx (I64Const <typ.Int> [1])) (I64Const <typ.Int> [1])) val mem)
+(I64Store [off] base val mem)
+	&& off%8 == 0 && Wasm3SliceArgElemType(base) != nil && Wasm3SliceArgElemType(base).IsString() =>
+	(ArraySet {types.NewSlice(Wasm3SliceArgElemType(base))} base
+		(I64Const <typ.Int> [off/8]) val mem)
+
 // transforming readonly globals into constants
 (I64Load [off] (LoweredAddr {sym} [off2] (SB)) _) && symIsRO(sym) && isU32Bit(off+int64(off2)) => (I64Const [int64(read64(sym, off+int64(off2), config.ctxt.Arch.ByteOrder))])
 (I64Load32U [off] (LoweredAddr {sym} [off2] (SB)) _) && symIsRO(sym) && isU32Bit(off+int64(off2)) => (I64Const [int64(read32(sym, off+int64(off2), config.ctxt.Arch.ByteOrder))])

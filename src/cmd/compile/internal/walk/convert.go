@@ -7,6 +7,7 @@ package walk
 import (
 	"encoding/binary"
 	"go/constant"
+	"internal/buildcfg"
 
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/ir"
@@ -254,6 +255,17 @@ func walkBytesRunesToString(n *ir.ConvExpr, init *ir.Nodes) ir.Node {
 	if n.Op() == ir.ORUNES2STR {
 		// slicerunetostring(*[32]byte, []rune) string
 		return mkcall("slicerunetostring", n.Type(), init, a, n.X)
+	}
+	// On wasm3, `string(b)` for a wasmgc-backed []byte (anyref
+	// .array) routes through wasm3SliceBytesToString — its ABI
+	// takes the slice intact (anyref+i64+i64) and copies bytes
+	// into a linear-memory buffer that the result string's .data
+	// can point at. The default slicebytetostring takes a `*byte`
+	// data ptr (i64), which would fail wasm validation against
+	// the anyref-backed slice's .array.
+	if buildcfg.GOARCH == "wasm3" {
+		n.X = cheapExpr(n.X, init)
+		return mkcall("wasm3SliceBytesToString", n.Type(), init, a, n.X)
 	}
 	// slicebytetostring(*[32]byte, ptr *byte, n int) string
 	n.X = cheapExpr(n.X, init)

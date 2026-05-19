@@ -218,7 +218,20 @@ func walkCopy(n *ir.BinaryExpr, init *ir.Nodes, runtimecall bool) ir.Node {
 	l = append(l, nif)
 
 	// if to.ptr != frm.ptr { memmove( ... ) }
-	ne := ir.NewIfStmt(base.Pos, ir.NewBinaryExpr(base.Pos, ir.ONE, nto, nfrm), nil, nil)
+	//
+	// On wasm3 with a string source, skip the pointer-difference
+	// guard: the destination's .array is anyref (wasmgc backing)
+	// and the source string's .data is i64 (linear-memory ptr),
+	// so the `i64.ne` of the two would compare an anyref to an
+	// i64 and fail wasm validation. Always emit the memmove. The
+	// guard is a small-perf hand-shaped check that isn't worth a
+	// runtime cross-type comparison for the wasm3-aliased case.
+	var ne *ir.IfStmt
+	if buildcfg.GOARCH == "wasm3" && nr.Type().IsString() {
+		ne = ir.NewIfStmt(base.Pos, ir.NewBool(base.Pos, true), nil, nil)
+	} else {
+		ne = ir.NewIfStmt(base.Pos, ir.NewBinaryExpr(base.Pos, ir.ONE, nto, nfrm), nil, nil)
+	}
 	ne.Likely = true
 	l = append(l, ne)
 
@@ -236,10 +249,33 @@ func walkCopy(n *ir.BinaryExpr, init *ir.Nodes, runtimecall bool) ir.Node {
 	//     buffer packing, etc.) keep their existing linear-memory
 	//     path untouched.
 	if buildcfg.GOARCH == "wasm3" {
-		fn := typecheck.LookupRuntime("wasm3SliceCopy", nl.Type().Elem(), nl.Type().Elem())
-		rtype := reflectdata.CopyElemRType(base.Pos, n)
-		call := mkcall1(fn, nil, init, rtype, nto, nfrm, nlen)
-		ne.Body.Append(call)
+		// wasm3SliceCopy lowers to `array.copy` between two anyref
+		// wasmgc backings — both operands must be wasmgc-typed.
+		// A string source on wasm3 keeps its linear-memory
+		// representation (data ptr + len, both i64), so its
+		// .data is an i64 ptr — not a wasmgc array ref. Fall
+		// back to memmove for `copy(dst, src)` where src is a
+		// string: the destination's backing is irrelevant since
+		// memmove's byte loop just walks linear-memory addresses
+		// either way, and the rawstring path that concatstrings
+		// uses for its output yields a linear-memory-backed dst.
+		// Pure slice-to-slice copies (no string source) stay on
+		// the array.copy path so wasmgc backings benefit from
+		// the bulk wasmgc memcpy.
+		if nr.Type().IsString() {
+			fn := typecheck.LookupRuntime("memmove", nl.Type().Elem(), nl.Type().Elem())
+			nwid := ir.Node(typecheck.TempAt(base.Pos, ir.CurFunc, types.Types[types.TUINTPTR]))
+			setwid := ir.NewAssignStmt(base.Pos, nwid, typecheck.Conv(nlen, types.Types[types.TUINTPTR]))
+			ne.Body.Append(setwid)
+			nwid = ir.NewBinaryExpr(base.Pos, ir.OMUL, nwid, ir.NewInt(base.Pos, nl.Type().Elem().Size()))
+			call := mkcall1(fn, nil, init, nto, nfrm, nwid)
+			ne.Body.Append(call)
+		} else {
+			fn := typecheck.LookupRuntime("wasm3SliceCopy", nl.Type().Elem(), nl.Type().Elem())
+			rtype := reflectdata.CopyElemRType(base.Pos, n)
+			call := mkcall1(fn, nil, init, rtype, nto, nfrm, nlen)
+			ne.Body.Append(call)
+		}
 	} else {
 		fn := typecheck.LookupRuntime("memmove", nl.Type().Elem(), nl.Type().Elem())
 		nwid := ir.Node(typecheck.TempAt(base.Pos, ir.CurFunc, types.Types[types.TUINTPTR]))

@@ -542,8 +542,13 @@ func captureClosureFields(t *types.Type) []wasmgc.Field {
 			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},
 		}
 	case t.IsString():
+		// Strings on wasm3 use the linear-memory shape (i64 data ptr,
+		// i64 len) in both the call signature and the closure body
+		// — collectSignature aligns the funcref signature to this
+		// shape (see doc/wasm3-m3-captures-in-struct.md). Match it
+		// here so the call site pushes two i64s into i64 fields.
 		return []wasmgc.Field{
-			{Storage: wasmgc.AnyRefStorage(), Mutable: true},
+			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},
 			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},
 		}
 	case t.IsArray():

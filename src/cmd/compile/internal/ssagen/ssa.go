@@ -567,7 +567,8 @@ func buildssa(fn *ir.Func, worker int, isPgoHot bool) *ssa.Func {
 			// keeps the call-site push order aligned with this loop.
 			fieldOff := int64(0)
 			for _, n := range fn.ClosureVars {
-				if n.Type().IsSlice() {
+				switch {
+				case n.Type().IsSlice():
 					sliceType := n.Type()
 					elemPtrType := types.NewPtr(sliceType.Elem())
 					ptrV := s.entryNewValue1A(ssa.OpWasm3GetClosureField, elemPtrType, sym, cloRef)
@@ -586,14 +587,29 @@ func buildssa(fn *ir.Func, worker int, isPgoHot bool) *ssa.Func {
 					fn.Dcl = append(fn.Dcl, n)
 					s.assign(n, sliceV, false, 0)
 					fieldOff += 3
-					continue
+				case n.Type().IsString():
+					// String captures: 2 i64 fields matching the
+					// wasm3 string-arg ABI (data ptr, len) — strings
+					// stay in linear memory until Stage J wasmgc-
+					// string lands, so both fields are i64 and no
+					// anyref-marker bit is needed.
+					ptrV := s.entryNewValue1A(ssa.OpWasm3GetClosureField, s.f.Config.Types.BytePtr, sym, cloRef)
+					ptrV.AuxInt = fieldOff
+					lenV := s.entryNewValue1A(ssa.OpWasm3GetClosureField, types.Types[types.TINT], sym, cloRef)
+					lenV.AuxInt = fieldOff + 1
+					strV := s.newValue2(ssa.OpStringMake, n.Type(), ptrV, lenV)
+					n.Class = ir.PAUTO
+					fn.Dcl = append(fn.Dcl, n)
+					s.assign(n, strV, false, 0)
+					fieldOff += 2
+				default:
+					fld := s.entryNewValue1A(ssa.OpWasm3GetClosureField, n.Type(), sym, cloRef)
+					fld.AuxInt = fieldOff
+					n.Class = ir.PAUTO
+					fn.Dcl = append(fn.Dcl, n)
+					s.assign(n, fld, false, 0)
+					fieldOff += 1
 				}
-				fld := s.entryNewValue1A(ssa.OpWasm3GetClosureField, n.Type(), sym, cloRef)
-				fld.AuxInt = fieldOff
-				n.Class = ir.PAUTO
-				fn.Dcl = append(fn.Dcl, n)
-				s.assign(n, fld, false, 0)
-				fieldOff += 1
 			}
 		} else {
 			clo := s.entryNewValue0(ssa.OpGetClosurePtr, s.f.Config.Types.BytePtr)
@@ -8019,16 +8035,19 @@ func wasm3ClosureUsesCapturesInStruct(fn *ir.Func) bool {
 	if len(fn.ClosureVars) == 0 {
 		return false
 	}
-	// Single-slice-capture closures go through the captures-in-struct
-	// path too — walkClosure wires wasm3MakeClosureInlineSlice1, which
-	// lowers to OpWasm3MakeClosureRefInline with three flat capture
-	// args (anyref backing + i64 len + i64 cap). The body-side
-	// prologue at the GetClosureField loop above mirrors this by
-	// reading three fields and reassembling via OpSliceMake.
+	// Single-composite-capture closures (slice / string) go through
+	// the captures-in-struct path too — walkClosure wires
+	// wasm3MakeClosureInlineSlice1 / wasm3MakeClosureInlineString1
+	// which lower to OpWasm3MakeClosureRefInline with the right
+	// number of flat capture args. The body-side prologue at the
+	// GetClosureField loop above mirrors this by reading multiple
+	// fields and reassembling via OpSliceMake / OpStringMake.
 	if len(fn.ClosureVars) == 1 {
 		cv := fn.ClosureVars[0]
-		if cv.Byval() && !cv.Addrtaken() && cv.Type().IsSlice() && ssa.CanSSA(cv.Type()) {
-			return true
+		if cv.Byval() && !cv.Addrtaken() && ssa.CanSSA(cv.Type()) {
+			if cv.Type().IsSlice() || cv.Type().IsString() {
+				return true
+			}
 		}
 	}
 	// walkClosure wires wasm3MakeClosureInline{1..8} for up to 8

@@ -338,6 +338,31 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	}
 	add("runtime", "wasm3MakeClosureInlineSlice1", wasm3MakeClosureInlineSlice1Intrinsic, sys.ArchWasm3)
 
+	// Single-string-capture closure builder. Same shape as
+	// wasm3MakeClosureInlineSlice1: at the SSA layer args[2] is a
+	// single string value; extract the two flat components (bytes
+	// backing + len) and feed them to OpWasm3MakeClosureRefInline.
+	wasm3MakeClosureInlineString1Intrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		if len(args) != 3 {
+			s.Fatalf("wasm3MakeClosureInlineString1 intrinsic: expected 3 args, got %d", len(args))
+		}
+		funcsymArg := args[1]
+		if funcsymArg.Op != ssa.OpAddr {
+			s.Fatalf("wasm3MakeClosureInlineString1 intrinsic: arg[1] not OpAddr (got %v); walkClosure must pass OCFUNC", funcsymArg.Op)
+		}
+		sym, ok := funcsymArg.Aux.(*obj.LSym)
+		if !ok || sym == nil {
+			s.Fatalf("wasm3MakeClosureInlineString1 intrinsic: arg[1].Aux is not *obj.LSym: %T", funcsymArg.Aux)
+		}
+		str := args[2]
+		ptr := s.newValue1(ssa.OpStringPtr, s.f.Config.Types.BytePtr, str)
+		length := s.newValue1(ssa.OpStringLen, types.Types[types.TINT], str)
+		v := s.newValue0A(ssa.OpWasm3MakeClosureRefInline, n.Type(), sym)
+		v.AddArgs(ptr, length)
+		return v
+	}
+	add("runtime", "wasm3MakeClosureInlineString1", wasm3MakeClosureInlineString1Intrinsic, sys.ArchWasm3)
+
 	addF("internal/runtime/math", "MulUintptr",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			if s.config.PtrSize == 4 {

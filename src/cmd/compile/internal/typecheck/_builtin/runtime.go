@@ -227,6 +227,11 @@ func wasm3MakeClosureInline8(closureType *byte, funcsym uintptr, cap0, cap1, cap
 // inflation in `LookupRuntime` gets the right slice shape from
 // the user's capture.
 func wasm3MakeClosureInlineSlice1(closureType *byte, funcsym uintptr, cap0 []any) unsafe.Pointer
+
+// Single-string-capture closure builder. String captures lower to
+// two wasm fields in the closureCtx (anyref bytes backing, i64 len).
+// Mirror of wasm3MakeClosureInlineSlice1.
+func wasm3MakeClosureInlineString1(closureType *byte, funcsym uintptr, cap0 string) unsafe.Pointer
 func makeslicecopy(typ *byte, tolen int, fromlen int, from unsafe.Pointer) unsafe.Pointer
 func growslice(oldPtr *any, newLen, oldCap, num int, et *byte) (ary []any)
 func growsliceBuf(oldPtr *any, newLen, oldCap, num int, et *byte, buf *any, bufLen int) (ary []any)

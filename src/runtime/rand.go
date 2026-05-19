@@ -153,34 +153,12 @@ func rand32() uint32 {
 	return uint32(rand())
 }
 
-// rand returns a random uint64 from the per-m chacha8 state.
-// This is called from compiler-generated code.
-//
-// Do not change signature: used via linkname from other packages.
-//
-//go:nosplit
-//go:linkname rand
-func rand() uint64 {
-	// Note: We avoid acquirem here so that in the fast path
-	// there is just a getg, an inlined c.Next, and a return.
-	// The performance difference on a 16-core AMD is
-	// 3.7ns/call this way versus 4.3ns/call with acquirem (+16%).
-	mp := getg().m
-	c := &mp.chacha8
-	for {
-		// Note: c.Next is marked nosplit,
-		// so we don't need to use mp.locks
-		// on the fast path, which is that the
-		// first attempt succeeds.
-		x, ok := c.Next()
-		if ok {
-			return x
-		}
-		mp.locks++ // hold m even though c.Refill may do stack split checks
-		c.Refill()
-		mp.locks--
-	}
-}
+// rand is defined per-target: rand_default.go has the standard
+// per-M chacha8 implementation; rand_wasm3.go has a tiny xorshift
+// the wasm3 bootstrap uses while the M2 cutover's *g/*m shape
+// isn't populated. Both honour the //go:linkname rand contract
+// so compiler-generated map-seed / runtime.maps_rand calls
+// resolve identically.
 
 //go:linkname maps_rand internal/runtime/maps.rand
 func maps_rand() uint64 {

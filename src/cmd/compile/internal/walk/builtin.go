@@ -374,9 +374,22 @@ func walkMakeMap(n *ir.MakeExpr, init *ir.Nodes) ir.Node {
 	mapType := reflectdata.MapType()
 	hint := n.Len
 
+	// On GOARCH=wasm3 force the hmap (and any inline group) onto
+	// the heap rather than stack. The stack-allocated hmap path
+	// uses stackTempAddr, which emits SP-relative auto-temp
+	// addresses (`Get $name(SP)`) that the wasm3 obj backend
+	// can't model — wasm3 has no Go stack frame in linear memory.
+	// Routing through runtime.makemap on the heap keeps the call
+	// shape consistent (bump-heap allocation via newobject) and
+	// lets the rest of the function body lower normally.
+	noEsc := n.Esc() == ir.EscNone
+	if buildcfg.GOARCH == "wasm3" {
+		noEsc = false
+	}
+
 	// var m *Map
 	var m ir.Node
-	if n.Esc() == ir.EscNone {
+	if noEsc {
 		// Allocate hmap on stack.
 
 		// var mv Map
@@ -436,7 +449,7 @@ func walkMakeMap(n *ir.MakeExpr, init *ir.Nodes) ir.Node {
 		// For hint <= abi.MapGroupSlots no groups will be
 		// allocated by makemap. Therefore, no groups need to be
 		// allocated in this code path.
-		if n.Esc() == ir.EscNone {
+		if noEsc {
 			// Only need to initialize m.seed since
 			// m map has been allocated on the stack already.
 			// m.seed = uintptr(rand())
@@ -451,7 +464,7 @@ func walkMakeMap(n *ir.MakeExpr, init *ir.Nodes) ir.Node {
 		return mkcall1(fn, n.Type(), init)
 	}
 
-	if n.Esc() != ir.EscNone {
+	if !noEsc {
 		m = typecheck.NodNil()
 	}
 

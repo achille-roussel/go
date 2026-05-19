@@ -13,6 +13,7 @@ import (
 	"cmd/compile/internal/typecheck"
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
+	"internal/buildcfg"
 )
 
 // walkCompLit walks a composite literal node:
@@ -263,6 +264,47 @@ func isSmallSliceLit(n *ir.CompLitExpr) bool {
 }
 
 func slicelit(n *ir.CompLitExpr, var_ ir.Node, init *ir.Nodes) {
+	// On GOARCH=wasm3 a slice literal must land in a wasmgc-backed
+	// slice rather than the linear-memory `[N]T` autotmp + slice-of-
+	// array dance below: a slice's `.array` field is anyref-typed in
+	// the wasm3 ABI, but the default lowering produces a *[N]T (i64
+	// linear-mem pointer), which fails wasm validation at every call
+	// site that expects an anyref backing (slice arg to a function,
+	// captures-in-struct composite capture, etc.). Transform
+	//   var = []T{e0, e1, ..., eN}
+	// into the equivalent of
+	//   tmp := make([]T, len)
+	//   tmp[0] = e0; tmp[1] = e1; ...
+	//   var = tmp
+	// — makeslice on wasm3 lowers to OpWasm3MakeSlice (wasmgc array
+	// backing), and the indexed stores fold into array.set via the
+	// existing rewrite rules. Skipped for `[N]T{}` arrays (only
+	// slice literals route through slicelit).
+	if buildcfg.GOARCH == "wasm3" {
+		sliceType := n.Type()
+		lenInt := ir.NewInt(base.Pos, n.Len)
+		mk := ir.NewCallExpr(base.Pos, ir.OMAKE, nil, []ir.Node{ir.TypeNode(sliceType), lenInt})
+		mk.SetType(sliceType)
+		mkE := typecheck.Expr(mk) // may be *ir.MakeExpr or *ir.CallExpr post-typecheck
+		tmp := typecheck.TempAt(base.Pos, ir.CurFunc, sliceType)
+		appendWalkStmt(init, ir.NewAssignStmt(base.Pos, tmp, mkE))
+		var idx int64
+		for _, value := range n.List {
+			if value.Op() == ir.OKEY {
+				kv := value.(*ir.KeyExpr)
+				idx = typecheck.IndexConst(kv.Key)
+				value = kv.Value
+			}
+			ix := ir.NewIndexExpr(base.Pos, tmp, ir.NewInt(base.Pos, idx))
+			ix.SetBounded(true)
+			as := ir.NewAssignStmt(base.Pos, ix, value)
+			appendWalkStmt(init, typecheck.Stmt(as))
+			idx++
+		}
+		appendWalkStmt(init, ir.NewAssignStmt(base.Pos, var_, tmp))
+		return
+	}
+
 	// make an array type corresponding the number of elements we have
 	t := types.NewArray(n.Type().Elem(), n.Len)
 	types.CalcSize(t)

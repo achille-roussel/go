@@ -198,9 +198,52 @@ func walkClosure(clo *ir.ClosureExpr, init *ir.Nodes) ir.Node {
 		// GetClosureField loop reads them back via per-component
 		// struct.gets + Slice/StringMake. Predicate: exactly one
 		// ClosureVar, by-value, not addr-taken, slice- or string-
-		// typed.
+		// typed (or small-int-array via element-decomposition).
 		if len(clofn.ClosureVars) == 1 {
 			cv := clofn.ClosureVars[0]
+			// Small integer-array captures decompose into N
+			// scalar captures and reuse the existing
+			// wasm3MakeClosureInlineN intrinsic family (N up to
+			// 8). The body-side prologue rematerialises the
+			// array from these N captures via OpWasm3StackArray
+			// + per-element assign. This sidesteps the still-
+			// open array-by-value call ABI: each element
+			// crosses the call boundary as an i64, the whole
+			// array never has to.
+			if cv.Byval() && !cv.Addrtaken() && cv.Type().IsArray() &&
+				cv.Type().Elem().IsInteger() &&
+				cv.Type().NumElem() >= 1 && cv.Type().NumElem() <= 8 {
+				n := int(cv.Type().NumElem())
+				// Publish side channel so the body-side prologue
+				// gets the per-closure-ctx shape from the [N]T
+				// ClosureVar (matching the N i64 fields the
+				// caller is about to push).
+				wasm.Wasm3ClosureBodyCaptures.Store(clofn.Nname.Linksym(), &wasm.Wasm3ClosureBodyInfo{
+					FuncType: clofn.Type(),
+					Captures: []*types.Type{cv.Type()},
+				})
+				fnName, ok := wasm3InlineIntrinsicName(n, wasm3ShapeUintptr)
+				if !ok {
+					goto wasm3LegacyClosure
+				}
+				fn := typecheck.LookupRuntime(fnName)
+				closureType := reflectdata.TypePtrAt(base.Pos, clo.Type())
+				fnSym := ir.NewUnaryExpr(base.Pos, ir.OCFUNC, clofn.Nname)
+				fnSym.SetType(types.Types[types.TUINTPTR])
+				fnSym = typecheck.Expr(fnSym).(*ir.UnaryExpr)
+				args := make([]ir.Node, 0, 2+n)
+				args = append(args, closureType, fnSym)
+				for i := 0; i < n; i++ {
+					idxNode := ir.NewInt(base.Pos, int64(i))
+					idxNode.SetType(types.Types[types.TINT])
+					ix := ir.NewIndexExpr(base.Pos, cv.Outer, idxNode)
+					ix.SetBounded(true)
+					args = append(args, wasm3CaptureAsUintptr(typecheck.Expr(ix)))
+				}
+				call := typecheck.Call(base.Pos, fn, args, false).(*ir.CallExpr)
+				call.SetType(clo.Type())
+				return walkExpr(call, init)
+			}
 			if cv.Byval() && !cv.Addrtaken() && ssa.CanSSA(cv.Type()) {
 				var intrinsicName string
 				var typeArgs []*types.Type

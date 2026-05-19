@@ -568,6 +568,32 @@ func buildssa(fn *ir.Func, worker int, isPgoHot bool) *ssa.Func {
 			fieldOff := int64(0)
 			for _, n := range fn.ClosureVars {
 				switch {
+				case n.Type().IsArray() && n.Type().Elem().IsInteger():
+					// Materialise the array from N i64 captures.
+					// The auto's addr-of will go through ssagen's
+					// PAUTO TARRAY branch (OpWasm3StackArray) so
+					// `xs[i]` in the body sees an anyref backing;
+					// we just need to populate it.
+					arrType := n.Type()
+					nElem := arrType.NumElem()
+					n.Class = ir.PAUTO
+					fn.Dcl = append(fn.Dcl, n)
+					// Zero-init the array variable (allocates the
+					// wasmgc backing via OpWasm3StackArray on its
+					// first addr-take).
+					s.assign(n, nil, true, 0)
+					for i := int64(0); i < nElem; i++ {
+						fld := s.entryNewValue1A(ssa.OpWasm3GetClosureField, types.Types[types.TINT], sym, cloRef)
+						fld.AuxInt = fieldOff + i
+						idxNode := ir.NewInt(s.curfn.Pos(), i)
+						idxNode.SetType(types.Types[types.TINT])
+						ix := ir.NewIndexExpr(s.curfn.Pos(), n, idxNode)
+						ix.SetType(arrType.Elem())
+						ix.SetBounded(true)
+						s.assign(ix, fld, false, 0)
+					}
+					fieldOff += nElem
+					continue
 				case n.Type().IsSlice():
 					sliceType := n.Type()
 					elemPtrType := types.NewPtr(sliceType.Elem())
@@ -8035,19 +8061,26 @@ func wasm3ClosureUsesCapturesInStruct(fn *ir.Func) bool {
 	if len(fn.ClosureVars) == 0 {
 		return false
 	}
-	// Single-composite-capture closures (slice / string) go through
-	// the captures-in-struct path too — walkClosure wires
-	// wasm3MakeClosureInlineSlice1 / wasm3MakeClosureInlineString1
+	// Single-composite-capture closures (slice / string / small
+	// integer array) go through the captures-in-struct path too —
+	// walkClosure wires wasm3MakeClosureInlineSlice1 / String1 (or
+	// reuses wasm3MakeClosureInlineN for an N-element int array)
 	// which lower to OpWasm3MakeClosureRefInline with the right
 	// number of flat capture args. The body-side prologue at the
 	// GetClosureField loop above mirrors this by reading multiple
-	// fields and reassembling via OpSliceMake / OpStringMake.
+	// fields and reassembling via OpSliceMake / OpStringMake /
+	// OpWasm3StackArray + ArraySet.
 	if len(fn.ClosureVars) == 1 {
 		cv := fn.ClosureVars[0]
 		if cv.Byval() && !cv.Addrtaken() && ssa.CanSSA(cv.Type()) {
 			if cv.Type().IsSlice() || cv.Type().IsString() {
 				return true
 			}
+		}
+		if cv.Byval() && !cv.Addrtaken() && cv.Type().IsArray() &&
+			cv.Type().Elem().IsInteger() &&
+			cv.Type().NumElem() >= 1 && cv.Type().NumElem() <= 8 {
+			return true
 		}
 	}
 	// walkClosure wires wasm3MakeClosureInline{1..8} for up to 8

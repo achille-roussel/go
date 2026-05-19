@@ -552,7 +552,18 @@ func captureClosureFields(t *types.Type) []wasmgc.Field {
 			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},
 		}
 	case t.IsArray():
-		return []wasmgc.Field{{Storage: wasmgc.AnyRefStorage(), Mutable: true}}
+		// Small integer-array captures decompose into N i64 fields
+		// (one per element) — the wasm3 closure walk picks the
+		// corresponding wasm3MakeClosureInlineN intrinsic and the
+		// body-side prologue rematerialises the array from these
+		// fields. The element type is required to be integer at the
+		// walk-side predicate; this just emits the layout.
+		n := int(t.NumElem())
+		fields := make([]wasmgc.Field, n)
+		for i := range fields {
+			fields[i] = wasmgc.Field{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true}
+		}
+		return fields
 	}
 	base.Fatalf("wasm3: captureClosureFields: unsupported capture type %v", t)
 	return nil

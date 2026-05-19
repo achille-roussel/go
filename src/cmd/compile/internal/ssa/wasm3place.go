@@ -115,6 +115,19 @@ func wasm3PlaceValues(f *Func) {
 		locals[i] = noLocal
 	}
 
+	// Compute the set of SSA Values whose per-value local must be
+	// anyref. Direct producers (e.g. OpWasm3MakeSlice, OpArgIntReg
+	// for a wasmgc-slice-arg's .array, OpSelectN of a slice-
+	// returning call) are seeded first; the propagation step then
+	// extends the set through OpCopy / OpPhi so a slice's .array
+	// retains its anyref classification across the SSA value flow
+	// that the rewrite pipeline tends to introduce (e.g. the
+	// `b = b[n:]` loop variable threading through a Phi in
+	// runtime.concatstrings). Without this propagation, the
+	// `(*byte)`-typed Phi would default to i64 and the call's
+	// anyref result would fail to local.set into it.
+	anyref := wasm3ComputeAnyrefValues(f)
+
 	var types []byte
 	nextLocal := uint32(0)
 	for _, b := range f.Blocks {
@@ -123,7 +136,11 @@ func wasm3PlaceValues(f *Func) {
 				continue
 			}
 			locals[v.ID] = nextLocal
-			types = append(types, wasm3ValueType(v))
+			t := wasm3ValueType(v)
+			if anyref[v] {
+				t = wasm3ValAnyref
+			}
+			types = append(types, t)
 			nextLocal++
 		}
 	}
@@ -139,6 +156,113 @@ func wasm3PlaceValues(f *Func) {
 		fi.Wasm3ValueLocals = locals
 		fi.Wasm3LocalTypes = types
 	}
+}
+
+// wasm3ComputeAnyrefValues runs a fixed-point pass over f to find
+// every SSA Value whose per-value wasm local must be anyref. The
+// classification has two layers:
+//
+//  1. Direct producers — values whose Op already signals anyref
+//     (OpWasm3MakeSlice, OpWasm3StackArray, OpArgIntReg of a
+//     wasmgc-typed param, OpSelectN extracting a slice's .array
+//     from a slice-returning call, etc.). These are exactly the
+//     cases wasm3ValueType handles in its Op-based switch.
+//  2. Propagation — OpCopy / OpPhi / OpSelectN values whose
+//     incoming Args include an already-anyref Value also need
+//     an anyref local. Without propagation, a Phi like
+//
+//       b1 := …slice-from-call….ptr         // anyref
+//       loop {
+//         b1 = b1[n:].ptr                    // OpPhi <*byte>
+//       }
+//
+//     gets its OpPhi local typed i64 (the default for `*byte`),
+//     and the anyref-typed Phi predecessor fails to local.set.
+//     A fixed-point pass propagates the anyref classification
+//     until stable. The Op set is intentionally narrow — only
+//     value-flow ops that pass through their input verbatim —
+//     so transformations like loads/stores/arith that change
+//     the value's wasm-stack representation aren't promoted.
+func wasm3ComputeAnyrefValues(f *Func) map[*Value]bool {
+	set := make(map[*Value]bool)
+	// Seed: direct producers per wasm3ValueType's Op-based logic.
+	for _, b := range f.Blocks {
+		for _, v := range b.Values {
+			if wasm3IsDirectAnyref(v) {
+				set[v] = true
+			}
+		}
+	}
+	// Propagate through Copy (single Arg). For Phi, only propagate
+	// when EVERY incoming Value is anyref — a Phi with mixed
+	// anyref + i64 inputs (e.g. append's slice .array Phi, where
+	// the initial nil-slice is i64 0 and the growslice return is
+	// anyref) cannot pick one wasm-typed local without forcing
+	// an invalid local.set on the other side; the conservative
+	// fallback keeps the Phi at i64 and any anyref input must
+	// be bridged elsewhere. The Phi-all-anyref case is what
+	// runtime.concatstrings hits (b = b[n:] loops back through
+	// a Phi whose only incoming Value is the anyref from
+	// rawstringtmp's result).
+	for changed := true; changed; {
+		changed = false
+		for _, b := range f.Blocks {
+			for _, v := range b.Values {
+				if set[v] {
+					continue
+				}
+				switch v.Op {
+				case OpCopy:
+					if len(v.Args) >= 1 && set[v.Args[0]] {
+						set[v] = true
+						changed = true
+					}
+				case OpPhi:
+					if len(v.Args) == 0 {
+						continue
+					}
+					allAnyref := true
+					for _, a := range v.Args {
+						if !set[a] {
+							allAnyref = false
+							break
+						}
+					}
+					if allAnyref {
+						set[v] = true
+						changed = true
+					}
+				}
+			}
+		}
+	}
+	return set
+}
+
+// wasm3IsDirectAnyref reports whether v's Op alone (independent of
+// Args) classifies the value as anyref. Mirrors the Op-based
+// branches of wasm3ValueType; the value-type-based logic
+// (looking at v.Type) is deliberately excluded because *byte etc.
+// can be either anyref or i64 depending on context — propagation
+// is the way to resolve that.
+func wasm3IsDirectAnyref(v *Value) bool {
+	switch v.Op {
+	case OpWasm3StructNew, OpWasm3StructNewDefault,
+		OpWasm3ArrayNew, OpWasm3ArrayNewDefault,
+		OpWasm3RefNull, OpWasm3RefCast,
+		OpWasm3StackArray, OpWasm3MakeSlice, OpWasm3SubSlice,
+		OpWasm3FuncValue, OpWasm3MakeClosureRef,
+		OpWasm3MakeClosureRefInline,
+		OpWasm3LoweredGetClosureRef, OpWasm3LoweredCastClosureRef:
+		return true
+	case OpWasm3GetClosureField:
+		return v.AuxInt&wasm3GetClosureFieldAnyrefBit != 0
+	case OpArgIntReg:
+		return wasm3OpArgIsRefParam(v)
+	case OpSelectN:
+		return wasm3SelectNIsAnyrefResult(v)
+	}
+	return false
 }
 
 // wasm3HasOutput reports whether v produces a value that needs a
@@ -475,23 +599,37 @@ func wasm3SelectNIsAnyrefResult(v *Value) bool {
 		return false
 	}
 	call := v.Args[0]
-	// SelectN's AuxInt is the index into the call's flat result
-	// list. Walk the call's static result types in flat-field
-	// order; the slice's first field (data ptr) is the anyref one.
 	auxCall, ok := call.Aux.(*AuxCall)
 	if !ok || auxCall == nil {
 		return false
 	}
-	want := int(v.AuxInt)
-	cursor := 0
-	for _, p := range auxCall.abiInfo.OutParams() {
-		nFields := wasm3NumFlatFields(p.Type)
-		if cursor <= want && want < cursor+nFields {
-			return wasm3FieldIsAnyref(p.Type, want-cursor)
-		}
-		cursor += nFields
+	// Consult the callee's actual wasm signature (set by
+	// attachWasmType in cmd/compile/internal/wasm3). Many runtime
+	// helpers like runtime.growslice flatten composite returns
+	// through tryFlatPrimitiveAttach, ending up with all-i64
+	// returns even when the abstract Go type is a slice — in that
+	// case the call site pops i64 from the wasm stack and
+	// SelectN's local must also be i64. Only when the callee's
+	// wasm result field at this position is WasmAnyref do we
+	// classify the SelectN as anyref.
+	want := v.AuxInt
+	if auxCall.Fn == nil {
+		return false
 	}
-	return false
+	fi := auxCall.Fn.Func()
+	if fi == nil || fi.WasmType == nil {
+		return false
+	}
+	wt := fi.WasmType
+	// AuxInt indexes the wasm result vector directly (post-
+	// decomposition). The wasm sig was emitted in the same
+	// flat order the SSA uses for its tuple components, so
+	// position-based indexing matches.
+	if want < 0 || want >= int64(len(wt.Results)) {
+		return false
+	}
+	rf := wt.Results[want]
+	return rf.Type == obj.WasmAnyref || rf.Type == obj.WasmRef
 }
 
 // wasm3FieldIsAnyref reports whether the offset-th flat wasm field

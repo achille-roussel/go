@@ -1622,18 +1622,23 @@ func wasm3RegisterStructAux(s *ssagen.State, v *ssa.Value) uint32 {
 
 // wasm3RegisterArrayAux is the array.* counterpart of
 // wasm3RegisterStructAux. v.Aux is the *types.Type of the whole
-// array (`[N]T`); the wasm array type is the backing — keyed on
-// the element type T — that wasmgc.Table.collectBacking already
-// produces for slice backings.
+// array (`[N]T`), slice (`[]T`), or — for the OpArgIntReg-base
+// rules added for slice-in-struct args — the slice's .array
+// pointer type (`*T`). All three forms key the wasm array
+// backing on the element type T.
 func wasm3RegisterArrayAux(s *ssagen.State, v *ssa.Value) uint32 {
 	t, ok := v.Aux.(*types.Type)
 	if !ok {
 		v.Fatalf("wasm3RegisterArrayAux: v.Aux is not *types.Type: %T", v.Aux)
 	}
-	if !t.IsArray() && !t.IsSlice() {
-		v.Fatalf("wasm3RegisterArrayAux: v.Aux is not an array or slice type: %v", t)
+	switch {
+	case t.IsArray(), t.IsSlice():
+		return wasm3RegisterArrayBacking(s.FuncInfo(), t.Elem())
+	case t.IsPtr():
+		return wasm3RegisterArrayBacking(s.FuncInfo(), t.Elem())
 	}
-	return wasm3RegisterArrayBacking(s.FuncInfo(), t.Elem())
+	v.Fatalf("wasm3RegisterArrayAux: v.Aux is not array/slice/pointer type: %v", t)
+	return 0
 }
 
 // wasm3AllocAnyrefTempLocal appends a fresh anyref scratch local to

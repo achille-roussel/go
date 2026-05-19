@@ -349,10 +349,38 @@ func Wasm3SliceArgElemType(v *Value) *types.Type {
 	for _, p := range ifn.Type().RecvParams() {
 		nFields := wasm3NumFlatFields(p.Type)
 		if cursor <= wasmFieldIdx && wasmFieldIdx < cursor+nFields {
-			if p.Type.IsSlice() && wasmFieldIdx == cursor {
-				return p.Type.Elem()
-			}
-			return nil
+			return wasm3FindSliceElemAt(p.Type, wasmFieldIdx-cursor)
+		}
+		cursor += nFields
+	}
+	return nil
+}
+
+// wasm3FindSliceElemAt walks t's wasm-flattened field layout looking
+// for a slice whose data-pointer field sits at the given local
+// offset within t's flattened span. Returns the slice element type
+// when found; returns nil otherwise (the local offset names a non-
+// slice-data field, or a non-slice subfield).
+//
+// A slice flattens to 3 fields (data, len, cap); the data field is
+// at offset 0 of the slice's flattened span. Struct subfields walk
+// recursively. Top-level slice args (the most common case) match
+// the `t.IsSlice() && off == 0` short-circuit.
+func wasm3FindSliceElemAt(t *types.Type, off int) *types.Type {
+	if t.IsSlice() {
+		if off == 0 {
+			return t.Elem()
+		}
+		return nil
+	}
+	if !t.IsStruct() {
+		return nil
+	}
+	cursor := 0
+	for _, f := range t.Fields() {
+		nFields := wasm3NumFlatFields(f.Type)
+		if cursor <= off && off < cursor+nFields {
+			return wasm3FindSliceElemAt(f.Type, off-cursor)
 		}
 		cursor += nFields
 	}

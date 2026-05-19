@@ -484,22 +484,66 @@ reproduce in non-closure code):
   wiring them needs either code-gen (an `intrinsics_gen.go`
   build step) or a synthetic IR op. Tractable when the
   allocation pressure justifies the cross-cutting work.
-- **Slice and array captures** fail on the legacy heap path
-  with `expected i64, found anyref` (slice) and
-  `expected anyref but nothing on stack` (array). This is
-  **not a closure-specific issue**:
-    - `/tmp/wasm3-slicestruct` (a plain `struct{s []int}` arg
-      to a non-closure function) fails identically.
-    - `/tmp/wasm3-arrarg` (`func first(xs [4]int) int`) fails
-      identically.
-  Both wedge on the same root: wasm3 represents slices /
-  arrays with wasmgc-typed components (e.g. slice's data
-  pointer is `(ref (array T))`), but the heap captures struct
-  (and any other linear-memory struct that contains them) is
-  built via `i64.store` of each field. The closureCtx funcref
-  ABI fix for strings (d410d47022, this session) addressed
-  the analogous problem at the function-signature level; the
-  slice/array fix lives at the heap-struct-construction level
-  and is part of the wasm3 slice/array workstream.
-  closures-over-slices will start working as soon as the
-  underlying slice-in-struct support lands.
+- **Slice and string captures** ✅ landed (cc2d0b1679 + d5b3de8b93).
+  Composite captures now route through the captures-in-struct
+  path instead of the legacy heap-captures route: a slice
+  capture's three components (anyref backing + i64 len + i64
+  cap) sit inline in the wasmgc closureCtx subtype, and a
+  string capture's two components (i64 data ptr + i64 len —
+  strings stay linear-memory until Stage J) likewise sit
+  inline. The wiring is symmetric on both sides:
+    - **walkClosure** routes single by-value slice/string
+      ClosureVars through `wasm3MakeClosureInlineSlice1` /
+      `wasm3MakeClosureInlineString1` intrinsics; publishes
+      the Go-level capture types to
+      `wasm.Wasm3ClosureBodyCaptures` up-front so caller and
+      body codegen see the same per-closure-ctx struct shape.
+    - **SSA intrinsics** decompose the composite via
+      `OpSlicePtr`/`OpSliceLen`/`OpSliceCap` (or `OpStringPtr`/
+      `OpStringLen`) and feed the components to
+      `OpWasm3MakeClosureRefInline`.
+    - **`captureClosureFields`** (new helper) maps each
+      capture Go type to its closureCtx wasm fields, matching
+      the *call-signature flatPrimitiveFields shape*: TSLICE
+      → `(anyref, i64, i64)`; TSTRING → `(i64, i64)`; scalars
+      → 1 prim.
+    - **Body-side prologue** reads multiple `OpWasm3GetClosureField`
+      ops at consecutive wasm-field offsets and reassembles
+      via `OpSliceMake` / `OpStringMake`. The slice's `.array`
+      read sets `Wasm3GetClosureFieldAnyrefBit` on AuxInt so
+      `wasm3place` classifies its per-value local as anyref.
+      Body indexing (`xs[i]`) folds through the extended
+      `Wasm3SliceArgElemType` path (also extended to recognise
+      the anyref-marker bit) into `array.get_u`.
+    - **Storage encoding fix** (`cmd/internal/wasmgc/serial.go`):
+      the AnyRef bit was being dropped at serialise time, so
+      the linker rebuilt `AnyRefStorage` as `PrimStorage(I8)`
+      (`(mut i8)` in the wat). Pack RefNull and AnyRef into a
+      single flags byte so the typed-ref bit survives.
+  `/tmp/wasm3-closureslice` (`makeSummer(make([]int,5))` →
+  closure that sums) and `/tmp/wasm3-closurestr2`
+  (`makeChecker("hello")` → closure returning `len(prefix)`)
+  both run to expected output.
+
+- **Array captures** still fail with `expected anyref but
+  nothing on stack`. Not a closure-specific issue — the same
+  failure appears in `/tmp/wasm3-arrarg`
+  (`func first(xs [4]int) int` called from main). The wasm3
+  call ABI doesn't yet materialise a wasmgc array ref at the
+  call site for a TARRAY pass-by-value arg; the caller pushes
+  zero values and the callee expects `(ref $arr_T)`.
+  `captureClosureFields` for TARRAY (`AnyRefStorage`) is
+  defined but the intrinsic / walk plumbing is dormant until
+  the upstream array ABI lands. Composite captures over
+  arrays will start working as soon as it does.
+
+- **Slice-literal captures**
+  (`xs := []int{1,2,3,4,5}; makeSummer(xs)`) work in the
+  closure body, but the literal initialisation itself routes
+  through `runtime.newobject` (linear-memory backing) rather
+  than `OpWasm3MakeSlice` (wasmgc backing), so the call site
+  pushes an i64 data pointer where the closureCtx expects
+  anyref. Workaround: initialise via `make()` + per-element
+  assignment. Permanent fix is the slice-literal-to-wasmgc
+  lowering in walkCompositeLit, a separate slice-workstream
+  follow-on.

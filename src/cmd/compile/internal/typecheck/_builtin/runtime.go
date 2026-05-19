@@ -232,6 +232,12 @@ func wasm3MakeClosureInlineSlice1(closureType *byte, funcsym uintptr, cap0 []any
 // two wasm fields in the closureCtx (anyref bytes backing, i64 len).
 // Mirror of wasm3MakeClosureInlineSlice1.
 func wasm3MakeClosureInlineString1(closureType *byte, funcsym uintptr, cap0 string) unsafe.Pointer
+
+// Array captures aren't wired yet: the wasm3 call ABI doesn't
+// push wasmgc array refs at the call site (the same gap as
+// /tmp/wasm3-arrarg — array-by-value as a function arg).
+// captureClosureFields and the body-side prologue plumbing for
+// arrays is dormant until that upstream piece lands.
 func makeslicecopy(typ *byte, tolen int, fromlen int, from unsafe.Pointer) unsafe.Pointer
 func growslice(oldPtr *any, newLen, oldCap, num int, et *byte) (ary []any)
 func growsliceBuf(oldPtr *any, newLen, oldCap, num int, et *byte, buf *any, bufLen int) (ary []any)

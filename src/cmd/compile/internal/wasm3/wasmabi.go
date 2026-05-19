@@ -294,13 +294,37 @@ func flatPrimitiveFields(t *types.Type) ([]obj.WasmField, bool) {
 	case types.TARRAY:
 		// Empty arrays produce no fields and the per-call-site
 		// register count is also 0 — matches by being empty on both
-		// sides. A non-empty array exceeds the per-register flatten
-		// budget for the typical regabi, so we leave it to the
-		// collector path (which boxes it as a single ref field).
+		// sides. A non-empty array decomposes into N per-element
+		// wasm fields, matching what the Go regabi
+		// (allocateRegs(TARRAY) → N elem regs) computes for the
+		// call-site register-arg loop. The previous "boxed as
+		// single ref" lowering left the wasm sig with one (ref) but
+		// the regabi pushed N per-element values, causing a
+		// validation mismatch (the visible /tmp/wasm3-arrarg
+		// failure: `expected (ref $type) but nothing on stack`).
+		// Returning N fields here aligns both sides.
+		//
+		// Bounded to 1 ≤ N ≤ 8 to match what the body-side
+		// rematerialisation path supports today (see
+		// wasm3ClosureUsesCapturesInStruct's array branch); larger
+		// arrays still fall through to the boxed-ref path and
+		// remain unsupported until a wasmgc-ref slot is wired into
+		// the Go regabi.
 		if t.NumElem() == 0 {
 			return nil, true
 		}
-		return nil, false
+		if !t.Elem().IsInteger() || t.NumElem() > 8 {
+			return nil, false
+		}
+		elemField, ok := wasm3IntField(t.Elem())
+		if !ok {
+			return nil, false
+		}
+		fields := make([]obj.WasmField, t.NumElem())
+		for i := range fields {
+			fields[i] = elemField
+		}
+		return fields, true
 	case types.TFUNC:
 		// Stage G: a function value is `(ref $go.closure.<sig>)`, a
 		// struct holding `(ref $go.func.<sig>)` plus any captured
@@ -776,7 +800,18 @@ func collectorMatchesRegabi(t *types.Type) bool {
 		}
 		return true
 	case types.TARRAY:
-		return collectorMatchesRegabi(t.Elem())
+		// The collector lowers TARRAY to a single (ref (array T))
+		// field, but Go's regabi allocates one register per element
+		// (allocateRegs(TARRAY) recurses into elem N times). The
+		// shapes diverge — 1 ref vs N register slots — so reject
+		// here and let tryFlatPrimitiveAttach take over (it
+		// flattens the array into N i64/i32/etc. fields, matching
+		// what the SSA call site actually pushes). This unblocks
+		// pass-by-value of small arrays at the wasm-validation
+		// level; the body still needs to read its N register args
+		// and reassemble (handled by the body-side prologue's
+		// PAUTO TARRAY → OpWasm3StackArray path).
+		return false
 	}
 	return false
 }

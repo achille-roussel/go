@@ -608,7 +608,17 @@ func CalcArraySize(t *Type) {
 	t.width = elem.width * n
 	t.align = elem.align
 	// ABIInternal only allows "trivial" arrays (i.e., length 0 or 1)
-	// to be passed by register.
+	// to be passed by register on most arches; multi-element arrays
+	// go through memory. On wasm3 the wasm function signature
+	// flattens an [N]T param into N register slots (see
+	// flatPrimitiveFields(TARRAY) in cmd/compile/internal/wasm3) so
+	// the SSA register-arg loop pushes per-element i64s that match
+	// the callee's wasm params. Allowing the per-element regs here
+	// keeps tryAllocRegs from forcing the array into memory at the
+	// call site. Bounded to ≤ 8 elements + small per-elem reg count
+	// to match the wasm3 sig's own bound; the regabi budget (16
+	// int / 32 float) plus the per-elem ≤ 1 reg keeps us safely
+	// within bounds.
 	switch n {
 	case 0:
 		t.intRegs = 0
@@ -617,6 +627,15 @@ func CalcArraySize(t *Type) {
 		t.intRegs = elem.intRegs
 		t.floatRegs = elem.floatRegs
 	default:
+		if buildcfg.GOARCH == "wasm3" && n <= 8 {
+			ir := int(elem.intRegs) * int(n)
+			fr := int(elem.floatRegs) * int(n)
+			if ir <= 16 && fr <= 32 {
+				t.intRegs = uint8(ir)
+				t.floatRegs = uint8(fr)
+				break
+			}
+		}
 		t.intRegs = math.MaxUint8
 		t.floatRegs = math.MaxUint8
 	}

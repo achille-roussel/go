@@ -553,13 +553,18 @@ reproduce in non-closure code):
   `[]int{1,2,3,4,5}` literal (instead of the make()+loop
   workaround).
 
-- **Array-by-value as a function arg** is the one remaining
-  gap, but it's **not a closure issue** — `/tmp/wasm3-arrarg`
-  (`func first(xs [4]int) int` called from `main` without any
-  closures) fails identically. The wasm3 call ABI doesn't yet
-  materialise a wasmgc array ref at the call site for a TARRAY
-  pass-by-value arg; the caller pushes zero values and the
-  callee expects `(ref $arr_T)`. Fixing this would unblock
-  `/tmp/wasm3-closurearr` (which constructs the array in `main`
-  and passes it to `makeIndexer`); the closure machinery is
-  ready for it.
+- **Array-by-value as a function arg** ✅ landed (0d614b4c31).
+  Three changes line up the wasm3 call ABI: `CalcArraySize`
+  allows per-element register allocation on wasm3 for N ≤ 8
+  (the previous "trivial arrays only" rule was tuned for
+  linear-memory stack frames, not wasm typed function params);
+  `flatPrimitiveFields(TARRAY)` now returns N element wasm
+  fields (matching the regabi's per-element allocation); and
+  `collectorMatchesRegabi` rejects TARRAY (forcing the
+  flat-primitive fallback over the boxed-ref collector path).
+  `/tmp/wasm3-arrarg` and `/tmp/wasm3-closurearr` (the original
+  `main` → `makeIndexer(xs)` test) now both run to the
+  expected output. The closure-capture path inherits the fix
+  for free — the call into `makeIndexer` now correctly pushes
+  the array's N register-slot values, and the array-capture
+  body prologue rematerialises the array as before.

@@ -613,23 +613,38 @@ func wasm3SelectNIsAnyrefResult(v *Value) bool {
 	// wasm result field at this position is WasmAnyref do we
 	// classify the SelectN as anyref.
 	want := v.AuxInt
-	if auxCall.Fn == nil {
-		return false
+	if auxCall.Fn != nil {
+		if fi := auxCall.Fn.Func(); fi != nil && fi.WasmType != nil {
+			wt := fi.WasmType
+			// AuxInt indexes the wasm result vector directly
+			// (post-decomposition). The wasm sig was emitted in
+			// the same flat order the SSA uses for its tuple
+			// components, so position-based indexing matches.
+			if want < 0 || want >= int64(len(wt.Results)) {
+				return false
+			}
+			rf := wt.Results[want]
+			return rf.Type == obj.WasmAnyref || rf.Type == obj.WasmRef
+		}
 	}
-	fi := auxCall.Fn.Func()
-	if fi == nil || fi.WasmType == nil {
-		return false
+	// Cross-package callee: the FuncInfo (and therefore the cached
+	// WasmType) lives in the callee's compilation unit and isn't
+	// visible here. Reconstruct the anyref-ness from the abstract Go
+	// return signature exposed by the AuxCall — flatPrimitiveFields
+	// is deterministic on the Go type, so a slice's `.array` is
+	// always anyref. Walk the abstract results to locate the
+	// (resultIdx, subOff) that the flat AuxInt picks out, then ask
+	// wasm3FieldIsAnyref about that field.
+	cursor := int64(0)
+	for i := int64(0); i < auxCall.NResults(); i++ {
+		rt := auxCall.TypeOfResult(i)
+		nFields := int64(wasm3NumFlatFields(rt))
+		if cursor <= want && want < cursor+nFields {
+			return wasm3FieldIsAnyref(rt, int(want-cursor))
+		}
+		cursor += nFields
 	}
-	wt := fi.WasmType
-	// AuxInt indexes the wasm result vector directly (post-
-	// decomposition). The wasm sig was emitted in the same
-	// flat order the SSA uses for its tuple components, so
-	// position-based indexing matches.
-	if want < 0 || want >= int64(len(wt.Results)) {
-		return false
-	}
-	rf := wt.Results[want]
-	return rf.Type == obj.WasmAnyref || rf.Type == obj.WasmRef
+	return false
 }
 
 // wasm3FieldIsAnyref reports whether the offset-th flat wasm field

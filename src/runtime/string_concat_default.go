@@ -44,3 +44,36 @@ func concatstrings(buf *tmpBuf, a []string) string {
 	}
 	return s
 }
+
+// concatbytes implements a Go string concatenation x+y+z+... returning a slice
+// of bytes.
+// The operands are passed in the slice a.
+func concatbytes(buf *tmpBuf, a []string) []byte {
+	l := 0
+	for _, x := range a {
+		n := len(x)
+		if l+n < l {
+			throw("string concatenation too long")
+		}
+		l += n
+	}
+	if l == 0 {
+		// This is to match the return type of the non-optimized concatenation.
+		return []byte{}
+	}
+
+	var b []byte
+	if buf != nil && l <= len(buf) {
+		*buf = tmpBuf{}
+		b = buf[:l]
+	} else {
+		b = rawbyteslice(l)
+	}
+	offset := 0
+	for _, x := range a {
+		copy(b[offset:], x)
+		offset += len(x)
+	}
+
+	return b
+}

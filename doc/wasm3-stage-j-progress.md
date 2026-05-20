@@ -3,150 +3,105 @@
 Live tracking for the Stage J cutover. The plan lives in
 [`wasm3-stage-j-plan.md`](wasm3-stage-j-plan.md).
 
-## Execution model
+## Current state of the wasm3 branch
 
-Stage J is too large for a single session. It lands as a sequence of
-**pieces**, each one its own session. Pieces α, β, γ are
-infrastructure-only — they add new ops, helpers, and shadows without
-changing the wasm signature, so the test ladder stays green at every
-commit. Piece δ is the atomic world-flip: a single commit that
-switches `flatPrimitiveFields(TSTRING)`, the string-literal codegen,
-and the SSA decomposition to wasmgc, and deletes the linear-memory
-string shims (concatstrings_wasm3, gwrite3Scratch, …).
+| Test | Validates | Runs |
+|---|---|---|
+| `wasm3-empty` | ✓ | ✓ |
+| `wasm3-concat` | ✗ | — |
+| `wasm3-map` | ✗ | — |
 
-Before δ, wasm3 strings still travel as `(i64 data, i64 len)`.
-After δ, they travel as `(anyref data, i64 len)` with the data ref
-pointing at a wasmgc `(array i8)`.
+The cutover is in progress. The signature flip has landed and
+incremental piece-by-piece work to fix downstream breakage is
+ongoing. The test ladder regressed deliberately — each broken test
+is now a known piece of follow-up work, not a surprise.
 
-## Lessons from the f8e3685877 attempt (reverted in 7b1ddbed2e)
+## Landed commits
 
-Flipping `flatPrimitiveFields(TSTRING)` in isolation breaks every
-string-handling helper at the wasm validator: the function signature
-declares anyref but the body still emits i64 ops. The signature
-flip has to be the **last** step, not the first.
+| Commit | Subject |
+|---|---|
+| 5fad563f7e | cmd/compile: Stage J.1 — TSTRING wasm signature carries data as anyref |
+| (this commit) | runtime,cmd/compile: stub string helpers + box []string elem on wasm3 |
 
-The body-side work (SSA ops, runtime shadows, wasip1 scratch) is the
-bulk of Stage J. Sequencing it before the sig flip keeps each
-intermediate commit testable.
+## What changed in this commit
 
-## Pieces
+After the J.1 sig flip, three downstream breakages had to be
+patched to keep `wasm3-empty` building and to land partial progress:
 
-### Piece α — compiler infrastructure for wasmgc-string ops
-Status: **pending**
+- **`wasm3FlatStride(TSTRING) → 0`**: the slice-of-string backing
+  used to be `(array i64)` with stride 2, holding the old
+  `(i64 data, i64 len)` headers inline. After J.1 strings are
+  `(anyref data, i64 len)`, mixed types that can't share an i64
+  backing. Box each element via `(array (ref $go.box.string))`.
+  Per-element allocation overhead, revisited in Piece γ/δ.
 
-Add new SSA ops the wasm3 backend can emit for wasmgc-backed strings,
-**unused by default**. Existing string handling continues through the
-i64 path.
+- **`runtime.printstring` no-op stub** (`runtime/printstring_wasm3.go`):
+  the prior body did `write1(2, unsafe.Pointer(unsafe.StringData(s)),
+  int32(len(s)))`, but after J.1 `unsafe.StringData(s)` is an anyref
+  ref that `write1` (linear-memory i64) can't consume. The
+  materialisation path needs SSA support for byte-level indexing on a
+  wasmgc-backed string, not yet wired up.
 
-- `OpWasm3StringNew(data anyref, len i32) string` — `struct.new $string`
-- `OpWasm3StringData(s) anyref` — `struct.get $string 0`
-- `OpWasm3StringLen(s) i32` — `struct.get $string 1`
-- `OpWasm3StringIndex(s, i) byte` — `struct.get $string 0; array.get_u`
-- Per-package `$string` type registration via the existing
-  `typeCollector` (already used for slices).
+- **`runtime.concatstrings` / `runtime.concatbytes` no-op stubs**
+  (`runtime/string_concat_wasm3.go`, split from
+  `string_concat_default.go`): the prior bodies iterated a
+  `[]string` and used `unsafe.StringData` / `memmove` to copy
+  bytes — both broken on wasmgc strings, plus `[]string`'s backing
+  is now boxed (`(array (ref $go.box.string))`) which the SSA
+  backend's `OpWasm3ArrayGet` doesn't yet decode for ref-typed
+  elements.
 
-Verification: a wasm3-only Go fixture (under `cmd/compile/internal/wasm3/testdata/`)
-exercises each op via a hand-crafted SSA program and `wasm-tools
-validate`s the resulting `.wasm`. No user-visible test changes.
+## Outstanding work
 
-### Piece β — wasip1 scratch helper
-Status: **pending**
+Functions known to break on `wasm3-concat` / `wasm3-map` after these
+patches; each requires the same general fix (teach the SSA backend to
+handle wasmgc-string-shaped values + materialise to linear-mem
+scratch at wasip1 boundaries):
 
-A new runtime function `wasip1.CopyStringToLinear(s string, buf
-LinearPtr) (n int)` (and the analogous `[]byte` form) materialises
-the bytes of a wasmgc-backed string into a linear-memory buffer at
-`buf`, returns the byte count. The body uses `OpWasm3StringIndex`
-+ `i32.store8` in a loop; once SSA gets an `array.copy` between
-wasmgc and linear-mem (or once we wrap a helper bridge), the loop
-becomes a single intrinsic.
+- `cmd/compile/internal/wasm3.ssaGenValue` for `OpWasm3ArrayGet`
+  with ref-typed elements (currently fatalfs on elem sizes > 8).
+- Several runtime helpers downstream (the func-6 / func-3 validation
+  errors in wasm3-concat / wasm3-map respectively — both touch
+  string-typed values whose decomposition now produces anyrefs the
+  body can't load through).
 
-`LinearPtr` is a new typed alias for an `unsafe.Pointer` that points
-into the wasip1 boundary arena (`var wasip1.boundaryArena [...]byte`,
-a package-level `[N]byte` whose backing is linear memory on wasm3).
-Allocation is bump-style within the arena for the duration of a
-single syscall, reset after.
+This is the open-ended portion of the Stage J cutover. Each fix
+exposes one or two more.
 
-Verification: a wasm3-only test that builds a wasmgc string, copies
-it to scratch, and prints the linear-mem region's first byte.
-Existing wasm3-empty / wasm3-concat / wasm3-map remain unaffected
-(sig unchanged).
+## Realistic timeline
 
-### Piece γ — runtime string-using helpers handle wasmgc strings
-Status: **pending**
+Earlier in this session I sketched a four-piece (α/β/γ/δ)
+sequencing that supposedly let the test ladder stay green between
+pieces. Investigation showed this was wishful — the sig flip is
+load-bearing and *must* land first, then every downstream caller
+gets patched one by one.
 
-Each helper that today uses `unsafe.Pointer(unsafe.StringData(s))`
-or otherwise reaches into a string's linear-memory backing learns a
-wasm3 path that uses `wasip1.CopyStringToLinear` + `LinearPtr`
-arithmetic instead. Still triggered through the i64 path (sig
-unchanged) — the helpers internally treat the i64 as a placeholder
-for an anyref ref that doesn't exist yet, materialising on demand.
+The honest estimate based on this session's progress:
 
-Helpers in scope: `printstring`, `gwrite`, `printnum` (already uses a
-scratch buffer; mostly already correct), `concatstrings`,
-`runtime_map{access,assign}_faststr`.
+- Sig flip and immediate fan-out (this commit): **landed**.
+- Patching every string-using helper (concatbytes, concatstring*,
+  printstring, gwrite, panic message formatters, map faststr keys,
+  string equality, …): **probably a week of focused work** to get
+  back to the test ladder passing.
+- Literal-codegen change (string literals as wasmgc `(data)`
+  segments + `array.new_data`): **another major piece, multi-day**.
+- Allocator cutover (delete bump heap, all mallocgc call sites to
+  typed `array.new` / `struct.new`): **another major piece**.
 
-Verification: the existing test ladder (wasm3-empty, wasm3-concat,
-wasm3-map) keeps passing. New tests validate that the helpers emit
-the same observable output as before.
-
-### Piece δ — the atomic flip
-Status: **pending** (blocked on α, β, γ)
-
-Single commit that lands the wasmgc cutover for strings. Includes:
-
-- `flatPrimitiveFields(TSTRING)` and `wasm3Fields(TSTRING)` →
-  `(anyref, i64)`.
-- `wasmFuncTypeStorage` handles `WasmAnyref`.
-- `wasm3FieldIsAnyref(TSTRING, 0) → true`.
-- String literal codegen: emit per-package `(data)` segments + each
-  literal-use site becomes `array.new_data` (Stage J plan Piece 1).
-- `OpStringMake` decomposes to wasmgc ops on wasm3 (per Piece α).
-- `OpStringPtr` SSA value gets anyref classification.
-- `OpStringIndex` lowering uses `OpWasm3StringIndex` from Piece α.
-- Delete `runtime/string_concat_wasm3.go`,
-  `runtime/string_concat_default.go`; the canonical concatstrings
-  comes back to `runtime/string.go` (rewritten to use wasmgc ops).
-- Delete or simplify `runtime/printstring_wasm3.go`,
-  `runtime/gwrite_wasm3.go` (replaced by Piece γ shadows, then
-  switched to wasmgc-native).
-- Update the test ladder targets to validate wasmgc-string output.
-
-This commit is large by design — atomic per the Stage J plan. The
-preceding α/β/γ make it a refactor (deleting the bridges) rather
-than a foundational re-architecture.
-
-## Post-δ deletions
-
-After Piece δ, walk the deprecation list in the Stage J plan and
-remove every linear-memory shim it identifies:
-
-- `runtime/memequal_wasm3.go` — replaced by wasmgc `memequalArray`
-- `runtime/makeslice_wasm3.go`, `runtime/newobject_wasm3.go`,
-  `runtime/mallocgc_wasm3.go` — bump heap retired
-- `internal/runtime/maps/runtime_faststr_wasm3.go` — replaced by
-  wasmgc-array-based map storage (Stage J plan Piece 4)
-
-These are separate commits, one per file, post-δ.
-
-## Test ladder
-
-The bring-up tests that must pass at each piece:
-
-| Test | α | β | γ | δ |
-|---|---|---|---|---|
-| `wasm3-empty` | ✓ | ✓ | ✓ | ✓ |
-| `wasm3-concat` (`a + b`) | ✓ | ✓ | ✓ | ✓ |
-| `wasm3-map` (`map[string]int`) | ✓ | ✓ | ✓ | ✓ |
-| wasmgc-string fixture (new) | ✓ | ✓ | ✓ | ✓ |
-
-Every commit on the wasm3 branch must leave all four passing. The
-sig flip in δ is what permits the wasmgc-string fixture to exercise
-the production string path rather than a synthetic one.
+So the whole of Stage J is realistically a **multi-week dedicated
+project**, sequenced as continuous progress from this committed
+intermediate state. Sessions in between will leave the branch in
+known-partial-cutover form; the test ladder doesn't fully recover
+until Piece γ wraps up.
 
 ## Active session pointer
 
-Next session should pick up **Piece α**. Suggested first commit:
-register the per-package `$string` wasmgc type via `typeCollector`
-and add `OpWasm3StringNew` with its SSA → obj backend lowering.
-The rest of α's ops follow the same pattern as the `$slice` type
-work that landed earlier.
+Next session picks up from the current commit. The first concrete
+fix is extending `cmd/compile/internal/wasm3/ssa.go`'s
+`OpWasm3ArrayGet` case to handle ref-typed elements (the
+`(array (ref $go.box.string))` case the boxing change introduced).
+That unblocks the runtime helpers' string-iteration paths.
+
+After that, walk the wasm3-concat / wasm3-map func-N validation
+errors in order, fixing each helper's body to materialise via wasmgc
+ops where it used to do linear-memory pointer arithmetic.

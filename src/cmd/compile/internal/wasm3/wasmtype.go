@@ -299,7 +299,12 @@ func (c *typeCollector) collectBacking(elem *types.Type) int {
 func wasm3FlatStride(t *types.Type) int {
 	switch t.Kind() {
 	case types.TSTRING:
-		return 2 // (data ptr, len)
+		// Stage J: string is now (anyref data, i64 len) — mixed
+		// types can't share an (array i64) backing. Box each
+		// element via `(array (ref $go.box.string))` instead.
+		// Per-element allocation overhead, but correctness first
+		// (Piece 4 in doc/wasm3-stage-j-plan.md revisits).
+		return 0
 	case types.TINTER:
 		return 2 // (type ptr, data ptr)
 	case types.TSLICE:

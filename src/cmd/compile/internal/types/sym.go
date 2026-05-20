@@ -7,6 +7,7 @@ package types
 import (
 	"cmd/compile/internal/base"
 	"cmd/internal/obj"
+	"internal/buildcfg"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -86,6 +87,20 @@ func (sym *Sym) Linksym() *obj.LSym {
 func (sym *Sym) LinksymABI(abi obj.ABI) *obj.LSym {
 	if sym == nil {
 		base.Fatalf("nil symbol")
+	}
+	if buildcfg.GOARCH == "wasm3" && sym.Func() {
+		// wasm3 has a single calling convention — its native typed
+		// functions pass arguments and results as wasm params/results,
+		// so ABI0 and ABIInternal collapse to the same shape and
+		// share a single LSym. The ABI-bridging wrappers normally
+		// emitted to span the two would use SP-relative spills that
+		// the wasm3 obj backend can't lower (no Go stack frame in
+		// linear memory). Force function references to ABIInternal so
+		// references and the definition land on the same symbol;
+		// non-function syms aren't ABI-versioned and must keep the
+		// caller's abi to preserve linker version-0 lookups (e.g.
+		// type descriptors).
+		abi = obj.ABIInternal
 	}
 	if sym.Linkname != "" {
 		return base.Linkname(sym.Linkname, abi)

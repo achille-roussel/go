@@ -1264,6 +1264,18 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		fieldOff := ssa.Wasm3GetClosureFieldOffset(v.AuxInt)
 		pg.To = obj.Addr{Type: obj.TYPE_CONST, Offset: fieldOff + 2}
 
+	case ssa.OpWasm3InteriorPtr,
+		ssa.OpWasm3LoadInterior,
+		ssa.OpWasm3StoreInterior:
+		// doc/wasm3-fat-pointers-design.md Piece 1: the op
+		// definitions are in place so the SSA generator knows their
+		// types, but no rewrite rule emits them yet. Piece 2 wires
+		// up the actual struct.new / ref.cast / struct.get sequences
+		// against the prelude $go.iptr.<class> wrapper types. Until
+		// then, encountering one of these is a compiler bug — a rule
+		// fired before its backend lowering landed.
+		v.Fatalf("wasm3 fat pointer op %v emitted before Piece 2 backend lowering", v.Op)
+
 	case ssa.OpWasm3SubSlice:
 		// M3 Stage E phase 3: sub-slicing via deep copy. arg0 =
 		// orig_backing (anyref), arg1 = lo (i64), arg2 = len (i64),

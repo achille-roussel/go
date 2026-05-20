@@ -80,7 +80,11 @@ func TestPreludeRecGroups(t *testing.T) {
 	if len(groups) != NumPreludeTypes {
 		t.Fatalf("prelude produced %d groups, want %d (all prelude types are non-recursive singletons)", len(groups), NumPreludeTypes)
 	}
-	for _, idx := range []int{TypeGoObject, TypeGoBytes, TypeGoString} {
+	for _, idx := range []int{
+		TypeGoObject, TypeGoBytes, TypeGoString,
+		TypeGoIptrI8, TypeGoIptrI16, TypeGoIptrI32, TypeGoIptrI64,
+		TypeGoIptrF32, TypeGoIptrF64, TypeGoIptrRef,
+	} {
 		if got := groupSize(groups, idx); got != 1 {
 			t.Errorf("prelude type %d (%s) is in a group of size %d, want 1", idx, table[idx].Name, got)
 		}

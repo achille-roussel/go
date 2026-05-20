@@ -436,6 +436,56 @@ func init() {
 		// i64 local, reference captures in an anyref local, matching
 		// the wasm3ValueType dispatch.
 		{name: "GetClosureField", argLength: 1, reg: gp11, aux: "SymOff", symEffect: "Addr"},
+
+		// Fat-pointer (interior-pointer) primitives. See
+		// doc/wasm3-fat-pointers-design.md.
+		//
+		// A fat pointer is a `(container ref, offset i32)` pair,
+		// materialised as a wasmgc `(struct (ref any) i32)` whose
+		// wrapper type is one of the prelude `$go.iptr.<class>` entries
+		// (TypeGoIptrI8 .. TypeGoIptrRef). The container ref is anyref
+		// at storage time; uses ref.cast back to the concrete container
+		// type before reading or writing via struct.get/set or
+		// array.get/set.
+		//
+		// Aux on each op is the *types.Type of the pointee (a Go scalar
+		// or composite). The obj backend reads it to pick the right
+		// wrapper type (TypeGoIptr* index) and the right wasm op for
+		// load/store width. Multi-field pointees (string, slice,
+		// interface) lower their load to a tuple of `array.get` /
+		// `struct.get` reads and rely on OpSelectN downstream for
+		// decomposition — same shape OpStringMake already uses as a
+		// tuple producer.
+
+		// OpWasm3InteriorPtr materialises a fat pointer. arg0 is the
+		// container ref (anyref-typed at the SSA level); arg1 is the
+		// i32 offset. Result is the fat-pointer wasmgc ref.
+		// Emits: `<arg0>; <arg1>; struct.new $go.iptr.<class>`.
+		// Result lands in an anyref per-value local.
+		{name: "InteriorPtr", argLength: 2, reg: gp21, aux: "Typ", typ: "BytePtr"},
+
+		// OpWasm3LoadInterior reads through a fat pointer. arg0 is the
+		// fat-pointer ref. v.Aux is the pointee Go type so the backend
+		// derives the wrapper type and the read width. v.Type drives
+		// the per-value local shape (anyref for ref pointees, i64 for
+		// scalar pointees). For multi-component pointees (string,
+		// interface, slice) the op is tuple-producing — OpSelectN
+		// consumers extract individual fields.
+		//
+		// Emits: ref.cast (ref $go.iptr.<class>); struct.get
+		// $go.iptr.<class> 0; ref.cast (ref $containerType);
+		// struct.get $go.iptr.<class> 1; { array.get_u | struct.get }
+		// $containerType.
+		{name: "LoadInterior", argLength: 2, reg: gp11, aux: "Typ"},
+
+		// OpWasm3StoreInterior writes through a fat pointer. arg0 is
+		// the fat-pointer ref; arg1..argN are the value(s) to write
+		// (one for scalar pointees, multiple for multi-component);
+		// argN+1 is mem. v.Aux is the pointee Go type. Returns mem.
+		//
+		// Emits the dual of LoadInterior: ref.cast + struct.get 0/1
+		// + array.set/struct.set on the recovered container.
+		{name: "StoreInterior", argLength: -1, reg: regInfo{inputs: []regMask{gp, gp, gp}}, aux: "Typ", typ: "Mem"},
 	}
 
 	archs = append(archs, arch{

@@ -115,9 +115,16 @@ type Type struct {
 // Fixed type-table indices for the prelude types. These are emitted by
 // every wasm3 module ahead of the program's own types.
 const (
-	TypeGoObject = iota // go.object: the open base every heap object subtypes
-	TypeGoBytes         // go.bytes:  (array (mut i8)), string/[]byte backing
-	TypeGoString        // go.string: {backing, offset, length}
+	TypeGoObject  = iota // go.object: the open base every heap object subtypes
+	TypeGoBytes          // go.bytes:  (array (mut i8)), string/[]byte backing
+	TypeGoString         // go.string: {backing, offset, length}
+	TypeGoIptrI8         // go.iptr.i8:  fat pointer to an i8-class interior slot
+	TypeGoIptrI16        // go.iptr.i16: fat pointer to an i16-class interior slot
+	TypeGoIptrI32        // go.iptr.i32: fat pointer to an i32-class interior slot
+	TypeGoIptrI64        // go.iptr.i64: fat pointer to an i64-class interior slot
+	TypeGoIptrF32        // go.iptr.f32: fat pointer to an f32-class interior slot
+	TypeGoIptrF64        // go.iptr.f64: fat pointer to an f64-class interior slot
+	TypeGoIptrRef        // go.iptr.ref: fat pointer to a ref-typed interior slot
 	NumPreludeTypes
 )
 
@@ -157,6 +164,40 @@ func PreludeTypes() []Type {
 			{Storage: PrimStorage(I32)},               // length
 		},
 	}
+
+	// go.iptr.<class> — fat pointers / interior pointers. Each is
+	// (struct (anyref container) (i32 offset)). The container holds a
+	// wasmgc reference to a struct, array, or other composite; offset
+	// describes the pointee's position inside that container (a field
+	// index for a struct, an element index for an array). Read/write
+	// through a fat pointer goes via OpWasm3LoadInterior /
+	// OpWasm3StoreInterior, which ref.cast the container back to its
+	// concrete type and emit the appropriate struct.get/set or
+	// array.get/set with the offset.
+	//
+	// Seven variants, keyed on the pointee's storage class. The same
+	// wrapper handles every container's storage type (the container
+	// field is anyref, with a ref.cast at use); typing by pointee class
+	// rather than container type keeps the wrapper-type table O(7) for
+	// the whole program. See doc/wasm3-fat-pointers-design.md.
+	iptr := func(name string) Type {
+		return Type{
+			Name:  name,
+			Kind:  KindStruct,
+			Super: TypeGoObject,
+			Fields: []Field{
+				{Storage: AnyRefStorage()}, // container ref
+				{Storage: PrimStorage(I32)}, // offset / field index
+			},
+		}
+	}
+	t[TypeGoIptrI8] = iptr("go.iptr.i8")
+	t[TypeGoIptrI16] = iptr("go.iptr.i16")
+	t[TypeGoIptrI32] = iptr("go.iptr.i32")
+	t[TypeGoIptrI64] = iptr("go.iptr.i64")
+	t[TypeGoIptrF32] = iptr("go.iptr.f32")
+	t[TypeGoIptrF64] = iptr("go.iptr.f64")
+	t[TypeGoIptrRef] = iptr("go.iptr.ref")
 
 	return t
 }

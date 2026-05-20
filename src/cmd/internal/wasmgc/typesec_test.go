@@ -67,11 +67,12 @@ func TestAppendLeb128(t *testing.T) {
 func TestEncodePreludeTypeSection(t *testing.T) {
 	payload := Table(PreludeTypes()).EncodeTypeSection()
 
-	// Prelude: 3 singleton rec groups in table order (object, bytes,
-	// string). Pin the exact bytes — this is the module preamble every
-	// wasm3 binary starts with.
+	// Prelude: 10 singleton rec groups in table order: object, bytes,
+	// string, then the seven go.iptr.<class> fat-pointer wrappers
+	// (i8, i16, i32, i64, f32, f64, ref). Pin the exact bytes — this is
+	// the module preamble every wasm3 binary starts with.
 	want := []byte{
-		0x03, // 3 rec groups
+		0x0a, // 10 rec groups
 
 		// rec { go.object }: sub, 0 supertypes, struct with 0 fields.
 		opRec, 0x01,
@@ -91,6 +92,17 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 		opRef, 0x01, fieldConst, // (ref 1) const
 		valI32, fieldConst,
 		valI32, fieldConst,
+
+		// rec { go.iptr.<class> } x7: each is a singleton sub group of
+		// `(struct (anyref container) (i32 offset))` keyed on the
+		// pointee storage class. See doc/wasm3-fat-pointers-design.md.
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02, valAnyref, fieldConst, valI32, fieldConst, // go.iptr.i8
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02, valAnyref, fieldConst, valI32, fieldConst, // go.iptr.i16
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02, valAnyref, fieldConst, valI32, fieldConst, // go.iptr.i32
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02, valAnyref, fieldConst, valI32, fieldConst, // go.iptr.i64
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02, valAnyref, fieldConst, valI32, fieldConst, // go.iptr.f32
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02, valAnyref, fieldConst, valI32, fieldConst, // go.iptr.f64
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02, valAnyref, fieldConst, valI32, fieldConst, // go.iptr.ref
 	}
 	if !bytes.Equal(payload, want) {
 		t.Fatalf("prelude type section mismatch:\n got % x\nwant % x", payload, want)

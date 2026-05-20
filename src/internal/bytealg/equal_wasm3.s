@@ -2,76 +2,12 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-#include "go_asm.h"
-#include "textflag.h"
-
-// memequal(p, q unsafe.Pointer, size uintptr) bool
-TEXT runtime·memequal(SB), NOSPLIT, $0-25
-	Get SP
-	I64Load a+0(FP)
-	I64Load b+8(FP)
-	I64Load size+16(FP)
-	Call memeqbody<>(SB)
-	I64Store8 ret+24(FP)
-	RET
-
-// memequal_varlen(a, b unsafe.Pointer) bool
-TEXT runtime·memequal_varlen(SB), NOSPLIT, $0-17
-	Get SP
-	I64Load a+0(FP)
-	I64Load b+8(FP)
-	I64Load 8(CTXT) // compiler stores size at offset 8 in the closure
-	Call memeqbody<>(SB)
-	I64Store8 ret+16(FP)
-	RET
-
-// params: a, b, len
-// ret: 0/1
-TEXT memeqbody<>(SB), NOSPLIT, $0-0
-	Get R0
-	Get R1
-	I64Eq
-	If
-		I64Const $1
-		Return
-	End
-
-loop:
-	Loop
-		Get R2
-		I64Eqz
-		If
-			I64Const $1
-			Return
-		End
-
-		Get R0
-		I32WrapI64
-		I64Load8U $0
-		Get R1
-		I32WrapI64
-		I64Load8U $0
-		I64Ne
-		If
-			I64Const $0
-			Return
-		End
-
-		Get R0
-		I64Const $1
-		I64Add
-		Set R0
-
-		Get R1
-		I64Const $1
-		I64Add
-		Set R1
-
-		Get R2
-		I64Const $1
-		I64Sub
-		Set R2
-
-		Br loop
-	End
-	UNDEF
+// memequal/memequal_varlen for GOARCH=wasm3 are implemented in Go.
+// See src/runtime/memequal_wasm3.go and src/runtime/memequal_varlen_wasm3.go
+// — the asm bodies in equal_wasm.s use SP-relative frame loads
+// (`I64Load a+0(FP)`) that the wasm3 obj backend can't lower, and
+// the wasm3 typed calling convention passes arguments in wasm
+// function params instead of the linear-memory frame this asm
+// expects. The file remains so the directory still mirrors the
+// other arches; the actual function symbols are provided by the Go
+// shims.

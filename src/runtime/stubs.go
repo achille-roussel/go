@@ -128,7 +128,10 @@ func reflect_memmove(to, from unsafe.Pointer, n uintptr) {
 // exported value for testing
 const hashLoad = float32(loadFactorNum) / float32(loadFactorDen)
 
-// in internal/bytealg/equal_*.s
+// memequal is declared per-target: this file holds the asm forward
+// decl (body in internal/bytealg/equal_*.s); memequal_wasm3.go
+// provides a Go implementation for GOARCH=wasm3, whose obj backend
+// can't lower the linear-memory frame ABI the asm uses.
 //
 // memequal should be an internal detail,
 // but widely used packages access it using linkname.
@@ -137,10 +140,6 @@ const hashLoad = float32(loadFactorNum) / float32(loadFactorDen)
 //
 // Do not remove or change the type signature.
 // See go.dev/issue/67401.
-//
-//go:linkname memequal
-//go:noescape
-func memequal(a, b unsafe.Pointer, size uintptr) bool
 
 // noescape hides a pointer from escape analysis.  noescape is
 // the identity function but escape analysis doesn't think the

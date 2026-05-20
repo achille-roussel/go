@@ -235,21 +235,9 @@ func flatPrimitiveFields(t *types.Type) ([]obj.WasmField, bool) {
 	}
 	switch t.Kind() {
 	case types.TSTRING:
-		// Stage J: string lowers to (data ref, len i64). The data ref
-		// is the wasmgc `(array i8)` backing — declared anyref in
-		// the call signature (same shortcut reason as the slice case
-		// below: typed refs would force every cross-package call site
-		// to downcast, and per-value locals for OpStringPtr are
-		// already anyref per wasm3ValueType). len stays i64 — it's
-		// a regular integer with no reference semantics.
-		//
-		// The wasmgc embedded-struct lowering in lowerFields(TSTRING)
-		// adds an offset field between data and len so substrings can
-		// share a backing array; the offset is not part of the
-		// flattened call-signature shape (substrings synthesise a new
-		// 2-tuple header before crossing a call).
+		// (data *byte, len int) — both pass as i64 registers.
 		return []obj.WasmField{
-			{Type: obj.WasmAnyref},
+			{Type: obj.WasmI64},
 			{Type: obj.WasmI64},
 		}, true
 	case types.TSLICE:
@@ -850,13 +838,12 @@ func signatureHasRef(sig obj.WasmFuncType) bool {
 // same splitting on its side.
 func wasm3Fields(t *types.Type) ([]obj.WasmField, bool) {
 	if t.Kind() == types.TSTRING {
-		// Stage J: string lowers to (data ref, len i64). Must match
-		// flatPrimitiveFields(TSTRING) and wasm3FieldIsAnyref(TSTRING).
-		// The wasmexport wrapper still splits strings into 2 WasmPtr
-		// (i32) fields for the host boundary; revisited once wasmexport
-		// learns to marshal ref-typed payloads.
+		// (ptr, len) — both i64 to match the wasm3 internal register
+		// width. The wasmexport wrapper splits a string into 2
+		// WasmPtr (i32) fields and widens each across the boundary,
+		// the same dance pointer params do.
 		return []obj.WasmField{
-			{Type: obj.WasmAnyref},
+			{Type: obj.WasmI64},
 			{Type: obj.WasmI64},
 		}, true
 	}
@@ -956,8 +943,6 @@ func wasmFuncTypeStorage(f obj.WasmField) wasmgc.Storage {
 		return wasmgc.PrimStorage(wasmgc.F32)
 	case obj.WasmF64:
 		return wasmgc.PrimStorage(wasmgc.F64)
-	case obj.WasmAnyref:
-		return wasmgc.AnyRefStorage()
 	}
 	base.Fatalf("wasm3: wasmFuncTypeStorage: unsupported field type %v", f.Type)
 	return wasmgc.Storage{}

@@ -46,12 +46,38 @@ func concatstring5(buf *tmpBuf, a0, a1, a2, a3, a4 string) string {
 	return concatstrings(buf, []string{a0, a1, a2, a3, a4})
 }
 
-// concatbytes is declared per-target: string_concat_default.go
-// (!wasm3) holds the canonical body; string_concat_wasm3.go has a
-// wasm3-only stub during the Stage J cutover (iterating []string
-// reads from a (array (ref $go.box.string)) backing, which the
-// SSA backend's OpWasm3ArrayGet doesn't yet decode for ref-typed
-// elements — Piece γ).
+// concatbytes implements a Go string concatenation x+y+z+... returning a slice
+// of bytes.
+// The operands are passed in the slice a.
+func concatbytes(buf *tmpBuf, a []string) []byte {
+	l := 0
+	for _, x := range a {
+		n := len(x)
+		if l+n < l {
+			throw("string concatenation too long")
+		}
+		l += n
+	}
+	if l == 0 {
+		// This is to match the return type of the non-optimized concatenation.
+		return []byte{}
+	}
+
+	var b []byte
+	if buf != nil && l <= len(buf) {
+		*buf = tmpBuf{}
+		b = buf[:l]
+	} else {
+		b = rawbyteslice(l)
+	}
+	offset := 0
+	for _, x := range a {
+		copy(b[offset:], x)
+		offset += len(x)
+	}
+
+	return b
+}
 
 // concatbyte2 helps make the callsite smaller (compared to concatbytes),
 // and we think this is currently more valuable than omitting one call in

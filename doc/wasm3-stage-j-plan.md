@@ -148,7 +148,11 @@ a hybrid model and we can't delete any of the bridging code.
   argument decomposer, and selectN classifier all follow.
 - SSA: `OpStringMake` lowers to `struct.new $string` on wasm3.
   `OpStringPtr` becomes `struct.get $string 0` (returns the array
-  ref). `OpStringLen` becomes `struct.get $string 2` (the length;
+  ref) plus the offset, packaged as the interior-pointer fat
+  pointer (`$go.box.scalar`) — this is what `unsafe.StringData(s)`
+  returns to user code; see Piece 3 for why interior pointers are
+  the canonical replacement for `unsafe.Pointer` arithmetic.
+  `OpStringLen` becomes `struct.get $string 2` (the length;
   field 1 is the offset). String comparison and indexing rewrite
   to `array.get_u`/`array.compare`-based ops.
 - String-literal data section: the existing `.rodata` strings
@@ -211,10 +215,8 @@ runtime uses it only for two narrow cases.
   the existing selective-boxing scheme (`doc/wasm3-design.md` §7):
   taking `&buf[i]` when `buf` is `[]byte` materialises an
   `(arrayref, index)` fat pointer encoded as the per-package
-  `$go.box.scalar` wrapper struct. The runtime uses these to pass
-  byte-buffer references to helpers like `unsafe.SliceData` or
-  `unsafe.StringData`. No raw linear-memory arithmetic is
-  permitted on these — operations go through array indexing on
+  `$go.box.scalar` wrapper struct. No raw linear-memory arithmetic
+  is permitted on these — operations go through array indexing on
   the underlying ref.
 - **wasip1 boundary buffers** use a new type
   `internal/runtime/wasip1.LinearPtr`. Its conversions to/from
@@ -225,13 +227,71 @@ runtime uses it only for two narrow cases.
   arithmetic on wasm3 outside those boundaries is a build error
   enforced by a vet check.
 
+#### `unsafe.StringData` / `unsafe.SliceData` are the canonical API
+
+WasmGC has no pointer arithmetic — `(ref (array i8))` is opaque and
+the only way to address element *i* is `array.get` / `array.set` /
+`array.copy` against the ref+index pair. So every runtime helper
+that today says `unsafe.Pointer(&local) + offset` has to be rewritten
+to take a typed reference plus an index. The two stdlib functions
+that produce exactly that shape are `unsafe.StringData(s string)
+*byte` and `unsafe.SliceData(s []T) *T`. After Stage J they become
+the **only** supported way for runtime code to obtain a byte-level
+handle to string / slice storage; every shim that today reaches into
+a `string` or `[]byte` via `unsafe.Pointer(&local)` is rewritten to
+go through them.
+
+Concretely:
+
+- `unsafe.StringData(s)` lowers (post-Stage-J string shape) to
+  `struct.get $string 0` followed by an `(arrayref, offset)` interior
+  pointer construction. The result is typed `*byte` to the Go user
+  but represented as the same `$go.box.scalar` fat-pointer struct
+  as `&buf[i]`. Element access goes through the boxed ref's array
+  ops — `unsafe.Pointer(unsafe.StringData(s)) + i` is a compile-time
+  error on wasm3 (pointer arithmetic is forbidden); the correct
+  rewrite uses Go subscripting (`s[i]`) which the compiler lowers
+  to `array.get_u`.
+- `unsafe.SliceData(s)` lowers to `struct.get $slice 0` plus the
+  same interior-pointer construction. Same rules.
+- `unsafe.Slice(p *byte, n int)` and `unsafe.String(p *byte, n int)`
+  reverse the operation: given the interior pointer (`(arrayref,
+  offset)`) and a length, construct a new slice / string header
+  pointing at the same backing array, with the offset/len adjusted.
+  No backing copy.
+
+Adoption pattern in runtime/internal code. Wherever a wasm3-affected
+helper currently has
+
+    p := unsafe.Pointer(&local)
+    ... arithmetic on p ...
+
+the Stage J rewrite is
+
+    p := unsafe.StringData(local)   // or unsafe.SliceData(local)
+    ... typed access through p (no arithmetic) ...
+
+and the helper is then portable to wasm3 *without* a separate shim.
+The bring-up already validated this pattern in commit ccaf2dcbf5
+(`internal/runtime/maps: add StrHashByValue, avoid &local at faststr
+call sites`); Stage J generalises it to every remaining helper.
+
+Stdlib `unsafe.StringData` / `unsafe.SliceData` implementations are
+compiler intrinsics (`OpStringPtr` / `OpSlicePtr` today); the wasm3
+backend just needs to emit the wasmgc interior-pointer construction
+instead of the i64 data-field load.
+
+#### Per-helper rewrites
+
 Helpers that took `unsafe.Pointer` and did arithmetic on it
 (`memequal`, `memmove`, `memclr`, the map helpers) become typed:
 `runtime.memequalArray(a, b (ref (array i8)), n i32) bool`,
 `runtime.memmoveArray(...)`. The byte-by-byte fallbacks in the
 current linear-memory shims (`memequal_wasm3.go`, etc.) are
 **deleted** and replaced with `array.copy` / element-wise
-comparison.
+comparison. Callers that today pass `unsafe.Pointer(&x)` switch
+to `unsafe.SliceData` / `unsafe.StringData` as described above,
+then pass the resulting interior pointer to the typed helper.
 
 ### Piece 4: map storage on wasmgc
 

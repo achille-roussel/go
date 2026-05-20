@@ -39,3 +39,17 @@ func StrHash(p unsafe.Pointer, h uintptr) uintptr {
 	}
 	return strHashFallback(p, h)
 }
+
+// StrHashByValue is StrHash but takes the string by value. Avoids
+// the `&local` pattern at call sites that the wasm3 obj backend
+// can't model (no Go stack frame in linear memory). On AES-capable
+// arches a stack slot is unavoidable for the AES path's `(*string)
+// (p)` reinterpretation, so we spill back through the same shape
+// strHashAES expects — the wasm3 build skips this path entirely
+// (UseAeshash is false on wasm3).
+func StrHashByValue(s string, h uintptr) uintptr {
+	if UseAeshash {
+		return strHashAES(unsafe.Pointer(&s), h)
+	}
+	return strHashByValueFallback(s, h)
+}

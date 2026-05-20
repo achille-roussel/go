@@ -41,3 +41,10 @@ func MemHash64(p unsafe.Pointer, h uintptr) uintptr {
 func StrHash(p unsafe.Pointer, h uintptr) uintptr {
 	return strHashFallback(p, h)
 }
+
+// StrHashByValue is StrHash but takes the string by value. It exists
+// so callers don't have to materialise the string header on the
+// stack via `&local`; see strHashByValueFallback.
+func StrHashByValue(s string, h uintptr) uintptr {
+	return strHashByValueFallback(s, h)
+}

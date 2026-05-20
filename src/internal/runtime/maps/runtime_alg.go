@@ -80,6 +80,17 @@ func strHashFallback(a unsafe.Pointer, h uintptr) uintptr {
 	return memHashFallback(x.str, h, uintptr(x.len))
 }
 
+// strHashByValueFallback hashes a string passed by value. Equivalent
+// to strHashFallback but doesn't require the caller to take the
+// address of the string header — the latter pattern lands as an
+// SP-relative auto-temp on wasm3, which the obj backend can't
+// lower because wasm3 has no Go stack frame in linear memory.
+// Using unsafe.StringData lets the caller hash a local string
+// without spilling it through a stack slot.
+func strHashByValueFallback(s string, h uintptr) uintptr {
+	return memHashFallback(unsafe.Pointer(unsafe.StringData(s)), h, uintptr(len(s)))
+}
+
 //go:nosplit
 func add(p unsafe.Pointer, x uintptr) unsafe.Pointer {
 	return unsafe.Pointer(uintptr(p) + x)

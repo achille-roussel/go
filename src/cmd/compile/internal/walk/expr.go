@@ -497,11 +497,19 @@ func walkAddString(x *ir.AddStringExpr, init *ir.Nodes, conv *ir.ConvExpr) ir.No
 	var fn, fnsmall, fnbig string
 
 	buf := typecheck.NodNil()
+	// On wasm3 the stack tmpBuf is a *[32]byte whose backing is a
+	// wasmgc array, so passing it as the runtime helper's `*tmpBuf`
+	// argument (typed i64 by the wasm3 ABI for Go pointers) would
+	// push an anyref where the callee expects i64 — wasm module
+	// validation rejects the call. The wasm3 concatstrings shim
+	// ignores buf and allocates in linear memory unconditionally,
+	// so always pass nil here.
+	suppressBuf := buildcfg.GOARCH == "wasm3"
 	switch {
 	default:
 		base.FatalfAt(x.Pos(), "unexpected type: %v", typ)
 	case typ.IsString():
-		if x.Esc() == ir.EscNone {
+		if !suppressBuf && x.Esc() == ir.EscNone {
 			sz := int64(0)
 			for _, n1 := range x.List {
 				if n1.Op() == ir.OLITERAL {
@@ -519,7 +527,7 @@ func walkAddString(x *ir.AddStringExpr, init *ir.Nodes, conv *ir.ConvExpr) ir.No
 		args = []ir.Node{buf}
 		fnsmall, fnbig = "concatstring%d", "concatstrings"
 	case typ.IsSlice() && typ.Elem().IsKind(types.TUINT8): // Optimize []byte(str1+str2+...)
-		if conv != nil && conv.Esc() == ir.EscNone {
+		if !suppressBuf && conv != nil && conv.Esc() == ir.EscNone {
 			buf = stackBufAddr(tmpstringbufsize, types.Types[types.TUINT8])
 		}
 		args = []ir.Node{buf}

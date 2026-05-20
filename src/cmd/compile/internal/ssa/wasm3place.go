@@ -656,11 +656,6 @@ func wasm3FieldIsAnyref(t *types.Type, off int) bool {
 		// (offset 0) is anyref.
 		return off == 0
 	}
-	if t.IsString() {
-		// Stage J: string flattens to (data, len) — data is anyref
-		// (the wasmgc (array i8) backing), len is i64.
-		return off == 0
-	}
 	if !t.IsStruct() {
 		return false
 	}

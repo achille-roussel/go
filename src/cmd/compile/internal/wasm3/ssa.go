@@ -1264,17 +1264,121 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		fieldOff := ssa.Wasm3GetClosureFieldOffset(v.AuxInt)
 		pg.To = obj.Addr{Type: obj.TYPE_CONST, Offset: fieldOff + 2}
 
-	case ssa.OpWasm3InteriorPtr,
-		ssa.OpWasm3LoadInterior,
-		ssa.OpWasm3StoreInterior:
-		// doc/wasm3-fat-pointers-design.md Piece 1: the op
-		// definitions are in place so the SSA generator knows their
-		// types, but no rewrite rule emits them yet. Piece 2 wires
-		// up the actual struct.new / ref.cast / struct.get sequences
-		// against the prelude $go.iptr.<class> wrapper types. Until
-		// then, encountering one of these is a compiler bug — a rule
-		// fired before its backend lowering landed.
-		v.Fatalf("wasm3 fat pointer op %v emitted before Piece 2 backend lowering", v.Op)
+	case ssa.OpWasm3InteriorPtr:
+		// doc/wasm3-fat-pointers-design.md Piece 2: materialise a fat
+		// pointer for an interior slot of a wasmgc container.
+		// v.Aux is the container's *types.Type (a slice or array);
+		// arg0 is the container ref (anyref-typed at the SSA level);
+		// arg1 is the i32 element offset. Wrapper-type index is
+		// derived from the element's storage class.
+		//
+		// Emits: <container>; <offset i32>; struct.new $go.iptr.<class>
+		containerType := v.Aux.(*types.Type)
+		wrapIdx := wasm3IptrTypeIdx(containerType.Elem())
+		getValue64(s, v.Args[0])
+		getValue64(s, v.Args[1])
+		s.Prog(wasm.AI32WrapI64)
+		pNew := s.Prog(wasm.AStructNew)
+		pNew.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
+
+	case ssa.OpWasm3LoadInterior:
+		// Read through a fat pointer. arg0 is the fat-pointer ref;
+		// v.Aux is the container's *types.Type (slice or array).
+		// Emits the canonical sequence of:
+		//   1. ref.cast iptr to (ref $go.iptr.<class>); struct.get 0
+		//      -> container as anyref;
+		//   2. ref.cast to (ref $container_wasmgc_type);
+		//   3. ref.cast iptr again; struct.get 1 -> offset i32;
+		//   4. array.get_u / array.get on $container_wasmgc_type.
+		// The result is widened back to i64 for the per-value local
+		// (i64 by wasm3ValueType), matching OpWasm3ArrayGet's
+		// extension polarity.
+		containerType := v.Aux.(*types.Type)
+		wrapIdx := wasm3IptrTypeIdx(containerType.Elem())
+		containerIdx := int64(wasm3RegisterArrayBacking(s.FuncInfo(), containerType.Elem()))
+		elemSize := containerType.Elem().Size()
+		signed := v.Type.IsSigned()
+		// 1: container ref
+		getValue64(s, v.Args[0])
+		pCast := s.Prog(wasm.ARefCast)
+		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
+		pGet0 := s.Prog(wasm.AStructGet)
+		pGet0.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
+		pGet0.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+		// 2: typed container
+		pCastC := s.Prog(wasm.ARefCast)
+		pCastC.From = obj.Addr{Type: obj.TYPE_CONST, Offset: containerIdx}
+		// 3: offset
+		getValue64(s, v.Args[0])
+		pCast2 := s.Prog(wasm.ARefCast)
+		pCast2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
+		pGet1 := s.Prog(wasm.AStructGet)
+		pGet1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
+		pGet1.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
+		// 4: array.get with the right packed/unpacked variant
+		var getOp obj.As
+		switch elemSize {
+		case 1, 2:
+			if signed {
+				getOp = wasm.AArrayGetS
+			} else {
+				getOp = wasm.AArrayGetU
+			}
+		case 4, 8:
+			getOp = wasm.AArrayGet
+		default:
+			v.Fatalf("OpWasm3LoadInterior: unsupported elem size %d (composite pointees are deferred to a later piece)", elemSize)
+		}
+		pGetArr := s.Prog(getOp)
+		pGetArr.From = obj.Addr{Type: obj.TYPE_CONST, Offset: containerIdx}
+		if elemSize < 8 {
+			if signed {
+				s.Prog(wasm.AI64ExtendI32S)
+			} else {
+				s.Prog(wasm.AI64ExtendI32U)
+			}
+		}
+
+	case ssa.OpWasm3StoreInterior:
+		// Write through a fat pointer. arg0 is the fat-pointer ref;
+		// arg1 is the value to write; arg2 is mem. v.Aux is the
+		// container's *types.Type. Dual of LoadInterior:
+		//   1. Recover the typed container (ref.cast iptr; struct.get
+		//      0; ref.cast to (ref $container_type));
+		//   2. Get the offset (ref.cast iptr; struct.get 1);
+		//   3. Push the value;
+		//   4. array.set $container_type.
+		containerType := v.Aux.(*types.Type)
+		wrapIdx := wasm3IptrTypeIdx(containerType.Elem())
+		containerIdx := int64(wasm3RegisterArrayBacking(s.FuncInfo(), containerType.Elem()))
+		elemSize := containerType.Elem().Size()
+		// 1: typed container
+		getValue64(s, v.Args[0])
+		pCast := s.Prog(wasm.ARefCast)
+		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
+		pGet0 := s.Prog(wasm.AStructGet)
+		pGet0.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
+		pGet0.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+		pCastC := s.Prog(wasm.ARefCast)
+		pCastC.From = obj.Addr{Type: obj.TYPE_CONST, Offset: containerIdx}
+		// 2: offset
+		getValue64(s, v.Args[0])
+		pCast2 := s.Prog(wasm.ARefCast)
+		pCast2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
+		pGet1 := s.Prog(wasm.AStructGet)
+		pGet1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
+		pGet1.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
+		// 3: value (narrowed if packed)
+		getValue64(s, v.Args[1])
+		if elemSize < 8 {
+			s.Prog(wasm.AI32WrapI64)
+		}
+		if elemSize > 8 {
+			v.Fatalf("OpWasm3StoreInterior: unsupported elem size %d (composite pointees are deferred to a later piece)", elemSize)
+		}
+		// 4: array.set
+		pSet := s.Prog(wasm.AArraySet)
+		pSet.From = obj.Addr{Type: obj.TYPE_CONST, Offset: containerIdx}
 
 	case ssa.OpWasm3SubSlice:
 		// M3 Stage E phase 3: sub-slicing via deep copy. arg0 =

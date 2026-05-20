@@ -271,3 +271,39 @@ func TestCollectClosureCtx(t *testing.T) {
 	// and validate.
 	validateModule(t, "collected-closure-ctx", wrapModule(c.table.EncodeTypeSection()))
 }
+
+// TestIptrTypeIdx pins the pointee-class -> prelude-wrapper-index
+// mapping wasm3IptrTypeIdx uses to lower OpWasm3InteriorPtr and the
+// load/store dual. Per the fat-pointer design, wrappers are keyed on
+// pointee storage class (i8, i16, i32, i64, f32, f64, ref) so the
+// wrapper-type table stays O(7) for the whole program.
+func TestIptrTypeIdx(t *testing.T) {
+	cases := []struct {
+		name string
+		elem *types.Type
+		want int
+	}{
+		{"bool", types.Types[types.TBOOL], wasmgc.TypeGoIptrI8},
+		{"byte", types.Types[types.TUINT8], wasmgc.TypeGoIptrI8},
+		{"int8", types.Types[types.TINT8], wasmgc.TypeGoIptrI8},
+		{"int16", types.Types[types.TINT16], wasmgc.TypeGoIptrI16},
+		{"uint16", types.Types[types.TUINT16], wasmgc.TypeGoIptrI16},
+		{"int32", types.Types[types.TINT32], wasmgc.TypeGoIptrI32},
+		{"uint32", types.Types[types.TUINT32], wasmgc.TypeGoIptrI32},
+		{"int64", types.Types[types.TINT64], wasmgc.TypeGoIptrI64},
+		{"int", types.Types[types.TINT], wasmgc.TypeGoIptrI64},
+		{"uintptr", types.Types[types.TUINTPTR], wasmgc.TypeGoIptrI64},
+		{"float32", types.Types[types.TFLOAT32], wasmgc.TypeGoIptrF32},
+		{"float64", types.Types[types.TFLOAT64], wasmgc.TypeGoIptrF64},
+		{"unsafePtr", types.Types[types.TUNSAFEPTR], wasmgc.TypeGoIptrRef},
+		{"*int32", types.NewPtr(types.Types[types.TINT32]), wasmgc.TypeGoIptrRef},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := wasm3IptrTypeIdx(tc.elem)
+			if got != tc.want {
+				t.Errorf("wasm3IptrTypeIdx(%v) = %d, want %d", tc.elem, got, tc.want)
+			}
+		})
+	}
+}

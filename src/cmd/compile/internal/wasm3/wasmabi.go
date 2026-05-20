@@ -723,6 +723,35 @@ func wasm3RegisterArrayBacking(fi *obj.FuncInfo, elem *types.Type) uint32 {
 	return uint32(idx)
 }
 
+// wasm3IptrTypeIdx returns the prelude wrapper-type index for a fat
+// pointer whose pointee is `elem`. See doc/wasm3-fat-pointers-design.md;
+// each Go scalar (or pointer) class maps to one of the prelude
+// TypeGoIptr* entries so the wrapper-type table stays O(7).
+// Composite-pointee variants (string, slice, interface — multi-component
+// loads) aren't covered by Piece 2 and trigger a compile-time fatal
+// at the caller.
+func wasm3IptrTypeIdx(elem *types.Type) int {
+	switch elem.Kind() {
+	case types.TBOOL, types.TINT8, types.TUINT8:
+		return wasmgc.TypeGoIptrI8
+	case types.TINT16, types.TUINT16:
+		return wasmgc.TypeGoIptrI16
+	case types.TINT32, types.TUINT32:
+		return wasmgc.TypeGoIptrI32
+	case types.TINT64, types.TUINT64,
+		types.TINT, types.TUINT, types.TUINTPTR:
+		return wasmgc.TypeGoIptrI64
+	case types.TFLOAT32:
+		return wasmgc.TypeGoIptrF32
+	case types.TFLOAT64:
+		return wasmgc.TypeGoIptrF64
+	case types.TPTR, types.TUNSAFEPTR, types.TCHAN, types.TFUNC, types.TMAP:
+		return wasmgc.TypeGoIptrRef
+	}
+	base.Fatalf("wasm3IptrTypeIdx: composite pointee %v is deferred to a later piece", elem)
+	return -1
+}
+
 func tryCollectorAttach(ft *types.Type) (wt *obj.WasmType, c *typeCollector, ok bool) {
 	for _, p := range ft.RecvParams() {
 		if !collectorMatchesRegabi(p.Type) {

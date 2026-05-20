@@ -55,6 +55,11 @@ func makeslice64(et *_type, len64, cap64 int64) unsafe.Pointer {
 // newobject — keeping a single allocator means one debug trap and
 // one watermark to grow.
 //
+// Exposed via linkname for the wasm3 maps shim
+// (internal/runtime/maps/runtime_faststr_wasm3.go); the maps package
+// can't import "runtime" directly.
+//
+//go:linkname wasm3HeapAlloc
 //go:nosplit
 func wasm3HeapAlloc(nbytes uintptr) unsafe.Pointer {
 	aligned := (nbytes + 7) &^ 7

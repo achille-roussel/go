@@ -15,6 +15,7 @@ import (
 	"cmd/compile/internal/ir"
 	"cmd/compile/internal/logopt"
 	"cmd/compile/internal/objw"
+	"cmd/compile/internal/reflectdata"
 	"cmd/compile/internal/ssa"
 	"cmd/compile/internal/ssagen"
 	"cmd/compile/internal/types"
@@ -661,11 +662,18 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(fieldIdx)}
 
 	case ssa.OpWasm3PtrStore:
-		// Accessor-pair interior-pointer write ($go.ptr.i64 setter via
-		// call_ref). The materialization/deref core (walk-phase accessor
-		// gen + the (anyref,i32)->i64 accessor ABI + the OffPtr->MakeFieldPtr
-		// lowering) lands as a coupled unit; this op is not emitted yet.
-		v.Fatalf("OpWasm3PtrStore: interior-pointer deref core not yet wired")
+		// Write through $go.ptr.i64: call_ref the setter with (base,
+		// offset, value). arg0=ptr, arg1=value, arg2=mem.
+		wasm3EnsureCollector(s.FuncInfo())
+		tmp := wasm3AllocAnyrefTempLocal(s)
+		getValue64(s, v.Args[0])
+		localSetIdx(s, tmp)
+		wasm3PtrField(s, tmp, 0) // base (anyref)
+		wasm3PtrField(s, tmp, 1) // offset (i32)
+		getValue64(s, v.Args[1]) // value (i64)
+		wasm3PtrField(s, tmp, 3) // set funcref
+		pc := s.Prog(wasm.ACallRef)
+		pc.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoSetterI64)}
 
 	case ssa.OpWasm3GlobalSet:
 		// Write a boxed package-level variable's wasm ref-global
@@ -1104,16 +1112,41 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
 
 	case ssa.OpWasm3MakeFieldPtr:
-		// Materialize $go.ptr.i64 for &container.field (accessor-pair
-		// interior pointer). Real codegen (struct.new with ref.func
-		// accessors from reflectdata.WasmGCFieldGetter/Setter) lands with
-		// the coupled walk-gen + accessor-ABI unit; not emitted yet.
-		v.Fatalf("OpWasm3MakeFieldPtr: interior-pointer materialization core not yet wired")
+		// Materialize $go.ptr.i64 for &container.field. v.Aux is the
+		// container struct *types.Type; v.AuxInt is the field byte
+		// offset. Emit: <container>; i32.const 0 (offset unused for a
+		// struct field — the field index is static in the accessors);
+		// ref.func $get_T_field; ref.func $set_T_field;
+		// struct.new $go.ptr.i64. The accessors must already be generated
+		// (walk-phase pre-gen); WasmGCFieldGetter/Setter are idempotent.
+		st := v.Aux.(*types.Type)
+		f := wasm3FieldAtOffset(st, v.AuxInt)
+		if f == nil {
+			v.Fatalf("OpWasm3MakeFieldPtr: no field at byte offset %d in %v", v.AuxInt, st)
+		}
+		wasm3EnsureCollector(s.FuncInfo())
+		getValue64(s, v.Args[0])
+		i32Const(s, 0)
+		pg := s.Prog(wasm.ARefFunc)
+		pg.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: reflectdata.WasmGCFieldGetter(st, f).Linksym()}
+		ps := s.Prog(wasm.ARefFunc)
+		ps.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: reflectdata.WasmGCFieldSetter(st, f).Linksym()}
+		pn := s.Prog(wasm.AStructNew)
+		pn.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoPtrI64)}
 
 	case ssa.OpWasm3PtrLoad:
-		// Accessor-pair interior-pointer read ($go.ptr.i64 getter via
-		// call_ref). Not emitted yet; see OpWasm3MakeFieldPtr.
-		v.Fatalf("OpWasm3PtrLoad: interior-pointer deref core not yet wired")
+		// Read through $go.ptr.i64: call_ref the getter with (base,
+		// offset). The ptr is read three times (base/offset/get fields),
+		// so stash it in a scratch anyref local first.
+		wasm3EnsureCollector(s.FuncInfo())
+		tmp := wasm3AllocAnyrefTempLocal(s)
+		getValue64(s, v.Args[0])
+		localSetIdx(s, tmp)
+		wasm3PtrField(s, tmp, 0) // base (anyref)
+		wasm3PtrField(s, tmp, 1) // offset (i32)
+		wasm3PtrField(s, tmp, 2) // get funcref
+		pc := s.Prog(wasm.ACallRef)
+		pc.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoGetterI64)}
 
 	case ssa.OpWasm3GlobalGet:
 		// Read a boxed package-level variable's wasm ref-global
@@ -1992,6 +2025,38 @@ func wasm3FieldIndexRec(c *typeCollector, t *types.Type, off int64, base int) (i
 		widx += n
 	}
 	return 0, false
+}
+
+// wasm3FieldAtOffset returns the (possibly nested) scalar struct field at
+// byte offset off in struct st, for the interior-pointer accessor
+// generation. Recurses into an inlined nested struct field. Returns nil
+// if off does not name a field start.
+func wasm3FieldAtOffset(st *types.Type, off int64) *types.Field {
+	for _, f := range st.Fields() {
+		if f.Offset == off {
+			return f
+		}
+		if off > f.Offset && off < f.Offset+f.Type.Size() && f.Type.IsStruct() {
+			if sub := wasm3FieldAtOffset(f.Type, off-f.Offset); sub != nil {
+				return sub
+			}
+		}
+	}
+	return nil
+}
+
+// wasm3PtrField emits the read of field `field` of the $go.ptr.i64 fat
+// pointer stashed in anyref local `tmp`: local.get tmp; ref.cast
+// (ref $go.ptr.i64); struct.get $go.ptr.i64 field. Used by the
+// interior-pointer deref codegen (PtrLoad/PtrStore).
+func wasm3PtrField(s *ssagen.State, tmp uint32, field int64) {
+	pg := s.Prog(wasm.ALocalGet)
+	pg.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(tmp)}
+	pc := s.Prog(wasm.ARefCast)
+	pc.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoPtrI64)}
+	pf := s.Prog(wasm.AStructGet)
+	pf.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoPtrI64)}
+	pf.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
 }
 
 // wasm3RegisterArrayAux is the array.* counterpart of

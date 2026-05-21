@@ -336,6 +336,17 @@ func init() {
 		// (StackArray ...)) _) into Wasm3ArrayGet ops on this ref.
 		{name: "StackArray", argLength: 1, reg: gp01, aux: "Sym", symEffect: "Addr"},
 
+		// OpWasm3StackStruct is the struct analogue of StackArray: a
+		// stack-allocated `var s T` (T a struct) lowers to a wasmgc
+		// (ref $go.struct.T) allocated once at function entry, replacing
+		// OpLocalAddr so field access and value-copy go through the boxed
+		// ref. arg0 is the entry memory; v.Aux is the *ir.Name (its type
+		// is *T). The zero value is built with struct.new_default (scalars
+		// 0, refs null) then array fields are filled with a fresh
+		// array.new_default (a nil slice/string/map/ptr field stays null,
+		// which is the correct zero value).
+		{name: "StackStruct", argLength: 1, reg: gp01, aux: "Sym", symEffect: "Addr"},
+
 		// M3 Stage E phase 2: replacement for the bump-heap
 		// runtime.makeslice call. Allocates a wasmgc `(ref (array T))`
 		// backing of length cap via `array.new_default`. The result is

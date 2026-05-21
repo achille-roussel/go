@@ -5554,6 +5554,21 @@ func (s *state) addr(n ir.Node) *ssa.Value {
 				s.wasm3StackArrays[n] = v
 				return v
 			}
+			// A stack-allocated struct (no nested struct-value field, array
+			// fields with scalar/ref elements) lowers to a boxed
+			// (ref $go.struct.T) allocated once at entry, so field access
+			// and value-copy go through the ref rather than a linear slot.
+			if buildcfg.GOARCH == "wasm3" && n.Type().IsStruct() && wasm3CanClone(n.Type()) {
+				if s.wasm3StackArrays == nil {
+					s.wasm3StackArrays = map[*ir.Name]*ssa.Value{}
+				}
+				if v, ok := s.wasm3StackArrays[n]; ok {
+					return v
+				}
+				v := s.entryNewValue1A(ssa.OpWasm3StackStruct, t, n, s.startmem)
+				s.wasm3StackArrays[n] = v
+				return v
+			}
 			return s.newValue2Apos(ssa.OpLocalAddr, t, n, s.sp, s.mem(), !ir.IsAutoTmp(n))
 
 		case ir.PPARAMOUT: // Same as PAUTO -- cannot generate LEA early.
@@ -8177,6 +8192,32 @@ func wasm3SliceElemInteriorOK(elem *types.Type) bool {
 		types.TINT, types.TUINT, types.TUINTPTR,
 		types.TFLOAT32, types.TFLOAT64,
 		types.TPTR, types.TUNSAFEPTR:
+		return true
+	}
+	return false
+}
+
+// wasm3CanClone reports whether wasm3 can represent t as a boxed ref it
+// builds/copies directly: an array with scalar/reference elements, or a
+// struct with no nested struct-value field (lowerFields flattens those,
+// breaking the 1:1 struct field index) and no array field with composite
+// elements. Scalar, pointer, slice, string, interface, map, chan, and
+// func fields are fine. Used to gate OpWasm3StackStruct (local struct as
+// a ref) and the field-wise value-copy path.
+func wasm3CanClone(t *types.Type) bool {
+	switch {
+	case t.IsArray():
+		return wasm3SliceElemInteriorOK(t.Elem())
+	case t.IsStruct():
+		for _, f := range t.Fields() {
+			ft := f.Type
+			if ft.IsStruct() {
+				return false
+			}
+			if ft.IsArray() && !wasm3SliceElemInteriorOK(ft.Elem()) {
+				return false
+			}
+		}
 		return true
 	}
 	return false

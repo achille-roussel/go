@@ -1738,6 +1738,43 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p := s.Prog(wasm.AArrayNewDefault)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterArrayBacking(s.FuncInfo(), arrType.Elem()))}
 
+	case ssa.OpWasm3StackStruct:
+		// Stack-allocated `var s T` (struct). Build the zero value:
+		// struct.new_default (scalars 0, ref fields null — a nil slice/
+		// string/map/ptr field is correctly null), then fill each array
+		// field with a fresh array.new_default so element access doesn't
+		// hit a null ref. v.Aux is the *ir.Name (its type is *T).
+		name, ok := v.Aux.(*ir.Name)
+		if !ok {
+			v.Fatalf("OpWasm3StackStruct: v.Aux is not *ir.Name: %T", v.Aux)
+		}
+		st := name.Type()
+		if !st.IsStruct() {
+			v.Fatalf("OpWasm3StackStruct: Name type is not struct: %v", st)
+		}
+		structIdx := int64(wasm3RegisterStruct(s.FuncInfo(), st))
+		pNew := s.Prog(wasm.AStructNewDefault)
+		pNew.From = obj.Addr{Type: obj.TYPE_CONST, Offset: structIdx}
+		tmp := wasm3AllocAnyrefTempLocal(s)
+		pSet := s.Prog(wasm.ALocalSet)
+		pSet.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(tmp)}
+		for _, f := range st.Fields() {
+			if !f.Type.IsArray() {
+				continue // scalars 0 / refs null from struct.new_default
+			}
+			fieldIdx := wasm3FieldIndexAtOffset(s.FuncInfo(), st, f.Offset)
+			pg := s.Prog(wasm.ALocalGet)
+			pg.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(tmp)}
+			i32Const(s, int32(f.Type.NumElem()))
+			pArr := s.Prog(wasm.AArrayNewDefault)
+			pArr.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterArrayBacking(s.FuncInfo(), f.Type.Elem()))}
+			pStructSet := s.Prog(wasm.AStructSet)
+			pStructSet.From = obj.Addr{Type: obj.TYPE_CONST, Offset: structIdx}
+			pStructSet.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(fieldIdx)}
+		}
+		pGetRes := s.Prog(wasm.ALocalGet)
+		pGetRes.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(tmp)}
+
 	default:
 		v.Fatalf("unexpected op: %s", v.Op)
 

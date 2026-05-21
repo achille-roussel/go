@@ -267,7 +267,7 @@ func elimDeadAutosGeneric(f *Func) {
 	visit := func(v *Value) (changed bool) {
 		args := v.Args
 		switch v.Op {
-		case OpAddr, OpLocalAddr, OpWasm3StackArray, OpWasm3FuncValue, OpWasm3MakeClosureRef, OpWasm3MakeClosureRefInline, OpWasm3LoweredCastClosureRef, OpWasm3GetClosureField:
+		case OpAddr, OpLocalAddr, OpWasm3StackArray, OpWasm3StackStruct, OpWasm3FuncValue, OpWasm3MakeClosureRef, OpWasm3MakeClosureRefInline, OpWasm3LoweredCastClosureRef, OpWasm3GetClosureField:
 			// Propagate the address if it points to an auto.
 			// OpWasm3StackArray is wasm3's substitute for
 			// OpLocalAddr on TARRAY PAUTO autos — see

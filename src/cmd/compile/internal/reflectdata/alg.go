@@ -429,7 +429,20 @@ func eqFuncWasm3(t *types.Type) *ir.Func {
 	// pt, qt := (*t)(p), (*t)(q) — a ref.cast from the open base type to
 	// the concrete WasmGC struct/array reference. Stored in temps so the
 	// per-field accesses below each get a fresh deref of the same ref.
-	ptrT := t.PtrTo()
+	//
+	// When t is itself a pointer, compare through *unsafe.Pointer (a
+	// single shared pointer type) rather than *t. A pointer value's
+	// equality is ref identity, so the dereferenced unsafe.Pointer ==
+	// is exactly right — and crucially we must NOT materialize t.PtrTo()
+	// (= **...): dcommontype calls geneq(t) before its IsPtrElem() guard
+	// (reflect.go:435, IsPtrElem == cache.ptr != nil), so creating the
+	// next-deeper pointer here flips that guard true and drives an
+	// infinite *T -> **T -> ***T rtype-emission recursion.
+	cmpT := t
+	if t.IsPtr() {
+		cmpT = types.Types[types.TUNSAFEPTR]
+	}
+	ptrT := cmpT.PtrTo()
 	ptVar := typecheck.TempAt(pos, ir.CurFunc, ptrT)
 	qtVar := typecheck.TempAt(pos, ir.CurFunc, ptrT)
 	fn.Body.Append(ir.NewAssignStmt(pos, ptVar, ir.NewConvExpr(pos, ir.OCONVNOP, ptrT, np)))
@@ -492,7 +505,7 @@ func eqFuncWasm3(t *types.Type) *ir.Func {
 	r := eqExpr(
 		func() ir.Node { return ir.NewStarExpr(pos, ptVar) },
 		func() ir.Node { return ir.NewStarExpr(pos, qtVar) },
-		t)
+		cmpT)
 
 	fn.Body.Append(ir.NewAssignStmt(pos, nr, r))
 	fn.Body.Append(ir.NewReturnStmt(pos, nil))

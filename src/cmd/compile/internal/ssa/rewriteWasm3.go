@@ -3850,14 +3850,14 @@ func rewriteValueWasm3_OpStore(v *Value) bool {
 		return true
 	}
 	// match: (Store {t} dst val mem)
-	// cond: config.arch == "wasm3" && t.IsArray() && dst.Op == OpWasm3StackArray
+	// cond: config.arch == "wasm3" && t.IsArray() && (dst.Op == OpWasm3StackArray || dst.Op == OpWasm3ArrayNewDefault)
 	// result: (ArrayCopyInto {t} dst val mem)
 	for {
 		t := auxToType(v.Aux)
 		dst := v_0
 		val := v_1
 		mem := v_2
-		if !(config.arch == "wasm3" && t.IsArray() && dst.Op == OpWasm3StackArray) {
+		if !(config.arch == "wasm3" && t.IsArray() && (dst.Op == OpWasm3StackArray || dst.Op == OpWasm3ArrayNewDefault)) {
 			break
 		}
 		v.reset(OpWasm3ArrayCopyInto)

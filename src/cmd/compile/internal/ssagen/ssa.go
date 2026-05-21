@@ -857,7 +857,11 @@ func allocAlign(t *types.Type) int64 {
 // newHeapaddr allocates heap memory for n and sets its heap address.
 func (s *state) newHeapaddr(n *ir.Name) {
 	size := allocSize(n.Type())
-	if n.Type().HasPointers() || size >= maxAggregatedHeapAllocation || size == 0 {
+	if buildcfg.GOARCH == "wasm3" || n.Type().HasPointers() || size >= maxAggregatedHeapAllocation || size == 0 {
+		// wasm3 always routes through s.newObject: each heap object is a
+		// distinct WasmGC ref (struct.new/array.new), so the linear-memory
+		// allocation-coalescing path below is meaningless and would emit a
+		// runtime.newobject linear call that has no wasm3 lowering.
 		s.setHeapaddr(n.Pos(), n, s.newObject(n.Type()))
 		return
 	}
@@ -1016,6 +1020,15 @@ func (s *state) newObject(typ *types.Type) *ssa.Value {
 		// values that wasm3ValueType now classifies as refs actually be
 		// born as refs rather than i64.
 		return s.newValue0A(ssa.OpWasm3StructNewDefault, types.NewPtr(typ), typ)
+	}
+	if buildcfg.GOARCH == "wasm3" && typ.IsArray() {
+		// new([N]T) allocates a WasmGC array on the host GC heap via
+		// array.new_default and yields a (ref (array T)), not a linear
+		// bump-heap address — the same cutover treatment as new(struct).
+		// The Aux is the Go array type; the wasm3 backend resolves its
+		// wasm array type index. Length is the static element count.
+		length := s.constInt(types.Types[types.TINT], typ.NumElem())
+		return s.newValue1A(ssa.OpWasm3ArrayNewDefault, types.NewPtr(typ), typ, length)
 	}
 	rtype := s.reflectType(typ)
 	if specialMallocSym := s.specializedMallocSym(typ.Size(), typ.HasPointers()); specialMallocSym != nil {

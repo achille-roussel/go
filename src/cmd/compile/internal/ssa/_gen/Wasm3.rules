@@ -128,11 +128,12 @@
 
 // wasm3: storing a whole array value (b := a — Load(array)=>Copy above
 // makes the array a single-ref SSA value, so the assignment is a Store,
-// not a Move). A pre-allocated local array ref (StackArray) is a fixed
-// ref that cannot be reassigned, so copy the elements in place
-// (array.copy). (&struct.arrayField stores fold to FieldSet above; a
-// settable field ref is replaced there.)
-(Store {t} dst val mem) && config.arch == "wasm3" && t.IsArray() && dst.Op == OpWasm3StackArray => (ArrayCopyInto {t} dst val mem)
+// not a Move). A pre-allocated array ref (a local StackArray, or a fresh
+// heap ArrayNewDefault from an escaping new([N]T)) is a fixed ref that
+// cannot be reassigned, so copy the elements in place (array.copy).
+// (&struct.arrayField stores fold to FieldSet above; a settable field
+// ref is replaced there.)
+(Store {t} dst val mem) && config.arch == "wasm3" && t.IsArray() && (dst.Op == OpWasm3StackArray || dst.Op == OpWasm3ArrayNewDefault) => (ArrayCopyInto {t} dst val mem)
 
 // Lowering extension
 // It is unnecessary to extend loads

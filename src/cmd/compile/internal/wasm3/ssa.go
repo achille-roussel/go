@@ -1120,17 +1120,13 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// struct.new $go.ptr.i64. The accessors must already be generated
 		// (walk-phase pre-gen); WasmGCFieldGetter/Setter are idempotent.
 		st := v.Aux.(*types.Type)
-		f := wasm3FieldAtOffset(st, v.AuxInt)
-		if f == nil {
-			v.Fatalf("OpWasm3MakeFieldPtr: no field at byte offset %d in %v", v.AuxInt, st)
-		}
 		wasm3EnsureCollector(s.FuncInfo())
 		getValue64(s, v.Args[0])
 		i32Const(s, 0)
 		pg := s.Prog(wasm.ARefFunc)
-		pg.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: reflectdata.WasmGCFieldGetter(st, f).Linksym()}
+		pg.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: reflectdata.WasmGCFieldGetter(st, v.AuxInt).Linksym()}
 		ps := s.Prog(wasm.ARefFunc)
-		ps.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: reflectdata.WasmGCFieldSetter(st, f).Linksym()}
+		ps.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: reflectdata.WasmGCFieldSetter(st, v.AuxInt).Linksym()}
 		pn := s.Prog(wasm.AStructNew)
 		pn.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoPtrI64)}
 

@@ -305,6 +305,19 @@ func wasm3IsDirectAnyref(v *Value) bool {
 	return false
 }
 
+// wasm3PointerIsRef reports whether v's Go type is a pointer that the
+// pointer-representation cutover represents as a WasmGC reference rather
+// than a linear i64 address. Scoped to *struct for the first cutover
+// step (doc/wasm3-pointer-cutover); other pointee kinds follow.
+func wasm3PointerIsRef(v *Value) bool {
+	t := v.Type
+	if t == nil || !t.IsPtr() {
+		return false
+	}
+	e := t.Elem()
+	return e != nil && e.IsStruct()
+}
+
 // wasm3HasOutput reports whether v produces a value that needs a
 // wasm local. Excludes mem-typed phis, void-result ops, and
 // statement-marking pseudo-ops that have no runtime representation.
@@ -461,6 +474,14 @@ func wasm3ValueType(v *Value) byte {
 		// Loaded TFUNC and pointer-to-TFUNC values stay i64.
 		// Other types fall through to the generic categorisation.
 	} else if t.Kind() == types.TFUNC || (t.IsPtr() && t.Elem() != nil && t.Elem().Kind() == types.TFUNC) {
+		return wasm3ValAnyref
+	} else if wasm3PointerIsRef(v) {
+		// Pointer-representation cutover (doc/wasm3-pointer-cutover):
+		// a Go pointer to a heap struct is a WasmGC (ref $go.struct.T),
+		// not a linear i64 address, so its per-value local is anyref
+		// (downcast to the typed ref at struct.get/struct.set use
+		// sites). Scoped to *struct first to limit blast radius; other
+		// pointee kinds follow as the cutover lands.
 		return wasm3ValAnyref
 	}
 	return wasm3ValI64

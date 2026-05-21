@@ -907,6 +907,21 @@ func rewriteValueWasm3_OpConstBool(v *Value) bool {
 	}
 }
 func rewriteValueWasm3_OpConstNil(v *Value) bool {
+	b := v.Block
+	config := b.Func.Config
+	// match: (ConstNil <t>)
+	// cond: config.arch == "wasm3" && t.IsPtr() && t.Elem() != nil && t.Elem().IsStruct()
+	// result: (RefNull <t> {t.Elem()})
+	for {
+		t := v.Type
+		if !(config.arch == "wasm3" && t.IsPtr() && t.Elem() != nil && t.Elem().IsStruct()) {
+			break
+		}
+		v.reset(OpWasm3RefNull)
+		v.Type = t
+		v.Aux = typeToAux(t.Elem())
+		return true
+	}
 	// match: (ConstNil)
 	// result: (I64Const [0])
 	for {

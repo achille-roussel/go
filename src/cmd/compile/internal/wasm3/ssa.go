@@ -644,11 +644,17 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: v.AuxInt}
 
 	case ssa.OpWasm3FieldSet:
-		// struct.set of a Go struct field addressed by byte offset.
+		// struct.set of a Go struct field addressed by byte offset. The
+		// base (arg0) is a *struct, which the pointer-representation
+		// cutover represents as an anyref local; ref.cast it to the
+		// concrete (ref $go.struct.T) before struct.set (struct.set
+		// rejects the anyref supertype).
 		st := v.Aux.(*types.Type)
 		structIdx := wasm3RegisterStruct(s.FuncInfo(), st)
 		fieldIdx := wasm3FieldIndexAtOffset(s.FuncInfo(), st, v.AuxInt)
 		getValue64(s, v.Args[0])
+		pCast := s.Prog(wasm.ARefCast)
+		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
 		getValue64(s, v.Args[1])
 		p := s.Prog(wasm.AStructSet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
@@ -1087,6 +1093,11 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		structIdx := wasm3RegisterStruct(s.FuncInfo(), st)
 		fieldIdx := wasm3FieldIndexAtOffset(s.FuncInfo(), st, v.AuxInt)
 		getValue64(s, v.Args[0])
+		// The base (*struct) is an anyref local under the pointer-
+		// representation cutover; ref.cast to (ref $go.struct.T) before
+		// struct.get, which rejects the anyref supertype.
+		pCast := s.Prog(wasm.ARefCast)
+		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
 		p := s.Prog(wasm.AStructGet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(fieldIdx)}

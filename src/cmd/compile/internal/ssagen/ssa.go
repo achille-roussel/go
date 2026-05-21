@@ -984,6 +984,17 @@ func (s *state) newObject(typ *types.Type) *ssa.Value {
 	if typ.Size() == 0 {
 		return s.newValue1A(ssa.OpAddr, types.NewPtr(typ), ir.Syms.Zerobase, s.sb)
 	}
+	if buildcfg.GOARCH == "wasm3" && typ.IsStruct() {
+		// Pointer-representation cutover (doc/wasm3-pointer-cutover):
+		// new(struct) allocates a WasmGC struct on the host GC heap via
+		// struct.new_default and yields a (ref $go.struct.T), not a
+		// linear bump-heap i64 address. The Aux is the Go struct type;
+		// the wasm3 backend resolves its wasm type index. Zero-init
+		// matches new()'s contract. This is what makes the *struct
+		// values that wasm3ValueType now classifies as refs actually be
+		// born as refs rather than i64.
+		return s.newValue0A(ssa.OpWasm3StructNewDefault, types.NewPtr(typ), typ)
+	}
 	rtype := s.reflectType(typ)
 	if specialMallocSym := s.specializedMallocSym(typ.Size(), typ.HasPointers()); specialMallocSym != nil {
 		return s.rtcall(specialMallocSym, true, []*types.Type{types.NewPtr(typ)},

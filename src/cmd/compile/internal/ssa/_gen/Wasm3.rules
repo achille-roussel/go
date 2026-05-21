@@ -337,6 +337,12 @@
 (Const64 ...) => (I64Const ...)
 (Const(32|16|8) [c]) => (I64Const [int64(c)])
 (Const(64|32)F ...) => (F(64|32)Const ...)
+// Pointer-representation cutover: a nil *struct is a null WasmGC
+// reference (ref.null), not a linear i64 0, so it lands in the anyref
+// local wasm3ValueType assigns to *struct values. Other pointer kinds
+// still use i64 0 until they are migrated. This must precede the generic
+// ConstNil rule below.
+(ConstNil <t>) && config.arch == "wasm3" && t.IsPtr() && t.Elem() != nil && t.Elem().IsStruct() => (RefNull <t> {t.Elem()})
 (ConstNil) => (I64Const [0])
 (ConstBool [c]) => (I64Const [b2i(c)])
 

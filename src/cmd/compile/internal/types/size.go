@@ -403,6 +403,14 @@ func CalcSize(t *Type) {
 		}
 		CalcArraySize(t)
 		w = t.width
+		if buildcfg.GOARCH == "wasm3" && t.width > 0 {
+			// wasm3 boxes a non-empty array as one (ref (array T)); one
+			// pointer-shaped register, not the sum of elements. A zero-size
+			// array keeps its computed intRegs (0); wasm3SingleRef agrees
+			// (it also guards on Size() > 0).
+			t.intRegs = 1
+			t.floatRegs = 0
+		}
 
 	case TSLICE:
 		if t.Elem() == nil {

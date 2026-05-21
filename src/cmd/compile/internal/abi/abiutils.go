@@ -30,7 +30,10 @@ func wasm3SingleRef(t *types.Type) bool {
 	// they occupy one register. Interfaces follow next.
 	// A non-zero-size struct is boxed as one $go.struct.T ref; a zero-size
 	// struct (struct{}) takes no register (size.go keeps its intRegs 0).
-	return buildcfg.GOARCH == "wasm3" && (t.IsSlice() || t.IsString() || t.IsInterface() || (t.IsStruct() && t.Size() > 0))
+	// A non-zero-size array is boxed as one (ref (array T)) ref — the same
+	// single-register treatment, since the array value at a call boundary
+	// is exactly that array ref.
+	return buildcfg.GOARCH == "wasm3" && (t.IsSlice() || t.IsString() || t.IsInterface() || ((t.IsStruct() || t.IsArray()) && t.Size() > 0))
 }
 
 //......................................................................

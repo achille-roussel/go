@@ -389,6 +389,9 @@ func (x *expandState) decomposeAsNecessary(pos src.XPos, b *Block, a, m0 *Value,
 	mem := m0
 	switch at.Kind() {
 	case types.TARRAY:
+		if x.f.Config.arch == "wasm3" && at.Size() > 0 {
+			break // boxed as one (ref (array T)) ref: a single register (atomic leaf below)
+		}
 		et := at.Elem()
 		for i := int64(0); i < at.NumElem(); i++ {
 			e := b.NewValue1I(pos, OpArraySelect, et, i, a)
@@ -551,6 +554,9 @@ func (x *expandState) rewriteSelectOrArg(pos src.XPos, b *Block, container, a, m
 
 	switch at.Kind() {
 	case types.TARRAY:
+		if x.f.Config.arch == "wasm3" && at.Size() > 0 {
+			break // boxed as one (ref (array T)) ref: read from a single register
+		}
 		et := at.Elem()
 		for i := int64(0); i < at.NumElem(); i++ {
 			e := x.rewriteSelectOrArg(pos, b, container, nil, m0, et, rc.next(et))

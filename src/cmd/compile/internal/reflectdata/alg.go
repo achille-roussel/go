@@ -442,35 +442,57 @@ func eqFuncWasm3(t *types.Type) *ir.Func {
 		return ir.NewLogicalExpr(pos, ir.OANDAND, a, b)
 	}
 
-	var r ir.Node
-	switch t.Kind() {
-	case types.TSTRUCT:
-		for _, f := range t.Fields() {
-			if f.Sym.IsBlank() {
-				continue
+	// eqExpr builds the equality expression for two values of type ft,
+	// produced fresh by mkp/mkq each call (so a leaf reached through
+	// several struct/array steps gets independent IR nodes). Composite
+	// types (struct, array) recurse field/element-wise rather than
+	// emitting a whole-value ==: a whole-array or whole-struct == lowers
+	// (compare.go) to memequal over the value's linear bytes, which takes
+	// the value's ADDRESS (&v.field) — an OffPtr used as a bare pointer
+	// that has no wasm3 lowering (boxed composites have no linear bytes).
+	// Recursing bottoms out at scalars/strings/interfaces/pointers, whose
+	// == lowers correctly (scalars to a wasm compare, string via
+	// compare.go to wasm3StringEqual, interface via walkCompareInterface).
+	var eqExpr func(mkp, mkq func() ir.Node, ft *types.Type) ir.Node
+	eqExpr = func(mkp, mkq func() ir.Node, ft *types.Type) ir.Node {
+		switch ft.Kind() {
+		case types.TSTRUCT:
+			var r ir.Node
+			for _, f := range ft.Fields() {
+				if f.Sym.IsBlank() {
+					continue
+				}
+				f := f
+				r = and(r, eqExpr(
+					func() ir.Node { return ir.NewSelectorExpr(pos, ir.ODOT, mkp(), f.Sym) },
+					func() ir.Node { return ir.NewSelectorExpr(pos, ir.ODOT, mkq(), f.Sym) },
+					f.Type))
 			}
-			pf := ir.NewSelectorExpr(pos, ir.ODOT, ir.NewStarExpr(pos, ptVar), f.Sym)
-			qf := ir.NewSelectorExpr(pos, ir.ODOT, ir.NewStarExpr(pos, qtVar), f.Sym)
-			r = and(r, ir.NewBinaryExpr(pos, ir.OEQ, pf, qf))
+			if r == nil {
+				r = ir.NewBool(pos, true)
+			}
+			return r
+		case types.TARRAY:
+			var r ir.Node
+			for i := int64(0); i < ft.NumElem(); i++ {
+				i := i
+				r = and(r, eqExpr(
+					func() ir.Node { return ir.NewIndexExpr(pos, mkp(), ir.NewInt(pos, i)) },
+					func() ir.Node { return ir.NewIndexExpr(pos, mkq(), ir.NewInt(pos, i)) },
+					ft.Elem()))
+			}
+			if r == nil {
+				r = ir.NewBool(pos, true)
+			}
+			return r
+		default:
+			return ir.NewBinaryExpr(pos, ir.OEQ, mkp(), mkq())
 		}
-	case types.TARRAY:
-		for i := int64(0); i < t.NumElem(); i++ {
-			idx := ir.NewInt(pos, i)
-			pi := ir.NewIndexExpr(pos, ir.NewStarExpr(pos, ptVar), idx)
-			qi := ir.NewIndexExpr(pos, ir.NewStarExpr(pos, qtVar), ir.NewInt(pos, i))
-			r = and(r, ir.NewBinaryExpr(pos, ir.OEQ, pi, qi))
-		}
-	default:
-		// Scalars, strings, interfaces, complex, pointers: compare the
-		// dereferenced values directly. This does not recurse into
-		// geneq(t) — string == lowers via compare.go to wasm3StringEqual,
-		// interface == via walkCompareInterface, and scalars to a direct
-		// wasm comparison.
-		r = ir.NewBinaryExpr(pos, ir.OEQ, ir.NewStarExpr(pos, ptVar), ir.NewStarExpr(pos, qtVar))
 	}
-	if r == nil {
-		r = ir.NewBool(pos, true)
-	}
+	r := eqExpr(
+		func() ir.Node { return ir.NewStarExpr(pos, ptVar) },
+		func() ir.Node { return ir.NewStarExpr(pos, qtVar) },
+		t)
 
 	fn.Body.Append(ir.NewAssignStmt(pos, nr, r))
 	fn.Body.Append(ir.NewReturnStmt(pos, nil))

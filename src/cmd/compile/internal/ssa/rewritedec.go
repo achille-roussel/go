@@ -480,7 +480,7 @@ func rewriteValuedec_OpSliceCap(v *Value) bool {
 		return true
 	}
 	// match: (SliceCap x:(Load <t> ptr mem))
-	// cond: t.IsSlice()
+	// cond: t.IsSlice() && config.arch != "wasm3"
 	// result: @x.Block (Load <typ.Int> (OffPtr <typ.IntPtr> [2*config.PtrSize] ptr) mem)
 	for {
 		x := v_0
@@ -490,7 +490,7 @@ func rewriteValuedec_OpSliceCap(v *Value) bool {
 		t := x.Type
 		mem := x.Args[1]
 		ptr := x.Args[0]
-		if !(t.IsSlice()) {
+		if !(t.IsSlice() && config.arch != "wasm3") {
 			break
 		}
 		b = x.Block
@@ -524,7 +524,7 @@ func rewriteValuedec_OpSliceLen(v *Value) bool {
 		return true
 	}
 	// match: (SliceLen x:(Load <t> ptr mem))
-	// cond: t.IsSlice()
+	// cond: t.IsSlice() && config.arch != "wasm3"
 	// result: @x.Block (Load <typ.Int> (OffPtr <typ.IntPtr> [config.PtrSize] ptr) mem)
 	for {
 		x := v_0
@@ -534,7 +534,7 @@ func rewriteValuedec_OpSliceLen(v *Value) bool {
 		t := x.Type
 		mem := x.Args[1]
 		ptr := x.Args[0]
-		if !(t.IsSlice()) {
+		if !(t.IsSlice() && config.arch != "wasm3") {
 			break
 		}
 		b = x.Block
@@ -567,7 +567,7 @@ func rewriteValuedec_OpSlicePtr(v *Value) bool {
 		return true
 	}
 	// match: (SlicePtr x:(Load <t> ptr mem))
-	// cond: t.IsSlice()
+	// cond: t.IsSlice() && config.arch != "wasm3"
 	// result: @x.Block (Load <t.Elem().PtrTo()> ptr mem)
 	for {
 		x := v_0
@@ -577,7 +577,7 @@ func rewriteValuedec_OpSlicePtr(v *Value) bool {
 		t := x.Type
 		mem := x.Args[1]
 		ptr := x.Args[0]
-		if !(t.IsSlice()) {
+		if !(t.IsSlice() && config.arch != "wasm3") {
 			break
 		}
 		b = x.Block
@@ -803,7 +803,7 @@ func rewriteValuedec_OpStringLen(v *Value) bool {
 		return true
 	}
 	// match: (StringLen x:(Load <t> ptr mem))
-	// cond: t.IsString()
+	// cond: t.IsString() && config.arch != "wasm3"
 	// result: @x.Block (Load <typ.Int> (OffPtr <typ.IntPtr> [config.PtrSize] ptr) mem)
 	for {
 		x := v_0
@@ -813,7 +813,7 @@ func rewriteValuedec_OpStringLen(v *Value) bool {
 		t := x.Type
 		mem := x.Args[1]
 		ptr := x.Args[0]
-		if !(t.IsString()) {
+		if !(t.IsString() && config.arch != "wasm3") {
 			break
 		}
 		b = x.Block
@@ -847,7 +847,7 @@ func rewriteValuedec_OpStringPtr(v *Value) bool {
 		return true
 	}
 	// match: (StringPtr x:(Load <t> ptr mem))
-	// cond: t.IsString()
+	// cond: t.IsString() && config.arch != "wasm3"
 	// result: @x.Block (Load <typ.BytePtr> ptr mem)
 	for {
 		x := v_0
@@ -857,7 +857,7 @@ func rewriteValuedec_OpStringPtr(v *Value) bool {
 		t := x.Type
 		mem := x.Args[1]
 		ptr := x.Args[0]
-		if !(t.IsString()) {
+		if !(t.IsString() && config.arch != "wasm3") {
 			break
 		}
 		b = x.Block

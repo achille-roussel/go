@@ -81,6 +81,16 @@ func concatbyte5(*[32]byte, string, string, string, string, string) []byte
 func concatbytes(*[32]byte, []string) []byte
 
 func cmpstring(string, string) int
+
+// GOARCH=wasm3 boxed-string comparison helpers (compare via len + indexing
+// instead of memequal over a linear data pointer; see compare.go).
+func wasm3StringEqual(string, string) bool
+func wasm3StringCompare(string, string) int
+func wasm3StringHash(string, uintptr) uintptr
+func wasm3Uint64Hash(uint64, uintptr) uintptr
+func wasm3BoolHash(bool, uintptr) uintptr
+func wasm3Float64Hash(float64, uintptr) uintptr
+
 func intstring(*[4]byte, int64) string
 func slicebytetostring(buf *[32]byte, ptr *byte, n int) string
 func slicebytetostringtmp(ptr *byte, n int) string

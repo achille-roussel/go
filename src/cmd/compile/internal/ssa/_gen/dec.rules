@@ -132,8 +132,8 @@
 (ArraySelect [i] x:(Load <t> ptr mem)) =>
   @x.Block (Load <v.Type> (OffPtr <v.Type.PtrTo()> [t.Elem().Size()*i] ptr) mem)
 
-(StringPtr x:(Load <t> ptr mem)) && t.IsString() => @x.Block (Load <typ.BytePtr> ptr mem)
-(StringLen x:(Load <t> ptr mem)) && t.IsString() => @x.Block (Load <typ.Int>
+(StringPtr x:(Load <t> ptr mem)) && t.IsString() && config.arch != "wasm3" => @x.Block (Load <typ.BytePtr> ptr mem)
+(StringLen x:(Load <t> ptr mem)) && t.IsString() && config.arch != "wasm3" => @x.Block (Load <typ.Int>
       (OffPtr <typ.IntPtr> [config.PtrSize] ptr)
       mem)
 
@@ -147,11 +147,11 @@
       (OffPtr <typ.BytePtrPtr> [config.PtrSize] ptr)
       mem)
 
-(SlicePtr x:(Load <t> ptr mem)) && t.IsSlice() => @x.Block (Load <t.Elem().PtrTo()> ptr mem)
-(SliceLen x:(Load <t> ptr mem)) && t.IsSlice() => @x.Block (Load <typ.Int>
+(SlicePtr x:(Load <t> ptr mem)) && t.IsSlice() && config.arch != "wasm3" => @x.Block (Load <t.Elem().PtrTo()> ptr mem)
+(SliceLen x:(Load <t> ptr mem)) && t.IsSlice() && config.arch != "wasm3" => @x.Block (Load <typ.Int>
       (OffPtr <typ.IntPtr> [config.PtrSize] ptr)
       mem)
-(SliceCap x:(Load <t> ptr mem)) && t.IsSlice() => @x.Block (Load <typ.Int>
+(SliceCap x:(Load <t> ptr mem)) && t.IsSlice() && config.arch != "wasm3" => @x.Block (Load <typ.Int>
       (OffPtr <typ.IntPtr> [2*config.PtrSize] ptr)
       mem)
 

@@ -18,6 +18,8 @@ import (
 	"cmd/compile/internal/ssagen"
 	"cmd/compile/internal/typecheck"
 	"cmd/compile/internal/types"
+
+	"internal/buildcfg"
 )
 
 func fakePC(n ir.Node) ir.Node {
@@ -349,6 +351,33 @@ func walkCompareString(n *ir.BinaryExpr, init *ir.Nodes) ir.Node {
 			init.Append(mkcall(fn, nil, init, tracecmpArg(n.X, paramType, init), tracecmpArg(n.Y, paramType, init), fakePC(n)))
 		}
 	}
+	// GOARCH=wasm3: a string's bytes live in a (ref $go.bytes) array, not
+	// at a linear address, so the memequal / byte-combine paths below have
+	// no pointer to operate on. Route every string comparison through the
+	// boxed-model runtime helpers, which compare via len + indexing
+	// (struct.get + array.get). See doc/wasm3-slice-boxing.md.
+	if buildcfg.GOARCH == "wasm3" {
+		n.X = cheapExpr(n.X, init)
+		n.Y = cheapExpr(n.Y, init)
+		var r ir.Node
+		if n.Op() == ir.OEQ || n.Op() == ir.ONE {
+			eq := mkcall("wasm3StringEqual", types.Types[types.TBOOL], init,
+				typecheck.Conv(n.X, types.Types[types.TSTRING]),
+				typecheck.Conv(n.Y, types.Types[types.TSTRING]))
+			if n.Op() == ir.ONE {
+				r = ir.NewUnaryExpr(base.Pos, ir.ONOT, eq)
+			} else {
+				r = eq
+			}
+		} else {
+			cmp := mkcall("wasm3StringCompare", types.Types[types.TINT], init,
+				typecheck.Conv(n.X, types.Types[types.TSTRING]),
+				typecheck.Conv(n.Y, types.Types[types.TSTRING]))
+			r = ir.NewBinaryExpr(base.Pos, n.Op(), cmp, ir.NewInt(base.Pos, 0))
+		}
+		return finishCompare(n, r, init)
+	}
+
 	// Rewrite comparisons to short constant strings as length+byte-wise comparisons.
 	var cs, ncs ir.Node // const string, non-const string
 	switch {

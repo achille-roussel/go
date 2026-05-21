@@ -1749,13 +1749,21 @@ func (s *state) moveWhichMayOverlap(t *types.Type, dst, src *ssa.Value, mayOverl
 	if buildcfg.GOARCH == "wasm3" && t.IsArray() && wasm3SliceElemInteriorOK(t.Elem()) {
 		// wasm3 boxes an array as (ref (array T)); a value copy (b := a,
 		// s.field = arr, *dst = src) must DEEP-COPY for Go value semantics,
-		// not memcpy linear bytes or alias the ref. Load the source array
-		// ref, clone it (array.new_default + array.copy), and store the
-		// fresh ref. Gated to scalar/ref element arrays the Clone codegen
-		// handles; composite-element arrays fall through (deferred).
+		// not memcpy linear bytes or alias the ref.
 		srcRef := s.load(t, src)
-		cloned := s.newValue1A(ssa.OpWasm3Clone, t, t, srcRef)
-		s.store(t, dst, cloned)
+		if dst.Op == ssa.OpWasm3StackArray {
+			// Destination is a pre-allocated local array ref (StackArray),
+			// a fixed ref that cannot be reassigned — copy the elements in
+			// place (array.copy) rather than replacing the ref.
+			s.vars[memVar] = s.newValue3A(ssa.OpWasm3ArrayCopyInto, types.TypeMem, t, dst, srcRef, s.mem())
+		} else {
+			// Destination holds a settable array ref (a struct field, etc.):
+			// clone the source (array.new_default + array.copy) and store the
+			// fresh ref. Gated to scalar/ref element arrays the Clone codegen
+			// handles; composite-element arrays fall through (deferred).
+			cloned := s.newValue1A(ssa.OpWasm3Clone, t, t, srcRef)
+			s.store(t, dst, cloned)
+		}
 		return
 	}
 	if mayOverlap && t.IsArray() && t.NumElem() > 1 && !ssa.IsInlinableMemmove(dst, src, t.Size(), s.f.Config) {

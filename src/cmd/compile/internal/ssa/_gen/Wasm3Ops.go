@@ -510,6 +510,13 @@ func init() {
 		// composite fields recursively cloned). Pure (no mem).
 		{name: "Clone", argLength: 1, reg: gp11, aux: "Typ", typ: "BytePtr"},
 
+		// OpWasm3ArrayCopyInto copies the elements of one array into
+		// another in place (b := a where b is a pre-allocated local array
+		// ref / StackArray, which cannot be reassigned). arg0 = dst array
+		// ref, arg1 = src array ref, arg2 = mem. v.Aux is the Go array
+		// type. Emits array.copy $arr $arr (dst,0,src,0,len). Returns mem.
+		{name: "ArrayCopyInto", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "Typ", typ: "Mem"},
+
 		// OpWasm3LoadInterior reads through a fat pointer. arg0 is the
 		// fat-pointer ref. v.Aux is the pointee Go type so the backend
 		// derives the wrapper type and the read width. v.Type drives

@@ -804,6 +804,26 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		pSet := s.Prog(wasm.AArraySet)
 		pSet.From = obj.Addr{Type: obj.TYPE_CONST, Offset: containerIdx}
 
+	case ssa.OpWasm3ArrayCopyInto:
+		// In-place value copy into a pre-allocated array ref (b := a where
+		// b is a local StackArray, a fixed allocated ref that cannot be
+		// reassigned): array.copy $arr $arr dst 0 src 0 len. Memory op.
+		ct := v.Aux.(*types.Type)
+		arrIdx := int64(wasm3RegisterArrayBacking(s.FuncInfo(), ct.Elem()))
+		n := ct.NumElem()
+		getValue64(s, v.Args[0]) // dst array ref
+		pCastD := s.Prog(wasm.ARefCast)
+		pCastD.From = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdx}
+		i32Const(s, 0)           // dst index
+		getValue64(s, v.Args[1]) // src array ref
+		pCastS := s.Prog(wasm.ARefCast)
+		pCastS.From = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdx}
+		i32Const(s, 0)        // src index
+		i32Const(s, int32(n)) // len
+		pCopy := s.Prog(wasm.AArrayCopy)
+		pCopy.From = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdx}
+		pCopy.To = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdx}
+
 	case ssa.OpArgIntReg, ssa.OpArgFloatReg:
 		// M3 Phase 3b: copy the wasm function parameter into v's
 		// per-value local. The SSA backend works in i64 GP

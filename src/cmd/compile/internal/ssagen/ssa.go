@@ -5543,35 +5543,18 @@ func (s *state) addr(n ir.Node) *ssa.Value {
 			// subsequent addr(buf) call — otherwise each access
 			// would allocate a fresh array and observed reads
 			// wouldn't see prior writes.
-			if buildcfg.GOARCH == "wasm3" && n.Type().IsArray() {
-				if s.wasm3StackArrays == nil {
-					s.wasm3StackArrays = map[*ir.Name]*ssa.Value{}
-				}
-				if v, ok := s.wasm3StackArrays[n]; ok {
-					return v
-				}
-				v := s.entryNewValue1A(ssa.OpWasm3StackArray, t, n, s.startmem)
-				s.wasm3StackArrays[n] = v
-				return v
-			}
-			// A stack-allocated struct (no nested struct-value field, array
-			// fields with scalar/ref elements) lowers to a boxed
-			// (ref $go.struct.T) allocated once at entry, so field access
-			// and value-copy go through the ref rather than a linear slot.
-			if buildcfg.GOARCH == "wasm3" && n.Type().IsStruct() && wasm3CanClone(n.Type()) {
-				if s.wasm3StackArrays == nil {
-					s.wasm3StackArrays = map[*ir.Name]*ssa.Value{}
-				}
-				if v, ok := s.wasm3StackArrays[n]; ok {
-					return v
-				}
-				v := s.entryNewValue1A(ssa.OpWasm3StackStruct, t, n, s.startmem)
-				s.wasm3StackArrays[n] = v
+			if v := s.wasm3StackComposite(n, t); v != nil {
 				return v
 			}
 			return s.newValue2Apos(ssa.OpLocalAddr, t, n, s.sp, s.mem(), !ir.IsAutoTmp(n))
 
 		case ir.PPARAMOUT: // Same as PAUTO -- cannot generate LEA early.
+			// A named/anonymous composite result is a boxed ref (like a
+			// PAUTO local), so the body fills it through the ref and the
+			// return yields that ref.
+			if v := s.wasm3StackComposite(n, t); v != nil {
+				return v
+			}
 			// ensure that we reuse symbols for out parameters so
 			// that cse works on their addresses
 			return s.newValue2Apos(ssa.OpLocalAddr, t, n, s.sp, s.mem(), true)
@@ -8204,6 +8187,36 @@ func wasm3SliceElemInteriorOK(elem *types.Type) bool {
 // elements. Scalar, pointer, slice, string, interface, map, chan, and
 // func fields are fine. Used to gate OpWasm3StackStruct (local struct as
 // a ref) and the field-wise value-copy path.
+// wasm3StackComposite returns the boxed (ref) for a wasm3 stack-allocated
+// composite var n (PAUTO local or PPARAMOUT result) — an array via
+// OpWasm3StackArray, or a cloneable struct via OpWasm3StackStruct — so
+// field/element access and value-copy go through the ref rather than a
+// linear slot. Allocated once at entry and cached per Name. Returns nil
+// for types that stay on the OpLocalAddr path. t is *n.Type().
+func (s *state) wasm3StackComposite(n *ir.Name, t *types.Type) *ssa.Value {
+	if buildcfg.GOARCH != "wasm3" {
+		return nil
+	}
+	var op ssa.Op
+	switch {
+	case n.Type().IsArray():
+		op = ssa.OpWasm3StackArray
+	case n.Type().IsStruct() && wasm3CanClone(n.Type()):
+		op = ssa.OpWasm3StackStruct
+	default:
+		return nil
+	}
+	if s.wasm3StackArrays == nil {
+		s.wasm3StackArrays = map[*ir.Name]*ssa.Value{}
+	}
+	if v, ok := s.wasm3StackArrays[n]; ok {
+		return v
+	}
+	v := s.entryNewValue1A(op, t, n, s.startmem)
+	s.wasm3StackArrays[n] = v
+	return v
+}
+
 func wasm3CanClone(t *types.Type) bool {
 	switch {
 	case t.IsArray():

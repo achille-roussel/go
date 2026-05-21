@@ -9,6 +9,7 @@ import (
 	"go/constant"
 	"strconv"
 	"strings"
+	"sync"
 
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/ir"
@@ -552,7 +553,22 @@ func wasm3IsRefClass(t *types.Type) bool {
 // matching $go.getter.i64 / $go.getter.ref. The offset param is unused
 // for a struct field (the path is static). Exported so the wasm3
 // interior-pointer lowering can reference the funcs via ref.func.
+// wasm3AccessorMu serializes generation of the per-(struct,field) interior
+// pointer accessors. Unlike type descriptors' eq/hash functions (generated
+// during the serial reflectdata phase), these accessors are generated lazily
+// from OpWasm3MakeFieldPtr codegen, which runs inside compileFunctions'
+// concurrent backend workers. Generation calls typecheck.DeclFunc (appending
+// to the global Target.Funcs) and ir.WithFunc (saving/restoring the global
+// ir.CurFunc); ssagen's concurrent path never touches either, so serializing
+// generation here is sufficient to keep them consistent. Without it, racing
+// workers corrupt Target.Funcs ("too many arguments to return") or leave
+// ir.CurFunc non-nil for the main loop's next enqueueFunc ("enqueueFunc X
+// inside Y").
+var wasm3AccessorMu sync.Mutex
+
 func WasmGCFieldGetter(t *types.Type, off int64) *ir.Func {
+	wasm3AccessorMu.Lock()
+	defer wasm3AccessorMu.Unlock()
 	types.CalcSize(t) // field offsets/sizes must be set for the leaf walk
 	leafT := wasm3LeafFieldType(t, off)
 	refClass := wasm3IsRefClass(leafT)
@@ -595,6 +611,8 @@ func WasmGCFieldGetter(t *types.Type, off int64) *ir.Func {
 
 // WasmGCFieldSetter is the writer half of the pair; see WasmGCFieldGetter.
 func WasmGCFieldSetter(t *types.Type, off int64) *ir.Func {
+	wasm3AccessorMu.Lock()
+	defer wasm3AccessorMu.Unlock()
 	types.CalcSize(t) // field offsets/sizes must be set for the leaf walk
 	leafT := wasm3LeafFieldType(t, off)
 	refClass := wasm3IsRefClass(leafT)

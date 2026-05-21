@@ -618,10 +618,18 @@ func rewriteValueWasm3(v *Value) bool {
 		return true
 	case OpWasm3F32DemoteF64:
 		return rewriteValueWasm3_OpWasm3F32DemoteF64(v)
+	case OpWasm3F32Load:
+		return rewriteValueWasm3_OpWasm3F32Load(v)
+	case OpWasm3F32Store:
+		return rewriteValueWasm3_OpWasm3F32Store(v)
 	case OpWasm3F64Add:
 		return rewriteValueWasm3_OpWasm3F64Add(v)
+	case OpWasm3F64Load:
+		return rewriteValueWasm3_OpWasm3F64Load(v)
 	case OpWasm3F64Mul:
 		return rewriteValueWasm3_OpWasm3F64Mul(v)
+	case OpWasm3F64Store:
+		return rewriteValueWasm3_OpWasm3F64Store(v)
 	case OpWasm3I64Add:
 		return rewriteValueWasm3_OpWasm3I64Add(v)
 	case OpWasm3I64AddConst:
@@ -4081,6 +4089,59 @@ func rewriteValueWasm3_OpWasm3F32DemoteF64(v *Value) bool {
 	}
 	return false
 }
+func rewriteValueWasm3_OpWasm3F32Load(v *Value) bool {
+	v_1 := v.Args[1]
+	v_0 := v.Args[0]
+	b := v.Block
+	typ := &b.Func.Config.Types
+	// match: (F32Load [off] iptr:(InteriorPtr {t} _ _) mem)
+	// cond: off == 0
+	// result: (LoadInterior <typ.Float32> {t} iptr mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		iptr := v_0
+		if iptr.Op != OpWasm3InteriorPtr {
+			break
+		}
+		t := auxToType(iptr.Aux)
+		mem := v_1
+		if !(off == 0) {
+			break
+		}
+		v.reset(OpWasm3LoadInterior)
+		v.Type = typ.Float32
+		v.Aux = typeToAux(t)
+		v.AddArg2(iptr, mem)
+		return true
+	}
+	return false
+}
+func rewriteValueWasm3_OpWasm3F32Store(v *Value) bool {
+	v_2 := v.Args[2]
+	v_1 := v.Args[1]
+	v_0 := v.Args[0]
+	// match: (F32Store [off] iptr:(InteriorPtr {t} _ _) val mem)
+	// cond: off == 0
+	// result: (StoreInterior {t} iptr val mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		iptr := v_0
+		if iptr.Op != OpWasm3InteriorPtr {
+			break
+		}
+		t := auxToType(iptr.Aux)
+		val := v_1
+		mem := v_2
+		if !(off == 0) {
+			break
+		}
+		v.reset(OpWasm3StoreInterior)
+		v.Aux = typeToAux(t)
+		v.AddArg3(iptr, val, mem)
+		return true
+	}
+	return false
+}
 func rewriteValueWasm3_OpWasm3F64Add(v *Value) bool {
 	v_1 := v.Args[1]
 	v_0 := v.Args[0]
@@ -4117,6 +4178,33 @@ func rewriteValueWasm3_OpWasm3F64Add(v *Value) bool {
 		v0 := b.NewValue0(v.Pos, OpWasm3F64Const, typ.Float64)
 		v0.AuxInt = float64ToAuxInt(x)
 		v.AddArg2(y, v0)
+		return true
+	}
+	return false
+}
+func rewriteValueWasm3_OpWasm3F64Load(v *Value) bool {
+	v_1 := v.Args[1]
+	v_0 := v.Args[0]
+	b := v.Block
+	typ := &b.Func.Config.Types
+	// match: (F64Load [off] iptr:(InteriorPtr {t} _ _) mem)
+	// cond: off == 0
+	// result: (LoadInterior <typ.Float64> {t} iptr mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		iptr := v_0
+		if iptr.Op != OpWasm3InteriorPtr {
+			break
+		}
+		t := auxToType(iptr.Aux)
+		mem := v_1
+		if !(off == 0) {
+			break
+		}
+		v.reset(OpWasm3LoadInterior)
+		v.Type = typ.Float64
+		v.Aux = typeToAux(t)
+		v.AddArg2(iptr, mem)
 		return true
 	}
 	return false
@@ -4161,6 +4249,32 @@ func rewriteValueWasm3_OpWasm3F64Mul(v *Value) bool {
 		v0 := b.NewValue0(v.Pos, OpWasm3F64Const, typ.Float64)
 		v0.AuxInt = float64ToAuxInt(x)
 		v.AddArg2(y, v0)
+		return true
+	}
+	return false
+}
+func rewriteValueWasm3_OpWasm3F64Store(v *Value) bool {
+	v_2 := v.Args[2]
+	v_1 := v.Args[1]
+	v_0 := v.Args[0]
+	// match: (F64Store [off] iptr:(InteriorPtr {t} _ _) val mem)
+	// cond: off == 0
+	// result: (StoreInterior {t} iptr val mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		iptr := v_0
+		if iptr.Op != OpWasm3InteriorPtr {
+			break
+		}
+		t := auxToType(iptr.Aux)
+		val := v_1
+		mem := v_2
+		if !(off == 0) {
+			break
+		}
+		v.reset(OpWasm3StoreInterior)
+		v.Aux = typeToAux(t)
+		v.AddArg3(iptr, val, mem)
 		return true
 	}
 	return false

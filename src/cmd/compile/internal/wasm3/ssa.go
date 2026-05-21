@@ -785,9 +785,10 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		pGet1 := s.Prog(wasm.AStructGet)
 		pGet1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
 		pGet1.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
-		// 3: value (narrowed if packed)
+		// 3: value (integer values narrowed to i32 if packed; float
+		// values are already f32/f64 and pass through unchanged).
 		getValue64(s, v.Args[1])
-		if elemSize < 8 {
+		if !containerType.Elem().IsFloat() && elemSize < 8 {
 			s.Prog(wasm.AI32WrapI64)
 		}
 		// 4: array.set
@@ -1549,23 +1550,29 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		pGet1 := s.Prog(wasm.AStructGet)
 		pGet1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
 		pGet1.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
-		// 4: array.get with the right packed/unpacked variant
+		// 4: array.get with the right packed/unpacked variant. Float
+		// elements ((array f32) / (array f64)) use plain array.get and
+		// stay f32/f64 — no packed get_s/get_u and no i64-extension, since
+		// the LoadInterior value's per-value local is f32/f64.
+		isFloat := v.Type.IsFloat()
 		var getOp obj.As
-		switch elemSize {
-		case 1, 2:
+		switch {
+		case isFloat:
+			getOp = wasm.AArrayGet
+		case elemSize == 1 || elemSize == 2:
 			if signed {
 				getOp = wasm.AArrayGetS
 			} else {
 				getOp = wasm.AArrayGetU
 			}
-		case 4, 8:
+		case elemSize == 4 || elemSize == 8:
 			getOp = wasm.AArrayGet
 		default:
 			v.Fatalf("OpWasm3LoadInterior: unsupported elem size %d (composite pointees are deferred to a later piece)", elemSize)
 		}
 		pGetArr := s.Prog(getOp)
 		pGetArr.From = obj.Addr{Type: obj.TYPE_CONST, Offset: containerIdx}
-		if elemSize < 8 {
+		if !isFloat && elemSize < 8 {
 			if signed {
 				s.Prog(wasm.AI64ExtendI32S)
 			} else {

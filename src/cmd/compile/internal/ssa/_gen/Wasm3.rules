@@ -949,9 +949,16 @@
 (I64Load32U [off] iptr:(InteriorPtr {t} _ _) mem) && off == 0 => (LoadInterior <typ.UInt32> {t} iptr mem)
 (I64Load32S [off] iptr:(InteriorPtr {t} _ _) mem) && off == 0 => (LoadInterior <typ.Int32>  {t} iptr mem)
 (I64Load    [off] iptr:(InteriorPtr {t} _ _) mem) && off == 0 => (LoadInterior <typ.Int64>  {t} iptr mem)
+// Float-element slices: the load lowers to F64Load/F32Load (not I64Load),
+// so they need their own InteriorPtr rules. LoadInterior codegen reads the
+// float element with array.get and no i64-extension.
+(F64Load    [off] iptr:(InteriorPtr {t} _ _) mem) && off == 0 => (LoadInterior <typ.Float64> {t} iptr mem)
+(F32Load    [off] iptr:(InteriorPtr {t} _ _) mem) && off == 0 => (LoadInterior <typ.Float32> {t} iptr mem)
 
 // Stores through a fat pointer rewrite to OpStoreInterior.
 (I64Store8  [off] iptr:(InteriorPtr {t} _ _) val mem) && off == 0 => (StoreInterior {t} iptr val mem)
 (I64Store16 [off] iptr:(InteriorPtr {t} _ _) val mem) && off == 0 => (StoreInterior {t} iptr val mem)
 (I64Store32 [off] iptr:(InteriorPtr {t} _ _) val mem) && off == 0 => (StoreInterior {t} iptr val mem)
 (I64Store   [off] iptr:(InteriorPtr {t} _ _) val mem) && off == 0 => (StoreInterior {t} iptr val mem)
+(F64Store   [off] iptr:(InteriorPtr {t} _ _) val mem) && off == 0 => (StoreInterior {t} iptr val mem)
+(F32Store   [off] iptr:(InteriorPtr {t} _ _) val mem) && off == 0 => (StoreInterior {t} iptr val mem)

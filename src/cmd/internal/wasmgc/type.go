@@ -129,6 +129,9 @@ const (
 	TypeGoGetterI64      // go.getter.i64: func(anyref base, i32 off) -> i64 — interior-pointer reader (i64 pointee class)
 	TypeGoSetterI64      // go.setter.i64: func(anyref base, i32 off, i64 v) — interior-pointer writer (i64 pointee class)
 	TypeGoPtrI64         // go.ptr.i64: {base anyref, off i32, get, set} accessor-pair fat pointer (doc/wasm3-fat-pointer-derisk.wat)
+	TypeGoGetterI32      // go.getter.i32: func(anyref base, i32 off) -> i32 — interior-pointer reader (i32 pointee class)
+	TypeGoSetterI32      // go.setter.i32: func(anyref base, i32 off, i32 v) — interior-pointer writer (i32 pointee class)
+	TypeGoPtrI32         // go.ptr.i32: {base anyref, off i32, get, set} accessor-pair fat pointer (i32 pointee class)
 	NumPreludeTypes
 )
 
@@ -249,6 +252,34 @@ func PreludeTypes() []Type {
 			{Storage: PrimStorage(I32)},                      // offset / field index
 			{Storage: RefStorage(TypeGoGetterI64, false)},    // get
 			{Storage: RefStorage(TypeGoSetterI64, false)},    // set
+		},
+	}
+
+	// i32 pointee class — for interior pointers to int32/uint32 (and the
+	// other sub-word scalars once mapped here). Same shape as the i64
+	// class with i32-valued get/set.
+	t[TypeGoGetterI32] = Type{
+		Name:    "go.getter.i32",
+		Kind:    KindFunc,
+		Super:   -1,
+		Params:  []Storage{AnyRefStorage(), PrimStorage(I32)},
+		Results: []Storage{PrimStorage(I32)},
+	}
+	t[TypeGoSetterI32] = Type{
+		Name:   "go.setter.i32",
+		Kind:   KindFunc,
+		Super:  -1,
+		Params: []Storage{AnyRefStorage(), PrimStorage(I32), PrimStorage(I32)},
+	}
+	t[TypeGoPtrI32] = Type{
+		Name:  "go.ptr.i32",
+		Kind:  KindStruct,
+		Super: TypeGoObject,
+		Fields: []Field{
+			{Storage: AnyRefStorage()},
+			{Storage: PrimStorage(I32)},
+			{Storage: RefStorage(TypeGoGetterI32, false)},
+			{Storage: RefStorage(TypeGoSetterI32, false)},
 		},
 	}
 

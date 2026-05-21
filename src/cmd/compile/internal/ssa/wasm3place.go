@@ -319,16 +319,16 @@ func wasm3PointerIsRef(v *Value) bool {
 	return e != nil && e.IsStruct()
 }
 
-// wasm3IsI64ScalarPtr reports whether t is a pointer to an i64-class Go
-// scalar (int, int64, uint, uint64, uintptr). Such a pointer is an
-// interior pointer represented as a $go.ptr.i64 accessor-pair fat
-// pointer (doc/wasm3-pointer-cutover): a scalar always lives inside a
-// container (struct field / array element / boxed cell), so it cannot be
-// a direct ref like a *struct. Used by both wasm3ValueType (the value's
-// local is anyref) and the lowering rules (Wasm3.rules / late-lower).
-// Other scalar classes (i32, f32, f64, ...) follow once their
-// $go.ptr.<class> prelude wrappers exist.
-func wasm3IsI64ScalarPtr(t *types.Type) bool {
+// wasm3IsScalarPtr reports whether t is a pointer to an integer/bool Go
+// scalar that maps to the i64 or i32 interior-pointer class. Such a
+// pointer is an interior pointer represented as a $go.ptr.<class>
+// accessor-pair fat pointer (doc/wasm3-pointer-cutover): a scalar always
+// lives inside a container (struct field / array element / boxed cell),
+// so it cannot be a direct ref like a *struct. Used by both
+// wasm3ValueType (the value's local is anyref) and the lowering rules
+// (Wasm3.rules / late-lower). Float (f32/f64) and ref (anyref) pointee
+// classes follow once their $go.ptr.<class> wrappers + codegen exist.
+func wasm3IsScalarPtr(t *types.Type) bool {
 	if t == nil || !t.IsPtr() {
 		return false
 	}
@@ -337,7 +337,9 @@ func wasm3IsI64ScalarPtr(t *types.Type) bool {
 		return false
 	}
 	switch e.Kind() {
-	case types.TINT, types.TINT64, types.TUINT, types.TUINT64, types.TUINTPTR:
+	case types.TINT, types.TINT64, types.TUINT, types.TUINT64, types.TUINTPTR, // i64 class
+		types.TINT32, types.TUINT32, types.TINT16, types.TUINT16,
+		types.TINT8, types.TUINT8, types.TBOOL: // i32 class
 		return true
 	}
 	return false
@@ -526,9 +528,10 @@ func wasm3ValueType(v *Value) byte {
 		// (go.object), so its per-value local is anyref — consistent with
 		// the anyref ABI (wasm3IntField) and with (*T)(p) ref.casts.
 		return wasm3ValAnyref
-	} else if wasm3IsI64ScalarPtr(t) {
-		// A pointer to an i64-class scalar is an interior pointer,
-		// represented as a $go.ptr.i64 accessor-pair fat pointer (anyref).
+	} else if wasm3IsScalarPtr(t) {
+		// A pointer to an integer/bool scalar is an interior pointer,
+		// represented as a $go.ptr.<class> accessor-pair fat pointer
+		// (anyref).
 		return wasm3ValAnyref
 	} else if wasm3PointerIsRef(v) {
 		// Pointer-representation cutover (doc/wasm3-pointer-cutover):

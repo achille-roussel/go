@@ -1635,11 +1635,11 @@ func rewriteValueWasm3_OpLoad(v *Value) bool {
 		return true
 	}
 	// match: (Load <t> ptr mem)
-	// cond: config.arch == "wasm3" && ptr.Op != OpOffPtr && wasm3IsI64ScalarPtr(ptr.Type)
+	// cond: config.arch == "wasm3" && ptr.Op != OpOffPtr && wasm3IsScalarPtr(ptr.Type)
 	// result: (PtrLoad ptr)
 	for {
 		ptr := v_0
-		if !(config.arch == "wasm3" && ptr.Op != OpOffPtr && wasm3IsI64ScalarPtr(ptr.Type)) {
+		if !(config.arch == "wasm3" && ptr.Op != OpOffPtr && wasm3IsScalarPtr(ptr.Type)) {
 			break
 		}
 		v.reset(OpWasm3PtrLoad)
@@ -3815,13 +3815,13 @@ func rewriteValueWasm3_OpStore(v *Value) bool {
 		return true
 	}
 	// match: (Store {t} ptr val mem)
-	// cond: config.arch == "wasm3" && ptr.Op != OpOffPtr && wasm3IsI64ScalarPtr(ptr.Type)
+	// cond: config.arch == "wasm3" && ptr.Op != OpOffPtr && wasm3IsScalarPtr(ptr.Type)
 	// result: (PtrStore ptr val mem)
 	for {
 		ptr := v_0
 		val := v_1
 		mem := v_2
-		if !(config.arch == "wasm3" && ptr.Op != OpOffPtr && wasm3IsI64ScalarPtr(ptr.Type)) {
+		if !(config.arch == "wasm3" && ptr.Op != OpOffPtr && wasm3IsScalarPtr(ptr.Type)) {
 			break
 		}
 		v.reset(OpWasm3PtrStore)

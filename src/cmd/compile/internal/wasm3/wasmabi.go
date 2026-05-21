@@ -949,8 +949,18 @@ func wasm3IntField(t *types.Type) (obj.WasmField, bool) {
 		types.TUINT8, types.TUINT16, types.TUINT32:
 		return obj.WasmField{Type: obj.WasmI32}, true
 	case types.TINT, types.TINT64, types.TUINT, types.TUINT64, types.TUINTPTR,
-		types.TPTR, types.TUNSAFEPTR:
+		types.TPTR:
 		return obj.WasmField{Type: obj.WasmI64}, true
+	case types.TUNSAFEPTR:
+		// Pointer-representation cutover: unsafe.Pointer is a WasmGC
+		// reference to the open base type (go.object), so it lowers to
+		// anyref in the ABI rather than an i64 linear address. This makes
+		// the generated eq/hash funcs (func(p, q unsafe.Pointer) ...) and
+		// the interior-pointer accessors (func(base unsafe.Pointer, ...))
+		// receive a ref their (*T)(p) ref.cast can consume, and matches
+		// the anyref base of $go.getter.i64 / $go.setter.i64 for
+		// call_ref/ref.func. See doc/wasm3-pointer-cutover.
+		return obj.WasmField{Type: obj.WasmAnyref}, true
 	case types.TFLOAT32:
 		return obj.WasmField{Type: obj.WasmF32}, true
 	case types.TFLOAT64:

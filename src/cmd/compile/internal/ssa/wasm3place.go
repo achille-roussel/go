@@ -497,6 +497,11 @@ func wasm3ValueType(v *Value) byte {
 		// Other types fall through to the generic categorisation.
 	} else if t.Kind() == types.TFUNC || (t.IsPtr() && t.Elem() != nil && t.Elem().Kind() == types.TFUNC) {
 		return wasm3ValAnyref
+	} else if t.IsUnsafePtr() {
+		// Pointer-representation cutover: unsafe.Pointer is a WasmGC ref
+		// (go.object), so its per-value local is anyref — consistent with
+		// the anyref ABI (wasm3IntField) and with (*T)(p) ref.casts.
+		return wasm3ValAnyref
 	} else if wasm3PointerIsRef(v) {
 		// Pointer-representation cutover (doc/wasm3-pointer-cutover):
 		// a Go pointer to a heap struct is a WasmGC (ref $go.struct.T),

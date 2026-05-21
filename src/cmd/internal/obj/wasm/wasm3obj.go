@@ -946,9 +946,10 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 				writeUleb128(w, uint64(p.To.Offset))
 				continue
 
-			case ARefCast, ARefTest:
-				// ref.cast / ref.test: type-index immediate. Encoded
-				// like struct.new — one R_WASMTYPE-relocated leb128.
+			case ARefCast, ARefCastNull, ARefTest:
+				// ref.cast / ref.cast null / ref.test: type-index
+				// immediate. Encoded like struct.new — one
+				// R_WASMTYPE-relocated leb128.
 				if p.From.Type != obj.TYPE_CONST {
 					return nil, false
 				}

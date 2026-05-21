@@ -785,10 +785,19 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		pGet1 := s.Prog(wasm.AStructGet)
 		pGet1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
 		pGet1.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
-		// 3: value (integer values narrowed to i32 if packed; float
-		// values are already f32/f64 and pass through unchanged).
+		// 3: value. Integer values narrow to i32 if packed; float values
+		// are already f32/f64 and pass through unchanged; reference
+		// (pointer) values are anyref per-value locals and must be
+		// downcast to the array's element ref type (ref null $T) before
+		// array.set — a NULLABLE cast so a nil pointer doesn't trap (the
+		// backing element is nullable; validated in
+		// doc/wasm3-ref-element-derisk.wat).
 		getValue64(s, v.Args[1])
-		if !containerType.Elem().IsFloat() && elemSize < 8 {
+		if containerType.Elem().IsPtr() {
+			elemRef := int64(wasm3RegisterPointerElemRef(s.FuncInfo(), containerType.Elem()))
+			pCastV := s.Prog(wasm.ARefCastNull)
+			pCastV.From = obj.Addr{Type: obj.TYPE_CONST, Offset: elemRef}
+		} else if !containerType.Elem().IsFloat() && elemSize < 8 {
 			s.Prog(wasm.AI32WrapI64)
 		}
 		// 4: array.set

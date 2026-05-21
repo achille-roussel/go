@@ -5204,7 +5204,27 @@ func rewriteValueWasm3_OpWasm3I64Load(v *Value) bool {
 		return true
 	}
 	// match: (I64Load [off] iptr:(InteriorPtr {t} _ _) mem)
-	// cond: off == 0
+	// cond: off == 0 && t.Elem().IsPtr()
+	// result: (LoadInterior <t.Elem()> {t} iptr mem)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		iptr := v_0
+		if iptr.Op != OpWasm3InteriorPtr {
+			break
+		}
+		t := auxToType(iptr.Aux)
+		mem := v_1
+		if !(off == 0 && t.Elem().IsPtr()) {
+			break
+		}
+		v.reset(OpWasm3LoadInterior)
+		v.Type = t.Elem()
+		v.Aux = typeToAux(t)
+		v.AddArg2(iptr, mem)
+		return true
+	}
+	// match: (I64Load [off] iptr:(InteriorPtr {t} _ _) mem)
+	// cond: off == 0 && !t.Elem().IsPtr()
 	// result: (LoadInterior <typ.Int64> {t} iptr mem)
 	for {
 		off := auxIntToInt64(v.AuxInt)
@@ -5214,7 +5234,7 @@ func rewriteValueWasm3_OpWasm3I64Load(v *Value) bool {
 		}
 		t := auxToType(iptr.Aux)
 		mem := v_1
-		if !(off == 0) {
+		if !(off == 0 && !t.Elem().IsPtr()) {
 			break
 		}
 		v.reset(OpWasm3LoadInterior)

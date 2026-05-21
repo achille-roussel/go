@@ -8095,10 +8095,11 @@ func CheckLoweredPhi(v *ssa.Value) {
 // site and body agree on which scheme the closureCtx subtype uses.
 // wasm3SliceElemInteriorOK reports whether &s[i] for a slice with this
 // element type can be lowered to a fat interior pointer (OpWasm3
-// InteriorPtr) on wasm3. Restricted to integer/bool/float scalars, which
-// the LoadInterior/StoreInterior codegen lowers via array.get/array.set
-// (integers extend to i64; floats stay f32/f64). Reference and composite
-// element interior pointers are deferred to later pieces.
+// InteriorPtr) on wasm3. Covers integer/bool/float scalars (LoadInterior/
+// StoreInterior use array.get/array.set: integers extend to i64, floats
+// stay f32/f64) and pointer elements ([]*T: the element is a WasmGC ref,
+// loaded as anyref and stored via a nullable ref.cast to the backing's
+// element type). Composite element interior pointers are deferred.
 func wasm3SliceElemInteriorOK(elem *types.Type) bool {
 	switch elem.Kind() {
 	case types.TBOOL,
@@ -8107,7 +8108,8 @@ func wasm3SliceElemInteriorOK(elem *types.Type) bool {
 		types.TINT32, types.TUINT32,
 		types.TINT64, types.TUINT64,
 		types.TINT, types.TUINT, types.TUINTPTR,
-		types.TFLOAT32, types.TFLOAT64:
+		types.TFLOAT32, types.TFLOAT64,
+		types.TPTR:
 		return true
 	}
 	return false

@@ -723,6 +723,41 @@ func wasm3RegisterArrayBacking(fi *obj.FuncInfo, elem *types.Type) uint32 {
 	return uint32(idx)
 }
 
+// wasm3RegisterPointerElemRef returns the wasm type index of the boxed
+// pointee referenced by a pointer-typed slice element. ptrElem is the
+// slice's element type (a *T); the result is the RefType of
+// pointerStorage(T) — exactly the ref stored in the (array (ref X))
+// backing collectBacking builds for the same slice — so a ref.cast of an
+// anyref value to this index before array.set is consistent by
+// construction. Used by OpWasm3StoreInterior for reference elements.
+func wasm3RegisterPointerElemRef(fi *obj.FuncInfo, ptrElem *types.Type) uint32 {
+	if fi == nil {
+		base.Fatalf("wasm3RegisterPointerElemRef: fi is nil")
+	}
+	if !ptrElem.IsPtr() {
+		base.Fatalf("wasm3RegisterPointerElemRef: %v is not a pointer", ptrElem)
+	}
+	cAny, ok := wasm3LiveCollector.Load(fi)
+	var c *typeCollector
+	if ok {
+		c = cAny.(*typeCollector)
+	} else {
+		c = newTypeCollector()
+		wasm3LiveCollector.Store(fi, c)
+		if fi.WasmType == nil {
+			fi.WasmType = &obj.WasmType{}
+		}
+	}
+	st := c.pointerStorage(ptrElem.Elem())
+	if st.RefType < 0 {
+		base.Fatalf("wasm3RegisterPointerElemRef: %v did not lower to a typed ref", ptrElem)
+	}
+	var b bytes.Buffer
+	c.table.Write(&b)
+	fi.WasmType.Table = b.Bytes()
+	return uint32(st.RefType)
+}
+
 // wasm3RegisterSliceStruct registers the boxed slice-header struct
 // $go.slice.<T> for the Go slice type t, returning its module-internal
 // type index. Counterpart of wasm3RegisterArrayBacking (which it uses

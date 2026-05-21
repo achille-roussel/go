@@ -12,13 +12,13 @@ func rewriteValueWasm3latelower(v *Value) bool {
 func rewriteValueWasm3latelower_OpOffPtr(v *Value) bool {
 	v_0 := v.Args[0]
 	// match: (OffPtr <t> [off] base)
-	// cond: base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct() && wasm3IsScalarPtr(t)
+	// cond: base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct() && wasm3IsFieldInteriorPtr(t)
 	// result: (MakeFieldPtr <t> {base.Type.Elem()} [off] base)
 	for {
 		t := v.Type
 		off := auxIntToInt64(v.AuxInt)
 		base := v_0
-		if !(base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct() && wasm3IsScalarPtr(t)) {
+		if !(base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct() && wasm3IsFieldInteriorPtr(t)) {
 			break
 		}
 		v.reset(OpWasm3MakeFieldPtr)

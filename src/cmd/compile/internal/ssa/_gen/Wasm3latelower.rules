@@ -16,4 +16,4 @@
 // MakeFieldPtr carries the container struct type (aux) and the field
 // byte offset (auxint); codegen emits struct.new $go.ptr.i64 with
 // ref.func get/set accessors generated for (struct, field).
-(OffPtr <t> [off] base) && base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct() && wasm3IsScalarPtr(t) => (MakeFieldPtr <t> {base.Type.Elem()} [off] base)
+(OffPtr <t> [off] base) && base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct() && wasm3IsFieldInteriorPtr(t) => (MakeFieldPtr <t> {base.Type.Elem()} [off] base)

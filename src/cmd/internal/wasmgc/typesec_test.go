@@ -72,7 +72,7 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 	// (i8, i16, i32, i64, f32, f64, ref), then go.iface. Pin the exact
 	// bytes — this is the module preamble every wasm3 binary starts with.
 	want := []byte{
-		0x0e, // 14 rec groups
+		0x11, // 17 rec groups
 
 		// rec { go.object }: sub, 0 supertypes, struct with 0 fields.
 		opRec, 0x01,
@@ -127,6 +127,18 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 		valI32, fieldConst,
 		opRef, 0x0b, fieldConst,
 		opRef, 0x0c, fieldConst,
+
+		// rec { go.getter.ref }: final func type (anyref, i32) -> anyref.
+		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x02, valAnyref, valI32, 0x01, valAnyref,
+		// rec { go.setter.ref }: final func type (anyref, i32, anyref) -> ().
+		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x03, valAnyref, valI32, valAnyref, 0x00,
+		// rec { go.ptr.ref }: struct { anyref base, i32 offset,
+		// (ref go.getter.ref)=index 14, (ref go.setter.ref)=index 15 }.
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x04,
+		valAnyref, fieldConst,
+		valI32, fieldConst,
+		opRef, 0x0e, fieldConst,
+		opRef, 0x0f, fieldConst,
 	}
 	if !bytes.Equal(payload, want) {
 		t.Fatalf("prelude type section mismatch:\n got % x\nwant % x", payload, want)

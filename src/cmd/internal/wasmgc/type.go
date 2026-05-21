@@ -129,6 +129,9 @@ const (
 	TypeGoGetterI64      // go.getter.i64: func(anyref base, i32 off) -> i64 — interior-pointer reader (i64 pointee class)
 	TypeGoSetterI64      // go.setter.i64: func(anyref base, i32 off, i64 v) — interior-pointer writer (i64 pointee class)
 	TypeGoPtrI64         // go.ptr.i64: {base anyref, off i32, get, set} accessor-pair fat pointer (doc/wasm3-fat-pointer-derisk.wat)
+	TypeGoGetterRef      // go.getter.ref: func(anyref base, i32 off) -> anyref — interior-pointer reader (ref/anyref pointee class)
+	TypeGoSetterRef      // go.setter.ref: func(anyref base, i32 off, anyref v) — interior-pointer writer (ref/anyref pointee class)
+	TypeGoPtrRef         // go.ptr.ref: {base anyref, off i32, get, set} accessor-pair fat pointer (ref/anyref pointee class)
 	NumPreludeTypes
 )
 
@@ -249,6 +252,34 @@ func PreludeTypes() []Type {
 			{Storage: PrimStorage(I32)},                      // offset / field index
 			{Storage: RefStorage(TypeGoGetterI64, false)},    // get
 			{Storage: RefStorage(TypeGoSetterI64, false)},    // set
+		},
+	}
+
+	// ref/anyref pointee class — for interior pointers to a ref-typed
+	// field (unsafe.Pointer, *T, and other reference values). get/set are
+	// anyref-valued; otherwise identical to the i64 class.
+	t[TypeGoGetterRef] = Type{
+		Name:    "go.getter.ref",
+		Kind:    KindFunc,
+		Super:   -1,
+		Params:  []Storage{AnyRefStorage(), PrimStorage(I32)},
+		Results: []Storage{AnyRefStorage()},
+	}
+	t[TypeGoSetterRef] = Type{
+		Name:   "go.setter.ref",
+		Kind:   KindFunc,
+		Super:  -1,
+		Params: []Storage{AnyRefStorage(), PrimStorage(I32), AnyRefStorage()},
+	}
+	t[TypeGoPtrRef] = Type{
+		Name:  "go.ptr.ref",
+		Kind:  KindStruct,
+		Super: TypeGoObject,
+		Fields: []Field{
+			{Storage: AnyRefStorage()},
+			{Storage: PrimStorage(I32)},
+			{Storage: RefStorage(TypeGoGetterRef, false)},
+			{Storage: RefStorage(TypeGoSetterRef, false)},
 		},
 	}
 

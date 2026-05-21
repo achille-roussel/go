@@ -339,7 +339,9 @@ func wasm3IsScalarPtr(t *types.Type) bool {
 	switch e.Kind() {
 	case types.TINT, types.TINT64, types.TUINT, types.TUINT64, types.TUINTPTR, // i64 class
 		types.TINT32, types.TUINT32, types.TINT16, types.TUINT16,
-		types.TINT8, types.TUINT8, types.TBOOL: // i32 class
+		types.TINT8, types.TUINT8, types.TBOOL: // i32 class (via i64 ABI)
+		return true
+	case types.TUNSAFEPTR: // ref/anyref class
 		return true
 	}
 	return false

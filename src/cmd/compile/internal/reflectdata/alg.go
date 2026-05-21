@@ -505,27 +505,62 @@ func wasm3FieldSelector(expr ir.Node, st *types.Type, off int64) (ir.Node, *type
 	return nil, nil
 }
 
+// wasm3LeafFieldType returns the type of the leaf (possibly nested)
+// struct field at byte offset off in struct st, recursing through inlined
+// nested struct fields. It mirrors wasm3FieldSelector but is type-only,
+// used to choose the accessor's value type/class before the func
+// signature is built.
+func wasm3LeafFieldType(st *types.Type, off int64) *types.Type {
+	for _, f := range st.Fields() {
+		if off >= f.Offset && off < f.Offset+f.Type.Size() {
+			if f.Type.IsStruct() {
+				return wasm3LeafFieldType(f.Type, off-f.Offset)
+			}
+			return f.Type
+		}
+	}
+	return nil
+}
+
+// wasm3IsRefClass reports whether a pointee of type t uses the ref/anyref
+// interior-pointer class ($go.ptr.ref) rather than the i64 class — i.e.
+// the field value is a WasmGC reference (unsafe.Pointer, *T, interface,
+// slice, string) rather than an integer/bool.
+func wasm3IsRefClass(t *types.Type) bool {
+	return t != nil && (t.IsUnsafePtr() || t.IsPtr() || t.IsInterface() || t.IsSlice() || t.IsString())
+}
+
 // WasmGCFieldGetter and WasmGCFieldSetter generate the accessor pair for
-// an i64-class interior pointer to the scalar at byte offset off in
-// struct t, used by the $go.ptr.i64 fat pointer (doc/wasm3-pointer-
-// cutover, de-risked in doc/wasm3-fat-pointer-derisk.wat). A pointer into
-// a struct field that escapes / crosses a function boundary is
-// represented as $go.ptr.i64{base, offset, get, set}; the get/set are
-// these per-(struct, field) funcs, which carry the static container type
-// so a generic callee can deref via call_ref without it. They reuse the
-// step-1 FieldGet/FieldSet field-access lowering through typed field
-// access (the selector may be a nested chain, e.g. (*t)(base).u.value):
+// an interior pointer to the leaf field at byte offset off in struct t,
+// used by the $go.ptr.<class> fat pointer (doc/wasm3-pointer-cutover,
+// de-risked in doc/wasm3-fat-pointer-derisk.wat). A pointer into a struct
+// field that escapes / crosses a function boundary is represented as
+// $go.ptr.<class>{base, offset, get, set}; the get/set are these
+// per-(struct, field) funcs, which carry the static container type so a
+// generic callee can deref via call_ref without it. They reuse the step-1
+// field-access lowering through typed field access (the selector may be a
+// nested chain, e.g. (*t)(base).u.value):
 //
-//	get: func(base unsafe.Pointer, _ int32) int64 { return int64((*t)(base).….f) }
-//	set: func(base unsafe.Pointer, _ int32, v int64) { (*t)(base).….f = F(v) }
+//	i64 class (integer/bool leaf):
+//	  get: func(base unsafe.Pointer, _ int32) int64 { return int64((*t)(base).….f) }
+//	  set: func(base unsafe.Pointer, _ int32, v int64) { (*t)(base).….f = F(v) }
+//	ref class (unsafe.Pointer/ref leaf F):
+//	  get: func(base unsafe.Pointer, _ int32) F { return (*t)(base).….f }
+//	  set: func(base unsafe.Pointer, _ int32, v F) { (*t)(base).….f = v }
 //
-// The signature lowers to exactly (anyref, i32) -> i64 / (anyref, i32,
-// i64) -> () matching $go.getter.i64 / $go.setter.i64. The offset param
-// is unused for a struct field (the field path is static); it exists for
-// ABI uniformity with array-element accessors. Exported so the wasm3
+// The signatures lower to (anyref,i32)->i64 / (anyref,i32)->anyref etc.,
+// matching $go.getter.i64 / $go.getter.ref. The offset param is unused
+// for a struct field (the path is static). Exported so the wasm3
 // interior-pointer lowering can reference the funcs via ref.func.
 func WasmGCFieldGetter(t *types.Type, off int64) *ir.Func {
-	sym := types.TypeSymLookup(fmt.Sprintf(".ptrget.i64.%s.%d", t.LinkString(), off))
+	types.CalcSize(t) // field offsets/sizes must be set for the leaf walk
+	leafT := wasm3LeafFieldType(t, off)
+	refClass := wasm3IsRefClass(leafT)
+	class, retType := "i64", types.Types[types.TINT64]
+	if refClass {
+		class, retType = "ref", leafT
+	}
+	sym := types.TypeSymLookup(fmt.Sprintf(".ptrget.%s.%s.%d", class, t.LinkString(), off))
 	if sym.Def != nil {
 		return sym.Def.(*ir.Name).Func
 	}
@@ -537,7 +572,7 @@ func WasmGCFieldGetter(t *types.Type, off int64) *ir.Func {
 			types.NewField(pos, typecheck.Lookup("off"), types.Types[types.TINT32]),
 		},
 		[]*types.Field{
-			types.NewField(pos, nil, types.Types[types.TINT64]),
+			types.NewField(pos, nil, retType),
 		},
 	))
 	sym.Def = fn.Nname
@@ -546,7 +581,11 @@ func WasmGCFieldGetter(t *types.Type, off int64) *ir.Func {
 	nbase := fn.Dcl[0]
 	pt := ir.NewConvExpr(pos, ir.OCONVNOP, t.PtrTo(), nbase)
 	sel, _ := wasm3FieldSelector(ir.NewStarExpr(pos, pt), t, off)
-	fn.Body.Append(ir.NewReturnStmt(pos, []ir.Node{typecheck.Conv(sel, types.Types[types.TINT64])}))
+	var ret ir.Node = sel
+	if !refClass {
+		ret = typecheck.Conv(sel, types.Types[types.TINT64])
+	}
+	fn.Body.Append(ir.NewReturnStmt(pos, []ir.Node{ret}))
 	typecheck.FinishFuncBody()
 	fn.SetDupok(true)
 	ir.WithFunc(fn, func() { typecheck.Stmts(fn.Body) })
@@ -556,7 +595,14 @@ func WasmGCFieldGetter(t *types.Type, off int64) *ir.Func {
 
 // WasmGCFieldSetter is the writer half of the pair; see WasmGCFieldGetter.
 func WasmGCFieldSetter(t *types.Type, off int64) *ir.Func {
-	sym := types.TypeSymLookup(fmt.Sprintf(".ptrset.i64.%s.%d", t.LinkString(), off))
+	types.CalcSize(t) // field offsets/sizes must be set for the leaf walk
+	leafT := wasm3LeafFieldType(t, off)
+	refClass := wasm3IsRefClass(leafT)
+	class, vType := "i64", types.Types[types.TINT64]
+	if refClass {
+		class, vType = "ref", leafT
+	}
+	sym := types.TypeSymLookup(fmt.Sprintf(".ptrset.%s.%s.%d", class, t.LinkString(), off))
 	if sym.Def != nil {
 		return sym.Def.(*ir.Name).Func
 	}
@@ -566,7 +612,7 @@ func WasmGCFieldSetter(t *types.Type, off int64) *ir.Func {
 		[]*types.Field{
 			types.NewField(pos, typecheck.Lookup("base"), types.Types[types.TUNSAFEPTR]),
 			types.NewField(pos, typecheck.Lookup("off"), types.Types[types.TINT32]),
-			types.NewField(pos, typecheck.Lookup("v"), types.Types[types.TINT64]),
+			types.NewField(pos, typecheck.Lookup("v"), vType),
 		},
 		nil,
 	))
@@ -577,7 +623,11 @@ func WasmGCFieldSetter(t *types.Type, off int64) *ir.Func {
 	nv := fn.Dcl[2]
 	pt := ir.NewConvExpr(pos, ir.OCONVNOP, t.PtrTo(), nbase)
 	lhs, ft := wasm3FieldSelector(ir.NewStarExpr(pos, pt), t, off)
-	fn.Body.Append(ir.NewAssignStmt(pos, lhs, typecheck.Conv(nv, ft)))
+	var rhs ir.Node = nv
+	if !refClass {
+		rhs = typecheck.Conv(nv, ft)
+	}
+	fn.Body.Append(ir.NewAssignStmt(pos, lhs, rhs))
 	typecheck.FinishFuncBody()
 	fn.SetDupok(true)
 	ir.WithFunc(fn, func() { typecheck.Stmts(fn.Body) })

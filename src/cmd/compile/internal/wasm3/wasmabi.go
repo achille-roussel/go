@@ -723,6 +723,30 @@ func wasm3RegisterArrayBacking(fi *obj.FuncInfo, elem *types.Type) uint32 {
 	return uint32(idx)
 }
 
+// wasm3EnsureCollector lazily initialises the function's
+// typeCollector (and the WasmType.Table the linker reads for the
+// per-package -> module-global type-index remap) without registering
+// any new type. Used when a backend op references a prelude type by
+// fixed index — the linker's remap still has to see the prelude
+// entries through this function's table even though no
+// non-prelude type was added.
+func wasm3EnsureCollector(fi *obj.FuncInfo) {
+	if fi == nil {
+		base.Fatalf("wasm3EnsureCollector: fi is nil")
+	}
+	if _, ok := wasm3LiveCollector.Load(fi); ok {
+		return
+	}
+	c := newTypeCollector()
+	wasm3LiveCollector.Store(fi, c)
+	if fi.WasmType == nil {
+		fi.WasmType = &obj.WasmType{}
+	}
+	var b bytes.Buffer
+	c.table.Write(&b)
+	fi.WasmType.Table = b.Bytes()
+}
+
 // wasm3IptrTypeIdx returns the prelude wrapper-type index for a fat
 // pointer whose pointee is `elem`. See doc/wasm3-fat-pointers-design.md;
 // each Go scalar (or pointer) class maps to one of the prelude

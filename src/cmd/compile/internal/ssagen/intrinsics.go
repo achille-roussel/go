@@ -197,6 +197,44 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	}
 	add("runtime", "wasm3SliceCopy", wasm3SliceCopyIntrinsic, sys.ArchWasm3)
 
+	// Fat-pointer Piece 3 (doc/wasm3-fat-pointers-design.md): an
+	// explicit constructor runtime helpers call to materialise a fat
+	// pointer to a slice element. The Go signature is
+	//
+	//   func wasm3InteriorPtr(s []T, i int) *T
+	//
+	// — but the body is intrinsified at every call site to
+	// OpWasm3InteriorPtr(slice.array, i) so it never invokes a real
+	// function. The result is a `*T` SSA value whose backend lowering
+	// goes through the new fat-pointer path rather than i64 pointer
+	// arithmetic.
+	//
+	// args[0] = the slice's `.array` ref (anyref-shaped),
+	// args[1] = the i64 element index,
+	// args[2] = mem (unused; intrinsic is pure).
+	wasm3InteriorPtrIntrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		if len(n.Args) < 2 {
+			s.Fatalf("wasm3InteriorPtr intrinsic: expected 2 args, got %d", len(n.Args))
+		}
+		// args[0] is the slice (still a composite at intrinsic time —
+		// SSA hasn't yet decomposed it); extract the data ref via
+		// OpSlicePtr. args[1] is the i64 element index. OpWasm3
+		// InteriorPtr's Aux is the slice *types.Type so the backend
+		// derives both the wrapper-type index (via wasm3IptrTypeIdx
+		// on t.Elem()) and the container backing index (via
+		// wasm3RegisterArrayBacking on t.Elem()).
+		sliceType := n.Args[0].Type()
+		if sliceType == nil || !sliceType.IsSlice() {
+			s.Fatalf("wasm3InteriorPtr intrinsic: arg[0] is not a slice: %v", sliceType)
+		}
+		ptrType := types.NewPtr(sliceType.Elem())
+		dataPtr := s.newValue1(ssa.OpSlicePtr, ptrType, args[0])
+		v := s.newValue2(ssa.OpWasm3InteriorPtr, ptrType, dataPtr, args[1])
+		v.Aux = sliceType
+		return v
+	}
+	add("runtime", "wasm3InteriorPtrByte", wasm3InteriorPtrIntrinsic, sys.ArchWasm3)
+
 	// Stage G closures: lower runtime.wasm3WrapClosure(funcsym, captures)
 	// to OpWasm3MakeClosureRef. The funcsym arg is an OCFUNC IR node
 	// that lowers to OpAddr of the function's LSym; we extract the

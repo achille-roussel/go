@@ -349,6 +349,7 @@
 (NilCheck sa:(StackArray _) _) => sa
 (NilCheck mk:(MakeSlice _ _ _) _) => mk
 (NilCheck ss:(SubSlice _ _ _ _ _) _) => ss
+(NilCheck iptr:(InteriorPtr _ _) _) => iptr
 
 (NilCheck p mem) => (LoweredNilCheck p mem)
 (GetClosurePtr ...) => (LoweredGetClosurePtr ...)
@@ -854,3 +855,38 @@
 (I64Load32S [off] (LoweredAddr {sym} [off2] (SB)) _) && symIsRO(sym) && isU32Bit(off+int64(off2)) => (I64Const [int64(int32(read32(sym, off+int64(off2), config.ctxt.Arch.ByteOrder)))])
 (I64Load16S [off] (LoweredAddr {sym} [off2] (SB)) _) && symIsRO(sym) && isU32Bit(off+int64(off2)) => (I64Const [int64(int16(read16(sym, off+int64(off2), config.ctxt.Arch.ByteOrder)))])
 (I64Load8S [off] (LoweredAddr {sym} [off2] (SB)) _) && symIsRO(sym) && isU32Bit(off+int64(off2)) => (I64Const [int64(int8(read8(sym, off+int64(off2))))])
+
+// Fat-pointer Piece 3 (doc/wasm3-fat-pointers-design.md): rebasing
+// and load/store through a InteriorPtr value. The NilCheck-strip
+// rule for InteriorPtr lives in the NilCheck cluster above so it
+// fires before the generic LoweredNilCheck fallback.
+//
+// (AddPtr (InteriorPtr {t} c off) i) folds the additional
+// offset into the fat pointer's index field instead of trying to
+// add an i64 to an anyref-typed wasmgc ref (which has no
+// instruction encoding). Until Piece 4 adds the helper migration,
+// only the runtime.wasm3InteriorPtr intrinsic emits these ops, so
+// the rule fires only on code paths that opt in explicitly.
+(I64Add iptr:(InteriorPtr {t} c off) extra) =>
+	(InteriorPtr {t} c (I64Add off extra))
+
+// Loads through a fat pointer rewrite to OpLoadInterior with
+// the same Aux. The wasm3 obj backend reads the elem size from the
+// container *types.Type and emits the appropriate
+// array.get_u/get_s/get plus i64-extension. The `off` parameter on
+// the linear-memory load must be zero — a non-zero linear-memory
+// offset on a fat pointer is meaningless (the fat pointer's own
+// offset field is what addresses sub-element bytes).
+(I64Load8U  [off] iptr:(InteriorPtr {t} _ _) mem) && off == 0 => (LoadInterior <typ.UInt8>  {t} iptr mem)
+(I64Load8S  [off] iptr:(InteriorPtr {t} _ _) mem) && off == 0 => (LoadInterior <typ.Int8>   {t} iptr mem)
+(I64Load16U [off] iptr:(InteriorPtr {t} _ _) mem) && off == 0 => (LoadInterior <typ.UInt16> {t} iptr mem)
+(I64Load16S [off] iptr:(InteriorPtr {t} _ _) mem) && off == 0 => (LoadInterior <typ.Int16>  {t} iptr mem)
+(I64Load32U [off] iptr:(InteriorPtr {t} _ _) mem) && off == 0 => (LoadInterior <typ.UInt32> {t} iptr mem)
+(I64Load32S [off] iptr:(InteriorPtr {t} _ _) mem) && off == 0 => (LoadInterior <typ.Int32>  {t} iptr mem)
+(I64Load    [off] iptr:(InteriorPtr {t} _ _) mem) && off == 0 => (LoadInterior <typ.Int64>  {t} iptr mem)
+
+// Stores through a fat pointer rewrite to OpStoreInterior.
+(I64Store8  [off] iptr:(InteriorPtr {t} _ _) val mem) && off == 0 => (StoreInterior {t} iptr val mem)
+(I64Store16 [off] iptr:(InteriorPtr {t} _ _) val mem) && off == 0 => (StoreInterior {t} iptr val mem)
+(I64Store32 [off] iptr:(InteriorPtr {t} _ _) val mem) && off == 0 => (StoreInterior {t} iptr val mem)
+(I64Store   [off] iptr:(InteriorPtr {t} _ _) val mem) && off == 0 => (StoreInterior {t} iptr val mem)

@@ -357,7 +357,8 @@ func wasm3ValueType(v *Value) byte {
 		OpWasm3StackArray, OpWasm3MakeSlice, OpWasm3SubSlice,
 		OpWasm3FuncValue, OpWasm3MakeClosureRef,
 		OpWasm3MakeClosureRefInline,
-		OpWasm3LoweredGetClosureRef, OpWasm3LoweredCastClosureRef:
+		OpWasm3LoweredGetClosureRef, OpWasm3LoweredCastClosureRef,
+		OpWasm3InteriorPtr:
 		return wasm3ValAnyref
 	case OpWasm3GetClosureField:
 		// Whether a GetClosureField produces an anyref or an i64

@@ -1275,6 +1275,11 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// Emits: <container>; <offset i32>; struct.new $go.iptr.<class>
 		containerType := v.Aux.(*types.Type)
 		wrapIdx := wasm3IptrTypeIdx(containerType.Elem())
+		// Even though wrapIdx is a fixed prelude index, the linker's
+		// R_WASMTYPE remap reads from the function's WasmType.Table —
+		// which must be initialised with the prelude entries before
+		// any prelude index is referenced.
+		wasm3EnsureCollector(s.FuncInfo())
 		getValue64(s, v.Args[0])
 		getValue64(s, v.Args[1])
 		s.Prog(wasm.AI32WrapI64)
@@ -1298,18 +1303,29 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		containerIdx := int64(wasm3RegisterArrayBacking(s.FuncInfo(), containerType.Elem()))
 		elemSize := containerType.Elem().Size()
 		signed := v.Type.IsSigned()
-		// 1: container ref
+		// Stash the iptr in an anyref temp local — we need to read
+		// both of its fields (container at 0, offset at 1) but
+		// getValue64 is one-shot for OnWasmStack values (a second
+		// call would re-execute the producer's codegen). Local.tee
+		// stores the iptr while keeping it on the stack for the
+		// first use; the second use comes from local.get.
+		iptrTmp := wasm3AllocAnyrefTempLocal(s)
 		getValue64(s, v.Args[0])
-		pCast := s.Prog(wasm.ARefCast)
-		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
+		pTee := s.Prog(wasm.ALocalTee)
+		pTee.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(iptrTmp)}
+		// 1: container ref — cast iptr from anyref to iptr-typed, then
+		// struct.get field 0.
+		pCast1 := s.Prog(wasm.ARefCast)
+		pCast1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
 		pGet0 := s.Prog(wasm.AStructGet)
 		pGet0.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
 		pGet0.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
-		// 2: typed container
+		// 2: typed container ref
 		pCastC := s.Prog(wasm.ARefCast)
 		pCastC.From = obj.Addr{Type: obj.TYPE_CONST, Offset: containerIdx}
-		// 3: offset
-		getValue64(s, v.Args[0])
+		// 3: offset — re-fetch iptr (anyref) and re-cast.
+		pGetTmp := s.Prog(wasm.ALocalGet)
+		pGetTmp.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(iptrTmp)}
 		pCast2 := s.Prog(wasm.ARefCast)
 		pCast2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
 		pGet1 := s.Prog(wasm.AStructGet)
@@ -1352,17 +1368,22 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		wrapIdx := wasm3IptrTypeIdx(containerType.Elem())
 		containerIdx := int64(wasm3RegisterArrayBacking(s.FuncInfo(), containerType.Elem()))
 		elemSize := containerType.Elem().Size()
-		// 1: typed container
+		// Same iptr-stash trick as LoadInterior.
+		iptrTmp := wasm3AllocAnyrefTempLocal(s)
 		getValue64(s, v.Args[0])
-		pCast := s.Prog(wasm.ARefCast)
-		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
+		pTee := s.Prog(wasm.ALocalTee)
+		pTee.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(iptrTmp)}
+		// 1: typed container
+		pCast1 := s.Prog(wasm.ARefCast)
+		pCast1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
 		pGet0 := s.Prog(wasm.AStructGet)
 		pGet0.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
 		pGet0.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
 		pCastC := s.Prog(wasm.ARefCast)
 		pCastC.From = obj.Addr{Type: obj.TYPE_CONST, Offset: containerIdx}
 		// 2: offset
-		getValue64(s, v.Args[0])
+		pGetTmp := s.Prog(wasm.ALocalGet)
+		pGetTmp.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(iptrTmp)}
 		pCast2 := s.Prog(wasm.ARefCast)
 		pCast2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
 		pGet1 := s.Prog(wasm.AStructGet)

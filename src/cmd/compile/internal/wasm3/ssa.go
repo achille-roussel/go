@@ -793,8 +793,8 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		// backing element is nullable; validated in
 		// doc/wasm3-ref-element-derisk.wat).
 		getValue64(s, v.Args[1])
-		if containerType.Elem().IsPtr() {
-			elemRef := int64(wasm3RegisterPointerElemRef(s.FuncInfo(), containerType.Elem()))
+		if wasm3IsRefSliceElem(containerType.Elem()) {
+			elemRef := int64(wasm3RegisterSliceElemRef(s.FuncInfo(), containerType.Elem()))
 			pCastV := s.Prog(wasm.ARefCastNull)
 			pCastV.From = obj.Addr{Type: obj.TYPE_CONST, Offset: elemRef}
 		} else if !containerType.Elem().IsFloat() && elemSize < 8 {

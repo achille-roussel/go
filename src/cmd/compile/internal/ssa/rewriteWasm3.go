@@ -5204,7 +5204,7 @@ func rewriteValueWasm3_OpWasm3I64Load(v *Value) bool {
 		return true
 	}
 	// match: (I64Load [off] iptr:(InteriorPtr {t} _ _) mem)
-	// cond: off == 0 && t.Elem().IsPtr()
+	// cond: off == 0 && (t.Elem().IsPtr() || t.Elem().IsUnsafePtr())
 	// result: (LoadInterior <t.Elem()> {t} iptr mem)
 	for {
 		off := auxIntToInt64(v.AuxInt)
@@ -5214,7 +5214,7 @@ func rewriteValueWasm3_OpWasm3I64Load(v *Value) bool {
 		}
 		t := auxToType(iptr.Aux)
 		mem := v_1
-		if !(off == 0 && t.Elem().IsPtr()) {
+		if !(off == 0 && (t.Elem().IsPtr() || t.Elem().IsUnsafePtr())) {
 			break
 		}
 		v.reset(OpWasm3LoadInterior)
@@ -5224,7 +5224,7 @@ func rewriteValueWasm3_OpWasm3I64Load(v *Value) bool {
 		return true
 	}
 	// match: (I64Load [off] iptr:(InteriorPtr {t} _ _) mem)
-	// cond: off == 0 && !t.Elem().IsPtr()
+	// cond: off == 0 && !(t.Elem().IsPtr() || t.Elem().IsUnsafePtr())
 	// result: (LoadInterior <typ.Int64> {t} iptr mem)
 	for {
 		off := auxIntToInt64(v.AuxInt)
@@ -5234,7 +5234,7 @@ func rewriteValueWasm3_OpWasm3I64Load(v *Value) bool {
 		}
 		t := auxToType(iptr.Aux)
 		mem := v_1
-		if !(off == 0 && !t.Elem().IsPtr()) {
+		if !(off == 0 && !(t.Elem().IsPtr() || t.Elem().IsUnsafePtr())) {
 			break
 		}
 		v.reset(OpWasm3LoadInterior)

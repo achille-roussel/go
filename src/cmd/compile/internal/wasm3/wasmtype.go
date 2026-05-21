@@ -250,6 +250,11 @@ func (c *typeCollector) collectBacking(elem *types.Type) int {
 		st = wasmgc.PrimStorage(p)
 	} else if elem.Kind() == types.TPTR {
 		st = c.pointerStorage(elem.Elem())
+	} else if elem.Kind() == types.TUNSAFEPTR {
+		// unsafe.Pointer has no static pointee; it is a reference to the
+		// open base type — same storage as an unsafe.Pointer struct field
+		// (see lowerFields). The element is one (ref null $go.object) slot.
+		st = wasmgc.RefStorage(wasmgc.TypeGoObject, true)
 	} else if k := wasm3FlatStride(elem); k > 0 {
 		// Multi-i64 composite elements (string=2, interface=2,
 		// slice=3) lay out flat in an (array i64): the body's

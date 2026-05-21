@@ -953,8 +953,8 @@
 // an i64 — give LoadInterior the pointer result type so its per-value local
 // is anyref and array.get's typed ref lands there directly (no i64-extend).
 // Must precede the plain I64Load rule below.
-(I64Load    [off] iptr:(InteriorPtr {t} _ _) mem) && off == 0 &&  t.Elem().IsPtr() => (LoadInterior <t.Elem()>   {t} iptr mem)
-(I64Load    [off] iptr:(InteriorPtr {t} _ _) mem) && off == 0 && !t.Elem().IsPtr() => (LoadInterior <typ.Int64>  {t} iptr mem)
+(I64Load    [off] iptr:(InteriorPtr {t} _ _) mem) && off == 0 &&  (t.Elem().IsPtr() || t.Elem().IsUnsafePtr()) => (LoadInterior <t.Elem()>   {t} iptr mem)
+(I64Load    [off] iptr:(InteriorPtr {t} _ _) mem) && off == 0 && !(t.Elem().IsPtr() || t.Elem().IsUnsafePtr()) => (LoadInterior <typ.Int64>  {t} iptr mem)
 // Float-element slices: the load lowers to F64Load/F32Load (not I64Load),
 // so they need their own InteriorPtr rules. LoadInterior codegen reads the
 // float element with array.get and no i64-extension.

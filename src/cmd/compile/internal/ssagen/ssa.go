@@ -8109,7 +8109,7 @@ func wasm3SliceElemInteriorOK(elem *types.Type) bool {
 		types.TINT64, types.TUINT64,
 		types.TINT, types.TUINT, types.TUINTPTR,
 		types.TFLOAT32, types.TFLOAT64,
-		types.TPTR:
+		types.TPTR, types.TUNSAFEPTR:
 		return true
 	}
 	return false

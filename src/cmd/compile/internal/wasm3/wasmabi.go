@@ -723,19 +723,29 @@ func wasm3RegisterArrayBacking(fi *obj.FuncInfo, elem *types.Type) uint32 {
 	return uint32(idx)
 }
 
-// wasm3RegisterPointerElemRef returns the wasm type index of the boxed
-// pointee referenced by a pointer-typed slice element. ptrElem is the
-// slice's element type (a *T); the result is the RefType of
-// pointerStorage(T) — exactly the ref stored in the (array (ref X))
-// backing collectBacking builds for the same slice — so a ref.cast of an
-// anyref value to this index before array.set is consistent by
-// construction. Used by OpWasm3StoreInterior for reference elements.
-func wasm3RegisterPointerElemRef(fi *obj.FuncInfo, ptrElem *types.Type) uint32 {
+// wasm3RegisterSliceElemRef returns the wasm type index of the reference
+// stored in the backing array of a reference-element slice ([]*T,
+// []unsafe.Pointer, ...). It reads the element Storage of the same
+// (array (ref X)) type collectBacking builds for the slice, so a
+// ref.cast of an anyref value to this index before array.set is
+// consistent by construction. Fatals if the element is not a typed ref.
+// Used by OpWasm3StoreInterior for reference elements.
+// wasm3IsRefSliceElem reports whether a slice element of this type is a
+// single WasmGC reference whose per-value local is anyref and whose
+// backing array stores one ref slot — so &s[i] uses the reference
+// interior-pointer path (array.get -> anyref; array.set <- nullable
+// ref.cast). Limited to *T and unsafe.Pointer: chan/map values are still
+// i64 locals (their value representation hasn't been cut over), and
+// composite elements (struct/string/slice/iface) are a separate facet.
+// Keep in sync with the gate in ssagen (wasm3SliceElemInteriorOK) and the
+// LoadInterior rule predicate in Wasm3.rules.
+func wasm3IsRefSliceElem(elem *types.Type) bool {
+	return elem.IsPtr() || elem.IsUnsafePtr()
+}
+
+func wasm3RegisterSliceElemRef(fi *obj.FuncInfo, elem *types.Type) uint32 {
 	if fi == nil {
-		base.Fatalf("wasm3RegisterPointerElemRef: fi is nil")
-	}
-	if !ptrElem.IsPtr() {
-		base.Fatalf("wasm3RegisterPointerElemRef: %v is not a pointer", ptrElem)
+		base.Fatalf("wasm3RegisterSliceElemRef: fi is nil")
 	}
 	cAny, ok := wasm3LiveCollector.Load(fi)
 	var c *typeCollector
@@ -748,9 +758,10 @@ func wasm3RegisterPointerElemRef(fi *obj.FuncInfo, ptrElem *types.Type) uint32 {
 			fi.WasmType = &obj.WasmType{}
 		}
 	}
-	st := c.pointerStorage(ptrElem.Elem())
+	arrIdx := c.collectBacking(elem)
+	st := c.table[arrIdx].Elem
 	if st.RefType < 0 {
-		base.Fatalf("wasm3RegisterPointerElemRef: %v did not lower to a typed ref", ptrElem)
+		base.Fatalf("wasm3RegisterSliceElemRef: %v element did not lower to a typed ref", elem)
 	}
 	var b bytes.Buffer
 	c.table.Write(&b)

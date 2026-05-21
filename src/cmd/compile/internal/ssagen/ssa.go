@@ -5869,6 +5869,18 @@ func (s *state) rtcall(fn *obj.LSym, returns bool, results []*types.Type, args .
 func (s *state) storeType(t *types.Type, left, right *ssa.Value, skip skipMask, leftIsStmt bool) {
 	s.instrument(t, left, instrumentWrite)
 
+	if buildcfg.GOARCH == "wasm3" && skip == 0 && (t.IsSlice() || t.IsString()) {
+		// wasm3 boxes a slice/string as a single WasmGC ref and has no
+		// linear write barrier (the host GC traces refs), so the
+		// write-barrier-driven decomposition below — which stores the Go
+		// ABI components (data ptr, len, cap) at linear sub-offsets — is
+		// both unnecessary and wrong: the destination field/element holds
+		// one boxed ref, not 3/2 linear words (offsets 8/16 name no wasm3
+		// field). Store the whole boxed ref. See doc/wasm3-slice-boxing.md.
+		s.store(t, left, right)
+		return
+	}
+
 	if skip == 0 && (!t.HasPointers() || ssa.IsStackAddr(left)) {
 		// Known to not have write barrier. Store the whole type.
 		s.vars[memVar] = s.newValue3Apos(ssa.OpStore, types.TypeMem, t, left, right, s.mem(), leftIsStmt)

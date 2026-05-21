@@ -660,6 +660,13 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(fieldIdx)}
 
+	case ssa.OpWasm3PtrStore:
+		// Accessor-pair interior-pointer write ($go.ptr.i64 setter via
+		// call_ref). The materialization/deref core (walk-phase accessor
+		// gen + the (anyref,i32)->i64 accessor ABI + the OffPtr->MakeFieldPtr
+		// lowering) lands as a coupled unit; this op is not emitted yet.
+		v.Fatalf("OpWasm3PtrStore: interior-pointer deref core not yet wired")
+
 	case ssa.OpWasm3GlobalSet:
 		// Write a boxed package-level variable's wasm ref-global
 		// (pointer-representation cutover). v.Aux is the variable's
@@ -1095,6 +1102,18 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p := s.Prog(wasm.AStructGet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoString)}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
+
+	case ssa.OpWasm3MakeFieldPtr:
+		// Materialize $go.ptr.i64 for &container.field (accessor-pair
+		// interior pointer). Real codegen (struct.new with ref.func
+		// accessors from reflectdata.WasmGCFieldGetter/Setter) lands with
+		// the coupled walk-gen + accessor-ABI unit; not emitted yet.
+		v.Fatalf("OpWasm3MakeFieldPtr: interior-pointer materialization core not yet wired")
+
+	case ssa.OpWasm3PtrLoad:
+		// Accessor-pair interior-pointer read ($go.ptr.i64 getter via
+		// call_ref). Not emitted yet; see OpWasm3MakeFieldPtr.
+		v.Fatalf("OpWasm3PtrLoad: interior-pointer deref core not yet wired")
 
 	case ssa.OpWasm3GlobalGet:
 		// Read a boxed package-level variable's wasm ref-global

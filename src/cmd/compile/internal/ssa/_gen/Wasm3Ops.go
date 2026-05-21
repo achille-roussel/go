@@ -523,6 +523,35 @@ func init() {
 		// Emits the dual of LoadInterior: ref.cast + struct.get 0/1
 		// + array.set/struct.set on the recovered container.
 		{name: "StoreInterior", argLength: -1, reg: regInfo{inputs: []regMask{gp, gp, gp}}, aux: "Typ", typ: "Mem"},
+
+		// Accessor-pair interior pointer for a struct field (the i64
+		// pointee class), the boundary-crossing fat pointer of
+		// doc/wasm3-pointer-cutover (de-risked in
+		// doc/wasm3-fat-pointer-derisk.wat). Unlike the array-based
+		// InteriorPtr above, $go.ptr.i64 carries get/set FUNCREFs so a
+		// generic callee can dereference it via call_ref without the
+		// container's static type.
+
+		// OpWasm3MakeFieldPtr materialises $go.ptr.i64 for &container.field.
+		// arg0 is the container ref (anyref); v.Aux is the container's
+		// struct *types.Type and v.AuxInt the field byte offset (TypInt).
+		// Codegen: <arg0>; i32.const 0 (offset unused for a struct field —
+		// the field index is static in the accessors); ref.func
+		// $get_T_field; ref.func $set_T_field; struct.new $go.ptr.i64.
+		// The accessors are generated (in walk) by
+		// reflectdata.WasmGCFieldGetter/Setter. Result lands in an anyref
+		// per-value local.
+		{name: "MakeFieldPtr", argLength: 1, reg: gp11, aux: "TypInt", typ: "BytePtr"},
+
+		// OpWasm3PtrLoad reads through a $go.ptr.i64 (call_ref the getter).
+		// arg0 is the fat-pointer ref; result is i64. Codegen reads the
+		// base/offset/get fields and call_ref's $go.getter.i64.
+		{name: "PtrLoad", argLength: 1, reg: gp11},
+
+		// OpWasm3PtrStore writes through a $go.ptr.i64 (call_ref the
+		// setter). arg0 = fat-pointer ref, arg1 = i64 value, arg2 = mem.
+		// Returns mem.
+		{name: "PtrStore", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, typ: "Mem"},
 	}
 
 	archs = append(archs, arch{

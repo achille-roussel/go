@@ -11,9 +11,25 @@ import (
 	"cmd/internal/obj"
 	"cmd/internal/src"
 	"fmt"
+	"internal/buildcfg"
 	"math"
 	"sync"
 )
+
+// wasm3SingleRef reports whether t is an aggregate that GOARCH=wasm3
+// passes as a single WasmGC reference register, rather than
+// decomposing into its components. On wasm3 a slice, string, and
+// interface are each boxed as one struct ref ($go.slice.<T>,
+// $go.string, $go.iface) — see doc/wasm3-slice-boxing.md — so they
+// occupy one pointer-shaped register. This must agree with the
+// intRegs value types/size.go assigns these kinds on wasm3 (1), or
+// ComputePadding's len(types)==nr check will panic.
+func wasm3SingleRef(t *types.Type) bool {
+	// WasmGC memory model (doc/wasm3-slice-boxing.md): slices and strings
+	// are boxed as a single WasmGC ref ($go.slice.<T> / $go.string), so
+	// they occupy one register. Interfaces follow next.
+	return buildcfg.GOARCH == "wasm3" && (t.IsSlice() || t.IsString())
+}
 
 //......................................................................
 //
@@ -150,6 +166,10 @@ func appendParamTypes(rts []*types.Type, t *types.Type) []*types.Type {
 	if w == 0 {
 		return rts
 	}
+	if wasm3SingleRef(t) {
+		// One pointer-shaped register holds the boxed aggregate ref.
+		return append(rts, types.Types[types.TUNSAFEPTR])
+	}
 	if t.IsScalar() || t.IsPtrShaped() || t.IsSIMD() {
 		if t.IsComplex() {
 			c := types.FloatForComplex(t)
@@ -198,6 +218,10 @@ func appendParamOffsets(offsets []int64, at int64, t *types.Type) ([]int64, int6
 	w := t.Size()
 	if w == 0 {
 		return offsets, at
+	}
+	if wasm3SingleRef(t) {
+		// One pointer-shaped register slot for the boxed aggregate ref.
+		return append(offsets, at), at + int64(types.PtrSize)
 	}
 	if t.IsSIMD() {
 		return append(offsets, at), at + w
@@ -520,6 +544,13 @@ func nextSlot(offsetp *int64, typ *types.Type) int64 {
 // needed is assumed to be stored in state.pUsed.
 func (state *assignState) allocateRegs(regs []RegIndex, t *types.Type) []RegIndex {
 	if t.Size() == 0 {
+		return regs
+	}
+	if wasm3SingleRef(t) {
+		// One integer (pointer-shaped) register for the boxed ref.
+		ri := state.rUsed.intRegs
+		regs = append(regs, RegIndex(ri))
+		state.rUsed.intRegs = ri + 1
 		return regs
 	}
 	ri := state.rUsed.intRegs

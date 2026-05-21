@@ -289,8 +289,33 @@ func init() {
 		// later M2 commit. See doc/wasm3-m2-design.md §3, §5.
 		{name: "StructNew", argLength: -1, reg: gp01, aux: "Typ"},                                             // struct.new $Aux; allocates a struct of wasm type Aux with fields taken from args
 		{name: "StructNewDefault", argLength: 0, reg: gp01, aux: "Typ"},                                       // struct.new_default $Aux; allocates a zeroed struct of wasm type Aux
-		{name: "StructGet", argLength: 1, reg: gp11, aux: "Typ"},                                              // struct.get $Aux AuxInt; reads field AuxInt of struct arg0
-		{name: "StructSet", argLength: 2, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "Typ", typ: "Mem"},    // struct.set $Aux AuxInt; arg0=struct, arg1=value
+		{name: "StructGet", argLength: 1, reg: gp11, aux: "TypInt"},                                              // struct.get $Aux AuxInt; reads field AuxInt of struct arg0
+		{name: "StructSet", argLength: 2, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "TypInt", typ: "Mem"},    // struct.set $Aux AuxInt; arg0=struct, arg1=value
+
+		// Field access by Go byte offset (doc/wasm3-slice-boxing.md field-access ABI).
+		// aux = the Go struct *types.Type, auxint = the field's BYTE OFFSET; codegen
+		// resolves the offset to a WasmGC field index via the collector layout and
+		// emits struct.get/struct.set. This is how Load/Store of a struct field lower
+		// to WasmGC instead of linear I64Load/I64Store. arg0=struct ref.
+		{name: "FieldGet", argLength: 2, reg: gp11, aux: "TypInt"},                                            // struct.get; arg0=struct, arg1=mem (order vs FieldSet)
+		{name: "FieldSet", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "TypInt", typ: "Mem"}, // struct.set; arg0=struct, arg1=value, arg2=mem
+
+		// Boxed slice header accessors (doc/wasm3-slice-boxing.md). A slice is a
+		// single (ref $go.slice.<T>) struct; these read its fields at fixed
+		// indices. aux=slice *types.Type (resolved to the header type via
+		// wasm3RegisterSliceStruct). SliceData reads field 0 (backing array ref,
+		// anyref); SliceLength field 2; SliceCapacity field 3.
+		{name: "SliceData", argLength: 1, reg: gp11, aux: "Typ", typ: "BytePtr"},   // struct.get $go.slice.<T> 0
+		{name: "SliceLength", argLength: 1, reg: gp11, aux: "Typ", typ: "Int64"},   // struct.get $go.slice.<T> 2
+		{name: "SliceCapacity", argLength: 1, reg: gp11, aux: "Typ", typ: "Int64"}, // struct.get $go.slice.<T> 3
+
+		// Boxed string ($go.string) component reads (doc/wasm3-slice-boxing.md).
+		// StringData reads field 0 (backing $go.bytes ref, anyref); StringLength
+		// field 2 (i64). Dedicated ops (not StructGet) so wasm3ValueType can
+		// classify the ref vs i64 result. arg0=string ref.
+		{name: "StringData", argLength: 1, reg: gp11, typ: "BytePtr"},   // struct.get $go.string 0
+		{name: "StringLength", argLength: 1, reg: gp11, typ: "Int64"},   // struct.get $go.string 2
+
 		{name: "ArrayNew", argLength: 2, reg: gp21, aux: "Typ"},                                               // array.new $Aux; arg0=element value, arg1=length
 		{name: "ArrayNewDefault", argLength: 1, reg: gp11, aux: "Typ"},                                        // array.new_default $Aux; arg0=length
 		{name: "ArrayGet", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}, outputs: []regMask{gp}}, aux: "Typ"}, // array.get $Aux; arg0=array, arg1=index, arg2=mem (ordering only — array elements are mutable, so reads must order against ArraySet writes)

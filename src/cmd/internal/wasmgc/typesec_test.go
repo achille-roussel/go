@@ -67,12 +67,12 @@ func TestAppendLeb128(t *testing.T) {
 func TestEncodePreludeTypeSection(t *testing.T) {
 	payload := Table(PreludeTypes()).EncodeTypeSection()
 
-	// Prelude: 10 singleton rec groups in table order: object, bytes,
-	// string, then the seven go.iptr.<class> fat-pointer wrappers
-	// (i8, i16, i32, i64, f32, f64, ref). Pin the exact bytes — this is
-	// the module preamble every wasm3 binary starts with.
+	// Prelude: 11 singleton rec groups in table order: object, bytes,
+	// string, the seven go.iptr.<class> fat-pointer wrappers
+	// (i8, i16, i32, i64, f32, f64, ref), then go.iface. Pin the exact
+	// bytes — this is the module preamble every wasm3 binary starts with.
 	want := []byte{
-		0x0a, // 10 rec groups
+		0x0b, // 11 rec groups
 
 		// rec { go.object }: sub, 0 supertypes, struct with 0 fields.
 		opRec, 0x01,
@@ -83,15 +83,16 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 		opSub, 0x00, opArray, packedI8, fieldVar,
 
 		// rec { go.string }: sub, supertype go.object (index 0), struct
-		// of { (ref go.bytes)=index 1 const, i32 const, i32 const }.
-		// The standalone go.string is immutable (doc/wasm3-design.md
-		// §6.3); its backing array is a non-null reference.
+		// of { (ref go.bytes)=index 1 const, i64 const, i64 const }.
+		// offset/length are i64 (matching $go.slice and the wasm3 i64
+		// Go-int locals; see doc/wasm3-slice-boxing.md). The standalone
+		// go.string is immutable; its backing is a non-null reference.
 		opRec, 0x01,
 		opSub, 0x01, 0x00, // 1 supertype: index 0
 		opStruct, 0x03,
 		opRef, 0x01, fieldConst, // (ref 1) const
-		valI32, fieldConst,
-		valI32, fieldConst,
+		valI64, fieldConst,
+		valI64, fieldConst,
 
 		// rec { go.iptr.<class> } x7: each is a singleton sub group of
 		// `(struct (anyref container) (i32 offset))` keyed on the
@@ -103,6 +104,10 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02, valAnyref, fieldConst, valI32, fieldConst, // go.iptr.f32
 		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02, valAnyref, fieldConst, valI32, fieldConst, // go.iptr.f64
 		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02, valAnyref, fieldConst, valI32, fieldConst, // go.iptr.ref
+
+		// rec { go.iface }: sub, supertype go.object (index 0), struct of
+		// { anyref itab const, anyref data const } — a boxed interface.
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02, valAnyref, fieldConst, valAnyref, fieldConst,
 	}
 	if !bytes.Equal(payload, want) {
 		t.Fatalf("prelude type section mismatch:\n got % x\nwant % x", payload, want)

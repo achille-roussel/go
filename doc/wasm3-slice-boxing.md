@@ -99,63 +99,170 @@ including across the dynamically-linked host boundary (the prelude
 emits each type as a singleton rec group, so structural equivalence
 holds).
 
-## Sequencing
+## Committed approach: a single-value aggregate ABI in the compiler
 
-A green-ladder checkpoint (empty / concat / map / iptr, plus the new
-slice test below) follows each rung; commit per rung so any
-regression is bisectable.
+This is the decided path (2026-05-21), chosen over two rejected
+alternatives:
 
-### Rung A — collector generates the types (additive)
+- **Boundary-only / memory-only boxing** — box just at the
+  `//go:wasmimport` boundary (and struct fields) while slices stay
+  flat `(ptr, len, cap)` in SSA. **Rejected:** it cannot track the
+  *offset*. A flat in-SSA slice has no offset slot, so a subslice
+  `a[lo:hi]` that shares its backing is unrepresentable — the very
+  thing boxing is meant to fix. Boxing only at the edge doesn't give
+  the value model the offset it needs everywhere it flows.
+- **A 4th unboxed `off` component** (slice = ptr/off/len/cap, string =
+  ptr/off/len). **Rejected:** "a slice is 3 components, a string is 2"
+  is baked into shared, all-arch SSA infrastructure (`decompose`,
+  `expand_calls`, the register ABI). Adding a 4th forks the generic
+  aggregate model for every architecture.
 
-Teach the type collector to emit `$go.slice.<T>` (and ensure the
-`$go.array.<T>` backing exists) for each slice element type. Nothing
-consumes them yet. Checkpoint: ladder green; `wasm-tools` shows the
-new types present and unused.
+So we build a **real wasm3 ABI in the compiler**: slice, string, and
+interface are each a *single* WasmGC struct-ref value
+(`$go.slice.<T>`, `$go.string`, `$go.iface`) that the compiler tracks
+end to end — not decomposed into components. Everything (the offset,
+subslicing, the host boundary) derives from this. The mechanism is to
+treat these aggregates as **pointer-shaped single-register values** on
+wasm3, so the generic passes leave them whole the way they already
+leave a `*T` whole.
 
-### Rung B — atomic value-rep flip + op lowering (the big one)
+### The exact fork points (grounded)
 
-Slices cannot be half-flat/half-boxed, so this rung is atomic. Bring
-it up on a minimal internal slice ladder before the full ladder:
+Three shared subsystems decompose aggregates; each is gated for wasm3:
 
-- `flatPrimitiveFields(TSLICE)` / `wasm3Fields` → one
-  `(ref $go.slice.T)` field (was `(anyref, i64, i64)`).
-- `wasm3ValueType` → a slice value is one ref local.
-- Op lowering, in order: `OpSliceMake` → `struct.new`;
-  `OpSlicePtr/Len/Cap` → `struct.get`; slicing (`OSLICE`/`OSLICE3`) →
-  `struct.new` with `off' = off+lo`, `len' = hi-lo`, `cap'` from the
-  3-index bound or `cap-lo` (the core offset work); element index →
-  `array.get(data, off+i)` with the bound on `len`; `make([]T,n)`
-  (`OpWasm3MakeSlice`) → `array.new` + `struct.new`; `append` grow
-  path → new array + `struct.new`.
-- nil → null ref; `len`/`cap` special-case null → 0.
+1. **Register ABI — `cmd/compile/internal/abi/abiutils.go`.**
+   `appendParamTypes` (~183) and `appendParamOffsets` (~231) expand
+   `TSLICE→synthSlice`, `TSTRING→synthString`, `TINTER→synthIface`
+   (the 3/2/2-component synthetic structs), and `assignParam` (~557)
+   follows. Gate on `buildcfg.GOARCH == "wasm3"` to assign each as a
+   single pointer-shaped register instead. *This is the ABI itself —
+   build and unit-test it first; everything derives from it.*
+2. **`cmd/compile/internal/ssa/decompose.go`** — `decomposeBuiltinPhi`
+   (~124) and the named-values loop (~66–100) split slice/string/
+   interface. Gate on `f.Config.arch == "wasm3"` to leave them whole.
+3. **`cmd/compile/internal/ssa/_gen/dec.rules`** — the ~15 rules at
+   lines 42–97 (`SlicePtr(SliceMake…)=>ptr`, aggregate `Load`/`Store`,
+   etc.). Gate with `&& config.arch != "wasm3"` (rules already
+   condition on `config`, e.g. the 386 `Flag_shared` rules).
 
-Checkpoint: a new `slice-rep` test (nil, make, index, len/cap,
-`a[lo:hi]`, `a[lo:hi:max]`, append-grow, range) prints ok; then the
-full ladder green.
+### Step sequence (atomic; unit-test each compiler layer)
 
-### Rung C — delete the dead multi-value machinery
+The integrated wasm3 build stays red until the minimal slice program
+comes up — that's expected for an atomic ABI change. But each compiler
+*layer* gets its own unit test that passes independently, so the work
+is verifiable as it lands.
 
-With slices single-valued, remove the anyref-propagation fixed-point
-pass, the `OpSelectN` slice-component classifier, and the
-Phi-of-components handling. No-ops post-B; deleting them is the net
-simplification. Checkpoint: ladder green after each deletion.
+- **Rung A — DONE.** Collector emits `$go.slice.<T>`
+  (`collectSliceStruct`, committed a957bdfa38; unit-tested).
+- **Step 1 — register ABI.** Gate `abiutils` so slice/string/interface
+  are one ptr-shaped register on wasm3. **Test:** `ABIAnalyzeFuncType`
+  on a `func([]int32)` etc. asserts one in-register per aggregate.
+- **Step 2 — decompose.** Gate the three sites above. **Test:** build
+  SSA with a slice Phi / slice local, run `decomposeBuiltin`, assert it
+  stays whole (no `OpSliceMake` introduced).
+- **Step 3 — wasm3 value ops + codegen.** `OpSliceMake → struct.new`,
+  `OpSlicePtr/Len/Cap → struct.get`, aggregate `Load/Store → ` ref
+  load/store; element index → `array.get(SliceData, off+idx)`;
+  `OpWasm3MakeSlice → array.new + struct.new`; `OpWasm3SubSlice →
+  struct.new(sameData, off+lo, hi-lo, cap')` (shared backing, no copy);
+  `append` grow → new array + `struct.new`. nil = null ref;
+  `len`/`cap` special-case null → 0.
+- **Step 4 — `flatPrimitiveFields`/`lowerFields` → one ref**, and
+  update `collectorMatchesRegabi` (it currently asserts the wasm field
+  count matches the regabi register count — now both are 1).
+- **Step 5 — `wasm3ValueType`** — aggregate value = one ref local (net
+  deletion of the anyref-by-component logic).
+- **Step 6 — bring up the minimal slice program** (nil, make, index,
+  len/cap, `a[lo:hi]`, `a[lo:hi:max]`, append-grow, range), then the
+  full ladder.
 
-### Rung D — reconcile the fat-pointer path
+> **Critical finding (2026-05-21) — Step 6 has a hard dependency on a
+> WasmGC heap.** The value-rep flip (Steps 1–5) is done and working:
+> slices box and lower through regabi, expand_calls, decompose, make,
+> the `SliceData/Length/Capacity` accessors, and indexing. But the
+> compiler still cannot build a program, failing only on
+> `Store ... SLICE` — storing a *whole slice value into memory*.
+>
+> Root cause is physical, not a missing rule: general wasm3 structs and
+> globals live in **linear memory** — `(OffPtr ...) => (I64AddConst ...)`
+> and `Store` lowers to `I64Store` (`Wasm3.rules`). `StructGet/StructSet`
+> are used only for specific boxes (closures, scalars, slice headers),
+> not general field access. A boxed slice is a WasmGC `ref`, and **a ref
+> cannot be stored into linear memory** — the wasm type system forbids
+> it. So a slice that lives *inside* another struct/array/global cannot
+> be stored until that container is itself WasmGC (so the slice field is
+> a real ref field written with `StructSet`/`ArraySet`).
+>
+> Therefore the green checkpoint requires mapping `OffPtr`-based field
+> access to `StructGet`/`StructSet` for WasmGC-resident aggregates — the
+> **heap → WasmGC cutover**, which is the broader Stage J data-model
+> move. Slice boxing's value representation is the prerequisite; this
+> cutover is the seam where it meets Stage J. It should be its own
+> rung/effort (call it Rung B.2 / the heap cutover), planned
+> deliberately, because every aggregate-in-memory (not just slices)
+> depends on it. Reaching "minimal slice program green" is gated on it.
 
-`wasm3InteriorPtrByte` / `&s[i]` derives the array via `OpSlicePtr`
-then indexes; with boxing it becomes `struct.get data` + `off+i`.
-Small adjustment (may fold into B). Checkpoint: the iptr copy test
-still prints ok.
+## Resolution / committed direction (2026-05-21): WasmGC memory only
 
-### Then the host boundary unblocks
+The decomposition above (box slices first, lean on the existing linear
+heap, narrow scope to dodge `Store SLICE`) was the wrong instinct. Per
+direct user direction, the rule is now absolute (see the auto-memory
+rule "wasm3: WasmGC memory only"):
 
-(`doc/wasm3-stage-j-plan.md` Piece 5 / the `runtime/wasm` package):
-the wasmimport boundary passes a single typed `(ref $go.slice.byte)`;
-write `runtime.wat`; convert `runtime/wasm` to `//go:wasmimport
-go_runtime` signatures; `--preload` smoke test.
+> **The wasm3 compiler uses WasmGC memory exclusively. It never emits
+> linear-memory access for Go heap data. Linear memory exists only at
+> the host boundary, reached solely through `runtime/wasm`.**
 
-## Risk
+So this is not "box slices, then maybe cut the heap." It is **one
+fundamental change: build the wasm3 ABI from the basics on WasmGC**, of
+which slice/string/interface boxing is just a consequence. The work is
+no longer sequenced as "slices, then strings, then heap"; it is
+sequenced as building the WasmGC memory model, from which all aggregate
+representations fall out.
 
-Rung B is the atomic core and the most likely to redden the ladder
-mid-flight (like the M2 cutover). Bring it up on the minimal slice
-program first, then the full ladder.
+### The foundational pieces (build the ABI, in order)
+
+1. **Value ABI (mostly done, keep):** every aggregate is a single
+   WasmGC ref — slice = `$go.slice.<T>`, string = `$go.string`,
+   interface = `$go.iface`, struct = `$go.struct.<T>`, array =
+   `(array T)`. regabi assigns one register; decompose leaves them
+   whole; expand_calls passes one value. (The slice value-rep flip and
+   the regabi/expand_calls/decompose gates are this, generalized back
+   to all aggregates — undo the temporary "slices only" narrowing.)
+2. **Field access ABI (the missing foundation):** `OffPtr` /
+   `Load` / `Store` on a heap object must lower to `StructGet` /
+   `StructSet` / `ArrayGet` / `ArraySet`, resolving the Go byte offset
+   to a WasmGC field/element index (via the collector's struct layout).
+   This **replaces** the linear `OffPtr ⇒ I64AddConst` + `I64Load/Store`
+   path for heap data. This is what unblocks `Store SLICE` and every
+   other aggregate-in-memory.
+3. **Allocation ABI:** `new`/`make`/struct literals/escaping locals →
+   `struct.new` / `array.new`, not the linear bump heap (`wasm3Heap`,
+   to be deleted). Globals holding heap data → WasmGC.
+4. **Host boundary:** linear memory survives *only* here, owned by the
+   dynamically-linked `runtime/wasm` module (Piece 5 / the boundary
+   docs); the compiled program never touches it.
+
+The compiler-side prerequisite work (regabi 1-register, expand_calls
+single-value, decompose-whole, the `$go.slice` ops/rules) stays. The
+new center of gravity is piece 2 — WasmGC field access — because every
+"X in memory" depends on it. Unit-test each layer; the integrated build
+is red until field access lands, by nature of the atomic change.
+- **Step 7 — strings and interfaces.** Same mechanism, same gates
+  (they decompose through the same sites). Box `$go.string`/`$go.iface`.
+- **Step 8 — delete the now-dead multi-value machinery** (anyref-
+  propagation pass, `OpSelectN` slice classifier, Phi-of-components).
+  This is the simplification payoff, now unlocked.
+- **Then the host boundary derives for free:** a `[]byte` is one
+  registered `(ref $go.slice.byte)` everywhere, so `//go:wasmimport`
+  passes it typed with no anyref and no collector straddle. Wire
+  `runtime.wat` + `runtime/wasm` + `--preload` smoke test
+  (doc/wasm3-stage-j-plan.md Piece 5).
+
+### Risk
+
+This is the highest-risk change in the project: per-arch divergence in
+`decompose`/`abiutils`/`expand_calls` can interact subtly with other
+passes. Mitigations: gate strictly on wasm3 (other arches untouched),
+unit-test every layer independently, keep commits per-step so any
+regression is bisectable even while the integrated build is red.

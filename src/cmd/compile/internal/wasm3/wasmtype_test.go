@@ -6,6 +6,7 @@ package wasm3
 
 import (
 	"bufio"
+	"internal/buildcfg"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -190,24 +191,22 @@ func TestCollectMemoization(t *testing.T) {
 }
 
 func TestCollectStringField(t *testing.T) {
-	// struct { s string } — the string flattens to {backing, offset, length}.
+	// struct { s string } — a string is boxed as a single $go.string ref
+	// (doc/wasm3-slice-boxing.md), so the field is one (nullable) ref.
 	st := types.NewStruct([]*types.Field{field("s", types.Types[types.TSTRING])})
 	c := newTypeCollector()
 	idx := c.collectStruct(st)
 
-	want := []wasmgc.Field{
-		{Storage: wasmgc.RefStorage(wasmgc.TypeGoBytes, false), Mutable: true},
-		{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},
-		{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},
-	}
 	got := c.table[idx].Fields
-	if len(got) != len(want) {
-		t.Fatalf("struct{s string} lowered to %d fields, want %d (string flattens)", len(got), len(want))
+	if len(got) != 1 {
+		t.Fatalf("struct{s string} lowered to %d fields, want 1 ($go.string ref)", len(got))
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("field %d = %+v, want %+v", i, got[i], want[i])
-		}
+	f := got[0]
+	if !f.Storage.IsRef() || !f.Mutable {
+		t.Fatalf("string field = %+v, want a mutable ref", f)
+	}
+	if f.Storage.RefType != wasmgc.TypeGoString {
+		t.Errorf("string field references type %d, want TypeGoString (%d)", f.Storage.RefType, wasmgc.TypeGoString)
 	}
 }
 
@@ -409,8 +408,8 @@ func TestCollectSliceStruct(t *testing.T) {
 	}
 	for i, name := range []string{"off", "len", "cap"} {
 		f := got.Fields[1+i]
-		if f.Storage != wasmgc.PrimStorage(wasmgc.I32) || !f.Mutable {
-			t.Errorf("%s field = %+v, want mutable i32", name, f)
+		if f.Storage != wasmgc.PrimStorage(wasmgc.I64) || !f.Mutable {
+			t.Errorf("%s field = %+v, want mutable i64", name, f)
 		}
 	}
 	checkDependencyOrder(t, c.table)
@@ -440,6 +439,40 @@ func TestCollectSliceStructByteBacking(t *testing.T) {
 		t.Errorf("[]byte backing elem = %+v, want packed i8", backing.Elem)
 	}
 	checkDependencyOrder(t, c.table)
+}
+
+// TestWasm3AggregateRegisters locks in the wasm3 ABI register count
+// (doc/wasm3-slice-boxing.md, Step 1): a slice is boxed as one WasmGC
+// struct ref, so the register ABI must assign it a single register
+// rather than the three (ptr, len, cap) it uses on other arches. This
+// gate (types/size.go + abi/abiutils.go) is what makes a slice cross a
+// call boundary as one value, so its offset can travel inside the ref.
+//
+// Fresh element types are used so the slice types aren't already sized
+// (cached) for the host arch before the gate is toggled. String and
+// interface use the identical size.go gate (intRegs=1 on wasm3).
+func TestWasm3AggregateRegisters(t *testing.T) {
+	saved := buildcfg.GOARCH
+	defer func() { buildcfg.GOARCH = saved }()
+
+	freshSliceOf := func(name string) *types.Type {
+		elem := namedStruct(name, func(self *types.Type) []*types.Field {
+			return []*types.Field{field("v", types.Types[types.TINT32])}
+		})
+		sl := types.NewSlice(elem)
+		types.CalcSize(sl)
+		return sl
+	}
+
+	buildcfg.GOARCH = "wasm3"
+	if ir, fr := freshSliceOf("aggRegW").Registers(); ir != 1 || fr != 0 {
+		t.Errorf("wasm3: slice Registers() = (%d,%d), want (1,0) — one boxed ref", ir, fr)
+	}
+
+	buildcfg.GOARCH = "amd64"
+	if ir, fr := freshSliceOf("aggRegN").Registers(); ir != 3 || fr != 0 {
+		t.Errorf("amd64: slice Registers() = (%d,%d), want (3,0) — unboxed ptr/len/cap", ir, fr)
+	}
 }
 
 func TestEncodedCollectedTypesValidate(t *testing.T) {

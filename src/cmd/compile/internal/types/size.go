@@ -388,6 +388,9 @@ func CalcSize(t *Type) {
 		w = StringSize
 		t.align = uint8(PtrSize)
 		t.intRegs = 2
+		if buildcfg.GOARCH == "wasm3" {
+			t.intRegs = 1 // boxed as a single WasmGC ref ($go.string); see doc/wasm3-slice-boxing.md
+		}
 		t.setAlg(ASTRING)
 		t.ptrBytes = int64(PtrSize)
 
@@ -406,6 +409,9 @@ func CalcSize(t *Type) {
 		CheckSize(t.Elem())
 		t.align = uint8(PtrSize)
 		t.intRegs = 3
+		if buildcfg.GOARCH == "wasm3" {
+			t.intRegs = 1 // boxed as a single WasmGC ref ($go.slice.<T>); see doc/wasm3-slice-boxing.md
+		}
 		t.setAlg(ANOEQ)
 		if !t.Elem().NotInHeap() {
 			t.ptrBytes = int64(PtrSize)

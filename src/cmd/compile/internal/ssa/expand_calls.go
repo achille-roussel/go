@@ -413,12 +413,18 @@ func (x *expandState) decomposeAsNecessary(pos src.XPos, b *Block, a, m0 *Value,
 		return mem
 
 	case types.TSLICE:
+		if x.f.Config.arch == "wasm3" {
+			break // boxed as one WasmGC ref: record as a single register (atomic leaf below)
+		}
 		mem = x.decomposeOne(pos, b, a, mem, at.Elem().PtrTo(), OpSlicePtr, &rc)
 		pos = pos.WithNotStmt()
 		mem = x.decomposeOne(pos, b, a, mem, x.typs.Int, OpSliceLen, &rc)
 		return x.decomposeOne(pos, b, a, mem, x.typs.Int, OpSliceCap, &rc)
 
 	case types.TSTRING:
+		if x.f.Config.arch == "wasm3" {
+			break // boxed as one WasmGC $go.string ref
+		}
 		return x.decomposePair(pos, b, a, mem, x.typs.BytePtr, x.typs.Int, OpStringPtr, OpStringLen, &rc)
 
 	case types.TINTER:
@@ -570,6 +576,9 @@ func (x *expandState) rewriteSelectOrArg(pos src.XPos, b *Block, container, a, m
 		return a
 
 	case types.TSLICE:
+		if x.f.Config.arch == "wasm3" {
+			break // boxed as one WasmGC ref: read from a single register (atomic leaf below)
+		}
 		addArg(x.rewriteSelectOrArg(pos, b, container, nil, m0, at.Elem().PtrTo(), rc.next(x.typs.BytePtr)))
 		pos = pos.WithNotStmt()
 		addArg(x.rewriteSelectOrArg(pos, b, container, nil, m0, x.typs.Int, rc.next(x.typs.Int)))
@@ -579,6 +588,9 @@ func (x *expandState) rewriteSelectOrArg(pos src.XPos, b *Block, container, a, m
 		return a
 
 	case types.TSTRING:
+		if x.f.Config.arch == "wasm3" {
+			break // boxed as one WasmGC $go.string ref
+		}
 		addArg(x.rewriteSelectOrArg(pos, b, container, nil, m0, x.typs.BytePtr, rc.next(x.typs.BytePtr)))
 		pos = pos.WithNotStmt()
 		addArg(x.rewriteSelectOrArg(pos, b, container, nil, m0, x.typs.Int, rc.next(x.typs.Int)))

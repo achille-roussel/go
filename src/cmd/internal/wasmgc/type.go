@@ -125,6 +125,7 @@ const (
 	TypeGoIptrF32        // go.iptr.f32: fat pointer to an f32-class interior slot
 	TypeGoIptrF64        // go.iptr.f64: fat pointer to an f64-class interior slot
 	TypeGoIptrRef        // go.iptr.ref: fat pointer to a ref-typed interior slot
+	TypeGoIface          // go.iface:  {itab anyref, data anyref} — boxed interface (doc/wasm3-slice-boxing.md)
 	NumPreludeTypes
 )
 
@@ -160,8 +161,8 @@ func PreludeTypes() []Type {
 		Super: TypeGoObject,
 		Fields: []Field{
 			{Storage: RefStorage(TypeGoBytes, false)}, // backing
-			{Storage: PrimStorage(I32)},               // offset
-			{Storage: PrimStorage(I32)},               // length
+			{Storage: PrimStorage(I64)},               // offset
+			{Storage: PrimStorage(I64)},               // length
 		},
 	}
 
@@ -198,6 +199,20 @@ func PreludeTypes() []Type {
 	t[TypeGoIptrF32] = iptr("go.iptr.f32")
 	t[TypeGoIptrF64] = iptr("go.iptr.f64")
 	t[TypeGoIptrRef] = iptr("go.iptr.ref")
+
+	// (type $go.iface (sub $go.object (struct (anyref itab) (anyref data))))
+	// — a boxed interface value. Both words are anyref for now (the itab
+	// descriptor type and the concrete data are refined in later
+	// milestones). See doc/wasm3-slice-boxing.md.
+	t[TypeGoIface] = Type{
+		Name:  "go.iface",
+		Kind:  KindStruct,
+		Super: TypeGoObject,
+		Fields: []Field{
+			{Storage: AnyRefStorage()}, // itab
+			{Storage: AnyRefStorage()}, // data
+		},
+	}
 
 	return t
 }

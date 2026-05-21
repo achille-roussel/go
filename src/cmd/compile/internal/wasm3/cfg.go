@@ -255,10 +255,10 @@ func (s *blockSet) len() int {
 // successor / predecessor lookups, since *ssa.Block already carries
 // its Succs / Preds slices.
 type ssaCFGGraph struct {
-	f      *ssa.Func
-	sdom   ssa.SparseTree
-	byID   []*ssa.Block // byID[id] == block with that ID; nil for dead/recycled IDs
-	bIDs   []int32      // every live block's ID in f.Blocks order (deterministic)
+	f    *ssa.Func
+	sdom ssa.SparseTree
+	byID []*ssa.Block // byID[id] == block with that ID; nil for dead/recycled IDs
+	bIDs []int32      // every live block's ID in f.Blocks order (deterministic)
 }
 
 func newSSACFGGraph(f *ssa.Func) *ssaCFGGraph {

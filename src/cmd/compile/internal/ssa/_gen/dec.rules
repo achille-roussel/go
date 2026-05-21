@@ -39,28 +39,28 @@
     (Store {typ.Float64} dst real mem))
 
 // string ops
-(StringPtr (StringMake ptr _)) => ptr
-(StringLen (StringMake _ len)) => len
+(StringPtr (StringMake ptr _)) && config.arch != "wasm3" => ptr
+(StringLen (StringMake _ len)) && config.arch != "wasm3" => len
 
-(Load <t> ptr mem) && t.IsString() =>
+(Load <t> ptr mem) && t.IsString() && config.arch != "wasm3" =>
   (StringMake
     (Load <typ.BytePtr> ptr mem)
     (Load <typ.Int>
       (OffPtr <typ.IntPtr> [config.PtrSize] ptr)
       mem))
-(Store dst (StringMake ptr len) mem) =>
+(Store dst (StringMake ptr len) mem) && config.arch != "wasm3" =>
   (Store {typ.Int}
     (OffPtr <typ.IntPtr> [config.PtrSize] dst)
     len
     (Store {typ.BytePtr} dst ptr mem))
 
 // slice ops
-(SlicePtr (SliceMake ptr _ _ )) => ptr
-(SliceLen (SliceMake _ len _)) => len
-(SliceCap (SliceMake _ _ cap)) => cap
-(SlicePtrUnchecked (SliceMake ptr _ _ )) => ptr
+(SlicePtr (SliceMake ptr _ _ )) && config.arch != "wasm3" => ptr
+(SliceLen (SliceMake _ len _)) && config.arch != "wasm3" => len
+(SliceCap (SliceMake _ _ cap)) && config.arch != "wasm3" => cap
+(SlicePtrUnchecked (SliceMake ptr _ _ )) && config.arch != "wasm3" => ptr
 
-(Load <t> ptr mem) && t.IsSlice() =>
+(Load <t> ptr mem) && t.IsSlice() && config.arch != "wasm3" =>
   (SliceMake
     (Load <t.Elem().PtrTo()> ptr mem)
     (Load <typ.Int>
@@ -69,7 +69,7 @@
     (Load <typ.Int>
       (OffPtr <typ.IntPtr> [2*config.PtrSize] ptr)
       mem))
-(Store {t} dst (SliceMake ptr len cap) mem) =>
+(Store {t} dst (SliceMake ptr len cap) mem) && config.arch != "wasm3" =>
   (Store {typ.Int}
     (OffPtr <typ.IntPtr> [2*config.PtrSize] dst)
     cap

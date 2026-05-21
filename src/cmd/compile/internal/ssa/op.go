@@ -374,6 +374,7 @@ const (
 	auxSymValAndOff           // aux is a symbol, auxInt is a ValAndOff
 	auxTyp                    // aux is a type
 	auxTypSize                // aux is a type, auxInt is a size, must have Aux.(Type).Size() == AuxInt
+	auxTypInt                 // aux is a type, auxInt is an arbitrary int (e.g. a WasmGC struct field index)
 	auxCall                   // aux is a *ssa.AuxCall
 	auxCallOff                // aux is a *ssa.AuxCall, AuxInt is int64 param (in+out) size
 

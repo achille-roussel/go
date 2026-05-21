@@ -129,22 +129,21 @@ func (c *typeCollector) lowerFields(t *types.Type) []wasmgc.Field {
 		return []wasmgc.Field{{Storage: wasmgc.RefStorage(wasmgc.TypeGoObject, true), Mutable: true}}
 
 	case types.TSTRING:
-		// {backing, offset, length} flattened in place (rule 3). The
-		// offset is required because substrings share a backing array.
-		return []wasmgc.Field{
-			{Storage: wasmgc.RefStorage(wasmgc.TypeGoBytes, false), Mutable: true},
-			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},
-			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},
-		}
+		// WasmGC memory model (doc/wasm3-slice-boxing.md): a string is a
+		// single boxed $go.string ref ({backing, offset, length}), so a
+		// string field is one ref, not three flattened fields. This 1:1
+		// Go-field -> WasmGC-field mapping is what the field-access ABI
+		// relies on (an offset into a flattened string's len word can't be
+		// resolved). nullable so a zero-value string field is a null ref.
+		return []wasmgc.Field{{Storage: wasmgc.RefStorage(wasmgc.TypeGoString, true), Mutable: true}}
 
 	case types.TSLICE:
-		// {backing, offset, length, capacity} flattened in place.
-		return []wasmgc.Field{
-			{Storage: wasmgc.RefStorage(c.collectBacking(t.Elem()), true), Mutable: true},
-			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},
-			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},
-			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},
-		}
+		// WasmGC memory model (doc/wasm3-slice-boxing.md): a slice is a
+		// single boxed $go.slice.<T> ref, so a slice field is one ref
+		// (nullable — a nil slice is a null ref), not four flattened
+		// fields. This 1:1 Go-field -> WasmGC-field mapping is what the
+		// field-access ABI relies on. (Was: {backing, off, len, cap}.)
+		return []wasmgc.Field{{Storage: wasmgc.RefStorage(c.collectSliceStruct(t), true), Mutable: true}}
 
 	case types.TSTRUCT:
 		var fields []wasmgc.Field
@@ -176,13 +175,11 @@ func (c *typeCollector) lowerFields(t *types.Type) []wasmgc.Field {
 		return []wasmgc.Field{{Storage: wasmgc.RefStorage(wasmgc.TypeGoObject, true), Mutable: true}}
 
 	case types.TINTER:
-		// {type descriptor, data} — doc/wasm3-design.md §6.3. The
-		// descriptor type go.type is not yet modelled (interfaces are
-		// milestone M3), so both words are open-base references for now.
-		return []wasmgc.Field{
-			{Storage: wasmgc.RefStorage(wasmgc.TypeGoObject, true), Mutable: true},
-			{Storage: wasmgc.RefStorage(wasmgc.TypeGoObject, true), Mutable: true},
-		}
+		// WasmGC memory model (doc/wasm3-slice-boxing.md): an interface is
+		// a single boxed $go.iface ref ({itab, data}), so an interface
+		// field is one ref, not two flattened words. nullable: a nil
+		// interface is a null ref.
+		return []wasmgc.Field{{Storage: wasmgc.RefStorage(wasmgc.TypeGoIface, true), Mutable: true}}
 	}
 
 	panic("wasm3: cannot lower Go type to wasm fields: " + t.Kind().String())
@@ -291,14 +288,16 @@ func (c *typeCollector) collectBacking(elem *types.Type) int {
 //
 //	(type go.slice.<T> (struct
 //	    (field (mut (ref go.array.<T>)))  ;; data backing
-//	    (field (mut i32))                 ;; off
-//	    (field (mut i32))                 ;; len
-//	    (field (mut i32))))               ;; cap
+//	    (field (mut i64))                 ;; off
+//	    (field (mut i64))                 ;; len
+//	    (field (mut i64))))               ;; cap
 //
-// The backing array type is collected first so the struct's data
-// field can reference it by index. cap is a stored field (Go-faithful
-// 3-index slices); fields are mutable so the backend may rewrite a
-// header in place. nil slices are represented as a null slice ref, so
+// off/len/cap are i64 to match the wasm3 per-value-local width for Go
+// ints (no i32<->i64 conversion on struct.get/set; one i32 wrap only
+// at array indexing). The backing array type is collected first so the
+// struct's data field can reference it by index. cap is a stored field
+// (Go-faithful 3-index slices); fields are mutable so the backend may
+// rewrite a header in place. nil slices are a null slice ref, so
 // the data field is non-nullable (a non-nil slice always has a real,
 // possibly zero-length, backing array — mirroring go.string).
 func (c *typeCollector) collectSliceStruct(t *types.Type) int {
@@ -317,9 +316,9 @@ func (c *typeCollector) collectSliceStruct(t *types.Type) int {
 		Super: wasmgc.TypeGoObject,
 		Fields: []wasmgc.Field{
 			{Storage: wasmgc.RefStorage(arrIdx, false), Mutable: true}, // data
-			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},   // off
-			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},   // len
-			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},   // cap
+			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},   // off
+			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},   // len
+			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},   // cap
 		},
 	})
 	return idx

@@ -21,6 +21,7 @@ import (
 	"cmd/internal/obj"
 	"cmd/internal/obj/wasm"
 	"cmd/internal/src"
+	"cmd/internal/wasmgc"
 )
 
 /*
@@ -642,6 +643,17 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		p := s.Prog(wasm.AStructSet)
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: v.AuxInt}
 
+	case ssa.OpWasm3FieldSet:
+		// struct.set of a Go struct field addressed by byte offset.
+		st := v.Aux.(*types.Type)
+		structIdx := wasm3RegisterStruct(s.FuncInfo(), st)
+		fieldIdx := wasm3FieldIndexAtOffset(s.FuncInfo(), st, v.AuxInt)
+		getValue64(s, v.Args[0])
+		getValue64(s, v.Args[1])
+		p := s.Prog(wasm.AStructSet)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
+		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(fieldIdx)}
+
 	case ssa.OpWasm3ArrayCopy:
 		// M3 Stage E phase 4: copy(dst, src) lowered to `array.copy`
 		// on two wasmgc backings. arg0=dst (anyref), arg1=src
@@ -999,8 +1011,25 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 	// once type-section emission lands. These ops are not yet produced by
 	// any rule in Wasm3.rules. See doc/wasm3-m2-design.md §3, §5.
 	case ssa.OpWasm3StructNew:
-		for _, a := range v.Args {
+		// A boxed slice ($go.slice.<T>) / string ($go.string) header has a
+		// typed backing-ref field 0 ((ref $go.array.T) / (ref $go.bytes)),
+		// but the backing value flows as anyref — ref.cast it before
+		// struct.new.
+		aggT, _ := v.Aux.(*types.Type)
+		castIdx := int64(-1)
+		switch {
+		case aggT != nil && aggT.IsSlice():
+			castIdx = int64(wasm3RegisterArrayBacking(s.FuncInfo(), aggT.Elem()))
+		case aggT != nil && aggT.IsString():
+			wasm3EnsureCollector(s.FuncInfo())
+			castIdx = int64(wasmgc.TypeGoBytes)
+		}
+		for i, a := range v.Args {
 			getValue64(s, a)
+			if i == 0 && castIdx >= 0 {
+				pc := s.Prog(wasm.ARefCast)
+				pc.From = obj.Addr{Type: obj.TYPE_CONST, Offset: castIdx}
+			}
 		}
 		p := s.Prog(wasm.AStructNew)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterStructAux(s, v))}
@@ -1014,6 +1043,53 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p := s.Prog(wasm.AStructGet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterStructAux(s, v))}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: v.AuxInt}
+
+	case ssa.OpWasm3SliceData, ssa.OpWasm3SliceLength, ssa.OpWasm3SliceCapacity:
+		// Boxed slice header field reads (doc/wasm3-slice-boxing.md):
+		// struct.get $go.slice.<T> at the field's fixed index. data=0
+		// (backing array ref, left as anyref in the per-value local),
+		// len=2, cap=3 (i64).
+		field := int64(0)
+		switch v.Op {
+		case ssa.OpWasm3SliceLength:
+			field = 2
+		case ssa.OpWasm3SliceCapacity:
+			field = 3
+		}
+		getValue64(s, v.Args[0])
+		p := s.Prog(wasm.AStructGet)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterSliceStruct(s.FuncInfo(), v.Aux.(*types.Type)))}
+		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
+
+	case ssa.OpWasm3StringData, ssa.OpWasm3StringLength:
+		// Boxed string component reads: struct.get $go.string at the fixed
+		// field index (0=backing $go.bytes ref, 2=length i64). $go.string
+		// is the prelude type TypeGoString; wasm3EnsureCollector primes the
+		// per-function table so the R_WASMTYPE reloc remaps the index.
+		wasm3EnsureCollector(s.FuncInfo())
+		field := int64(0)
+		if v.Op == ssa.OpWasm3StringLength {
+			field = 2
+		}
+		getValue64(s, v.Args[0])
+		p := s.Prog(wasm.AStructGet)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoString)}
+		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
+
+	case ssa.OpWasm3FieldGet:
+		// struct.get of a Go struct field addressed by byte offset
+		// (doc/wasm3-slice-boxing.md field-access ABI). v.Aux is the Go
+		// struct *types.Type; v.AuxInt is the field's BYTE OFFSET, which
+		// wasm3FieldIndexAtOffset resolves to a WasmGC field index. This is
+		// a value-producing op, so it lives in the value-on-stack dispatch
+		// (FieldSet, a memory op, stays in the main dispatch).
+		st := v.Aux.(*types.Type)
+		structIdx := wasm3RegisterStruct(s.FuncInfo(), st)
+		fieldIdx := wasm3FieldIndexAtOffset(s.FuncInfo(), st, v.AuxInt)
+		getValue64(s, v.Args[0])
+		p := s.Prog(wasm.AStructGet)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
+		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(fieldIdx)}
 
 	case ssa.OpWasm3ArrayNew:
 		getValue64(s, v.Args[0])
@@ -1805,7 +1881,59 @@ func wasm3RegisterStructAux(s *ssagen.State, v *ssa.Value) uint32 {
 	if !ok {
 		v.Fatalf("wasm3RegisterStructAux: v.Aux is not *types.Type: %T", v.Aux)
 	}
+	if t.IsSlice() {
+		// A boxed slice header ($go.slice.<T>) is reached via the same
+		// StructNew/StructGet/StructSet ops as a Go struct; resolve its
+		// type index through the slice-struct collector.
+		return wasm3RegisterSliceStruct(s.FuncInfo(), t)
+	}
+	if t.IsString() {
+		// A boxed string is the prelude $go.string type; prime the
+		// per-function table so the index remaps.
+		wasm3EnsureCollector(s.FuncInfo())
+		return uint32(wasmgc.TypeGoString)
+	}
 	return wasm3RegisterStruct(s.FuncInfo(), t)
+}
+
+// wasm3FieldIndexAtOffset returns the WasmGC field index for the Go
+// struct field at byte offset off in struct type st, accounting for
+// lowerFields' per-Go-field expansion (a Go field may lower to several
+// WasmGC fields — e.g. an inlined nested struct). The function's
+// typeCollector must already exist (the caller registers st via
+// wasm3RegisterStruct first). See doc/wasm3-slice-boxing.md.
+func wasm3FieldIndexAtOffset(fi *obj.FuncInfo, st *types.Type, off int64) int {
+	cAny, ok := wasm3LiveCollector.Load(fi)
+	if !ok {
+		base.Fatalf("wasm3FieldIndexAtOffset: no typeCollector for the function")
+	}
+	c := cAny.(*typeCollector)
+	idx, ok := wasm3FieldIndexRec(c, st, off, 0)
+	if !ok {
+		base.Fatalf("wasm3FieldIndexAtOffset: no field at byte offset %d in %v", off, st)
+	}
+	return idx
+}
+
+// wasm3FieldIndexRec walks a Go struct's fields accumulating the WasmGC
+// field index (base), returning the index of the field at byte offset
+// off. An inlined nested struct field is recursed into (it lowers to
+// several consecutive WasmGC fields). Returns ok=false if off does not
+// land on an addressable field start — e.g. an offset into an array
+// field, which is an element access (ArrayGet), not a struct field.
+func wasm3FieldIndexRec(c *typeCollector, t *types.Type, off int64, base int) (int, bool) {
+	widx := base
+	for _, f := range t.Fields() {
+		n := len(c.lowerFields(f.Type))
+		if off == f.Offset {
+			return widx, true
+		}
+		if off > f.Offset && off < f.Offset+f.Type.Size() && f.Type.IsStruct() {
+			return wasm3FieldIndexRec(c, f.Type, off-f.Offset, widx)
+		}
+		widx += n
+	}
+	return 0, false
 }
 
 // wasm3RegisterArrayAux is the array.* counterpart of

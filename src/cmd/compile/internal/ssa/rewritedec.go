@@ -391,13 +391,13 @@ func rewriteValuedec_OpLoad(v *Value) bool {
 		return true
 	}
 	// match: (Load <t> ptr mem)
-	// cond: t.IsString()
+	// cond: t.IsString() && config.arch != "wasm3"
 	// result: (StringMake (Load <typ.BytePtr> ptr mem) (Load <typ.Int> (OffPtr <typ.IntPtr> [config.PtrSize] ptr) mem))
 	for {
 		t := v.Type
 		ptr := v_0
 		mem := v_1
-		if !(t.IsString()) {
+		if !(t.IsString() && config.arch != "wasm3") {
 			break
 		}
 		v.reset(OpStringMake)
@@ -412,13 +412,13 @@ func rewriteValuedec_OpLoad(v *Value) bool {
 		return true
 	}
 	// match: (Load <t> ptr mem)
-	// cond: t.IsSlice()
+	// cond: t.IsSlice() && config.arch != "wasm3"
 	// result: (SliceMake (Load <t.Elem().PtrTo()> ptr mem) (Load <typ.Int> (OffPtr <typ.IntPtr> [config.PtrSize] ptr) mem) (Load <typ.Int> (OffPtr <typ.IntPtr> [2*config.PtrSize] ptr) mem))
 	for {
 		t := v.Type
 		ptr := v_0
 		mem := v_1
-		if !(t.IsSlice()) {
+		if !(t.IsSlice() && config.arch != "wasm3") {
 			break
 		}
 		v.reset(OpSliceMake)
@@ -466,12 +466,16 @@ func rewriteValuedec_OpSliceCap(v *Value) bool {
 	config := b.Func.Config
 	typ := &b.Func.Config.Types
 	// match: (SliceCap (SliceMake _ _ cap))
+	// cond: config.arch != "wasm3"
 	// result: cap
 	for {
 		if v_0.Op != OpSliceMake {
 			break
 		}
 		cap := v_0.Args[2]
+		if !(config.arch != "wasm3") {
+			break
+		}
 		v.copyOf(cap)
 		return true
 	}
@@ -506,12 +510,16 @@ func rewriteValuedec_OpSliceLen(v *Value) bool {
 	config := b.Func.Config
 	typ := &b.Func.Config.Types
 	// match: (SliceLen (SliceMake _ len _))
+	// cond: config.arch != "wasm3"
 	// result: len
 	for {
 		if v_0.Op != OpSliceMake {
 			break
 		}
 		len := v_0.Args[1]
+		if !(config.arch != "wasm3") {
+			break
+		}
 		v.copyOf(len)
 		return true
 	}
@@ -543,13 +551,18 @@ func rewriteValuedec_OpSliceLen(v *Value) bool {
 func rewriteValuedec_OpSlicePtr(v *Value) bool {
 	v_0 := v.Args[0]
 	b := v.Block
+	config := b.Func.Config
 	// match: (SlicePtr (SliceMake ptr _ _ ))
+	// cond: config.arch != "wasm3"
 	// result: ptr
 	for {
 		if v_0.Op != OpSliceMake {
 			break
 		}
 		ptr := v_0.Args[0]
+		if !(config.arch != "wasm3") {
+			break
+		}
 		v.copyOf(ptr)
 		return true
 	}
@@ -577,13 +590,19 @@ func rewriteValuedec_OpSlicePtr(v *Value) bool {
 }
 func rewriteValuedec_OpSlicePtrUnchecked(v *Value) bool {
 	v_0 := v.Args[0]
+	b := v.Block
+	config := b.Func.Config
 	// match: (SlicePtrUnchecked (SliceMake ptr _ _ ))
+	// cond: config.arch != "wasm3"
 	// result: ptr
 	for {
 		if v_0.Op != OpSliceMake {
 			break
 		}
 		ptr := v_0.Args[0]
+		if !(config.arch != "wasm3") {
+			break
+		}
 		v.copyOf(ptr)
 		return true
 	}
@@ -661,6 +680,7 @@ func rewriteValuedec_OpStore(v *Value) bool {
 		return true
 	}
 	// match: (Store dst (StringMake ptr len) mem)
+	// cond: config.arch != "wasm3"
 	// result: (Store {typ.Int} (OffPtr <typ.IntPtr> [config.PtrSize] dst) len (Store {typ.BytePtr} dst ptr mem))
 	for {
 		dst := v_0
@@ -670,6 +690,9 @@ func rewriteValuedec_OpStore(v *Value) bool {
 		len := v_1.Args[1]
 		ptr := v_1.Args[0]
 		mem := v_2
+		if !(config.arch != "wasm3") {
+			break
+		}
 		v.reset(OpStore)
 		v.Aux = typeToAux(typ.Int)
 		v0 := b.NewValue0(v.Pos, OpOffPtr, typ.IntPtr)
@@ -682,6 +705,7 @@ func rewriteValuedec_OpStore(v *Value) bool {
 		return true
 	}
 	// match: (Store {t} dst (SliceMake ptr len cap) mem)
+	// cond: config.arch != "wasm3"
 	// result: (Store {typ.Int} (OffPtr <typ.IntPtr> [2*config.PtrSize] dst) cap (Store {typ.Int} (OffPtr <typ.IntPtr> [config.PtrSize] dst) len (Store {t.Elem().PtrTo()} dst ptr mem)))
 	for {
 		t := auxToType(v.Aux)
@@ -693,6 +717,9 @@ func rewriteValuedec_OpStore(v *Value) bool {
 		ptr := v_1.Args[0]
 		len := v_1.Args[1]
 		mem := v_2
+		if !(config.arch != "wasm3") {
+			break
+		}
 		v.reset(OpStore)
 		v.Aux = typeToAux(typ.Int)
 		v0 := b.NewValue0(v.Pos, OpOffPtr, typ.IntPtr)
@@ -762,12 +789,16 @@ func rewriteValuedec_OpStringLen(v *Value) bool {
 	config := b.Func.Config
 	typ := &b.Func.Config.Types
 	// match: (StringLen (StringMake _ len))
+	// cond: config.arch != "wasm3"
 	// result: len
 	for {
 		if v_0.Op != OpStringMake {
 			break
 		}
 		len := v_0.Args[1]
+		if !(config.arch != "wasm3") {
+			break
+		}
 		v.copyOf(len)
 		return true
 	}
@@ -799,14 +830,19 @@ func rewriteValuedec_OpStringLen(v *Value) bool {
 func rewriteValuedec_OpStringPtr(v *Value) bool {
 	v_0 := v.Args[0]
 	b := v.Block
+	config := b.Func.Config
 	typ := &b.Func.Config.Types
 	// match: (StringPtr (StringMake ptr _))
+	// cond: config.arch != "wasm3"
 	// result: ptr
 	for {
 		if v_0.Op != OpStringMake {
 			break
 		}
 		ptr := v_0.Args[0]
+		if !(config.arch != "wasm3") {
+			break
+		}
 		v.copyOf(ptr)
 		return true
 	}

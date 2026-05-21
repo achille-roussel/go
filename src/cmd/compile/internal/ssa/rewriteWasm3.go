@@ -412,8 +412,7 @@ func rewriteValueWasm3(v *Value) bool {
 		v.Op = OpWasm3I64Eqz
 		return true
 	case OpOffPtr:
-		v.Op = OpWasm3I64AddConst
-		return true
+		return rewriteValueWasm3_OpOffPtr(v)
 	case OpOr16:
 		v.Op = OpWasm3I64Or
 		return true
@@ -537,6 +536,16 @@ func rewriteValueWasm3(v *Value) bool {
 		return rewriteValueWasm3_OpSignExt8to32(v)
 	case OpSignExt8to64:
 		return rewriteValueWasm3_OpSignExt8to64(v)
+	case OpSliceCap:
+		return rewriteValueWasm3_OpSliceCap(v)
+	case OpSliceLen:
+		return rewriteValueWasm3_OpSliceLen(v)
+	case OpSliceMake:
+		return rewriteValueWasm3_OpSliceMake(v)
+	case OpSlicePtr:
+		return rewriteValueWasm3_OpSlicePtr(v)
+	case OpSlicePtrUnchecked:
+		return rewriteValueWasm3_OpSlicePtrUnchecked(v)
 	case OpSlicemask:
 		return rewriteValueWasm3_OpSlicemask(v)
 	case OpSqrt:
@@ -550,6 +559,12 @@ func rewriteValueWasm3(v *Value) bool {
 		return true
 	case OpStore:
 		return rewriteValueWasm3_OpStore(v)
+	case OpStringLen:
+		return rewriteValueWasm3_OpStringLen(v)
+	case OpStringMake:
+		return rewriteValueWasm3_OpStringMake(v)
+	case OpStringPtr:
+		return rewriteValueWasm3_OpStringPtr(v)
 	case OpSub16:
 		v.Op = OpWasm3I64Sub
 		return true
@@ -1563,6 +1578,27 @@ func rewriteValueWasm3_OpLess8U(v *Value) bool {
 func rewriteValueWasm3_OpLoad(v *Value) bool {
 	v_1 := v.Args[1]
 	v_0 := v.Args[0]
+	// match: (Load <t> (OffPtr [off] base) mem)
+	// cond: base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct()
+	// result: (FieldGet <t> {base.Type.Elem()} [off] base mem)
+	for {
+		t := v.Type
+		if v_0.Op != OpOffPtr {
+			break
+		}
+		off := auxIntToInt64(v_0.AuxInt)
+		base := v_0.Args[0]
+		mem := v_1
+		if !(base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct()) {
+			break
+		}
+		v.reset(OpWasm3FieldGet)
+		v.Type = t
+		v.AuxInt = int64ToAuxInt(off)
+		v.Aux = typeToAux(base.Type.Elem())
+		v.AddArg2(base, mem)
+		return true
+	}
 	// match: (Load <t> ptr mem)
 	// cond: is32BitFloat(t)
 	// result: (F32Load ptr mem)
@@ -2558,6 +2594,24 @@ func rewriteValueWasm3_OpNilCheck(v *Value) bool {
 		v.AddArg2(p, mem)
 		return true
 	}
+}
+func rewriteValueWasm3_OpOffPtr(v *Value) bool {
+	v_0 := v.Args[0]
+	// match: (OffPtr <t> [off] base)
+	// cond: !(base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct())
+	// result: (I64AddConst [off] base)
+	for {
+		off := auxIntToInt64(v.AuxInt)
+		base := v_0
+		if !(!(base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct())) {
+			break
+		}
+		v.reset(OpWasm3I64AddConst)
+		v.AuxInt = int64ToAuxInt(off)
+		v.AddArg(base)
+		return true
+	}
+	return false
 }
 func rewriteValueWasm3_OpPopCount16(v *Value) bool {
 	v_0 := v.Args[0]
@@ -3567,6 +3621,84 @@ func rewriteValueWasm3_OpSignExt8to64(v *Value) bool {
 		return true
 	}
 }
+func rewriteValueWasm3_OpSliceCap(v *Value) bool {
+	v_0 := v.Args[0]
+	// match: (SliceCap <t> s)
+	// result: (SliceCapacity <t> {s.Type} s)
+	for {
+		t := v.Type
+		s := v_0
+		v.reset(OpWasm3SliceCapacity)
+		v.Type = t
+		v.Aux = typeToAux(s.Type)
+		v.AddArg(s)
+		return true
+	}
+}
+func rewriteValueWasm3_OpSliceLen(v *Value) bool {
+	v_0 := v.Args[0]
+	// match: (SliceLen <t> s)
+	// result: (SliceLength <t> {s.Type} s)
+	for {
+		t := v.Type
+		s := v_0
+		v.reset(OpWasm3SliceLength)
+		v.Type = t
+		v.Aux = typeToAux(s.Type)
+		v.AddArg(s)
+		return true
+	}
+}
+func rewriteValueWasm3_OpSliceMake(v *Value) bool {
+	v_2 := v.Args[2]
+	v_1 := v.Args[1]
+	v_0 := v.Args[0]
+	b := v.Block
+	typ := &b.Func.Config.Types
+	// match: (SliceMake <t> ptr len cap)
+	// result: (StructNew <t> {t} ptr (I64Const <typ.Int64> [0]) len cap)
+	for {
+		t := v.Type
+		ptr := v_0
+		len := v_1
+		cap := v_2
+		v.reset(OpWasm3StructNew)
+		v.Type = t
+		v.Aux = typeToAux(t)
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int64)
+		v0.AuxInt = int64ToAuxInt(0)
+		v.AddArg4(ptr, v0, len, cap)
+		return true
+	}
+}
+func rewriteValueWasm3_OpSlicePtr(v *Value) bool {
+	v_0 := v.Args[0]
+	// match: (SlicePtr <t> s)
+	// result: (SliceData <t> {s.Type} s)
+	for {
+		t := v.Type
+		s := v_0
+		v.reset(OpWasm3SliceData)
+		v.Type = t
+		v.Aux = typeToAux(s.Type)
+		v.AddArg(s)
+		return true
+	}
+}
+func rewriteValueWasm3_OpSlicePtrUnchecked(v *Value) bool {
+	v_0 := v.Args[0]
+	// match: (SlicePtrUnchecked <t> s)
+	// result: (SliceData <t> {s.Type} s)
+	for {
+		t := v.Type
+		s := v_0
+		v.reset(OpWasm3SliceData)
+		v.Type = t
+		v.Aux = typeToAux(s.Type)
+		v.AddArg(s)
+		return true
+	}
+}
 func rewriteValueWasm3_OpSlicemask(v *Value) bool {
 	v_0 := v.Args[0]
 	b := v.Block
@@ -3590,6 +3722,26 @@ func rewriteValueWasm3_OpStore(v *Value) bool {
 	v_2 := v.Args[2]
 	v_1 := v.Args[1]
 	v_0 := v.Args[0]
+	// match: (Store {t} (OffPtr [off] base) val mem)
+	// cond: base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct()
+	// result: (FieldSet {base.Type.Elem()} [off] base val mem)
+	for {
+		if v_0.Op != OpOffPtr {
+			break
+		}
+		off := auxIntToInt64(v_0.AuxInt)
+		base := v_0.Args[0]
+		val := v_1
+		mem := v_2
+		if !(base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct()) {
+			break
+		}
+		v.reset(OpWasm3FieldSet)
+		v.AuxInt = int64ToAuxInt(off)
+		v.Aux = typeToAux(base.Type.Elem())
+		v.AddArg3(base, val, mem)
+		return true
+	}
 	// match: (Store {t} ptr val mem)
 	// cond: is64BitFloat(t)
 	// result: (F64Store ptr val mem)
@@ -3681,6 +3833,52 @@ func rewriteValueWasm3_OpStore(v *Value) bool {
 		return true
 	}
 	return false
+}
+func rewriteValueWasm3_OpStringLen(v *Value) bool {
+	v_0 := v.Args[0]
+	// match: (StringLen <t> s)
+	// result: (StringLength <t> s)
+	for {
+		t := v.Type
+		s := v_0
+		v.reset(OpWasm3StringLength)
+		v.Type = t
+		v.AddArg(s)
+		return true
+	}
+}
+func rewriteValueWasm3_OpStringMake(v *Value) bool {
+	v_1 := v.Args[1]
+	v_0 := v.Args[0]
+	b := v.Block
+	typ := &b.Func.Config.Types
+	// match: (StringMake <t> ptr len)
+	// result: (StructNew <t> {t} ptr (I64Const <typ.Int64> [0]) len)
+	for {
+		t := v.Type
+		ptr := v_0
+		len := v_1
+		v.reset(OpWasm3StructNew)
+		v.Type = t
+		v.Aux = typeToAux(t)
+		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int64)
+		v0.AuxInt = int64ToAuxInt(0)
+		v.AddArg3(ptr, v0, len)
+		return true
+	}
+}
+func rewriteValueWasm3_OpStringPtr(v *Value) bool {
+	v_0 := v.Args[0]
+	// match: (StringPtr <t> s)
+	// result: (StringData <t> s)
+	for {
+		t := v.Type
+		s := v_0
+		v.reset(OpWasm3StringData)
+		v.Type = t
+		v.AddArg(s)
+		return true
+	}
 }
 func rewriteValueWasm3_OpWasm3F32DemoteF64(v *Value) bool {
 	v_0 := v.Args[0]

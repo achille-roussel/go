@@ -512,7 +512,7 @@ func WasmGCFieldGetter(t *types.Type, f *types.Field) *ir.Func {
 	fn := ir.NewFunc(pos, pos, sym, types.NewSignature(nil,
 		[]*types.Field{
 			types.NewField(pos, typecheck.Lookup("base"), types.Types[types.TUNSAFEPTR]),
-			types.NewField(pos, typecheck.Lookup("off"), types.Types[types.TUINTPTR]),
+			types.NewField(pos, typecheck.Lookup("off"), types.Types[types.TINT32]),
 		},
 		[]*types.Field{
 			types.NewField(pos, nil, types.Types[types.TINT64]),
@@ -543,7 +543,7 @@ func WasmGCFieldSetter(t *types.Type, f *types.Field) *ir.Func {
 	fn := ir.NewFunc(pos, pos, sym, types.NewSignature(nil,
 		[]*types.Field{
 			types.NewField(pos, typecheck.Lookup("base"), types.Types[types.TUNSAFEPTR]),
-			types.NewField(pos, typecheck.Lookup("off"), types.Types[types.TUINTPTR]),
+			types.NewField(pos, typecheck.Lookup("off"), types.Types[types.TINT32]),
 			types.NewField(pos, typecheck.Lookup("v"), types.Types[types.TINT64]),
 		},
 		nil,

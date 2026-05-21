@@ -79,12 +79,22 @@ func (c *typeCollector) loweredSignature(ft *types.Type) obj.WasmFuncType {
 	}
 	var sig obj.WasmFuncType
 	for _, p := range ft.RecvParams() {
-		sig.Params = append(sig.Params, objFields(c.lowerFields(p.Type))...)
+		sig.Params = append(sig.Params, objFields(c.topLevelFields(p.Type))...)
 	}
 	for _, r := range ft.Results() {
-		sig.Results = append(sig.Results, objFields(c.lowerFields(r.Type))...)
+		sig.Results = append(sig.Results, objFields(c.topLevelFields(r.Type))...)
 	}
 	return sig
+}
+
+// topLevelFields lowers a top-level param/result type: a struct is ONE
+// $go.struct.T ref (not flattened), matching the single-ref ABI; other
+// kinds use lowerFields (already one ref for slice/string/array/iface).
+func (c *typeCollector) topLevelFields(t *types.Type) []wasmgc.Field {
+	if t.IsStruct() && t.Size() > 0 {
+		return []wasmgc.Field{{Storage: wasmgc.RefStorage(c.collectStruct(t), true), Mutable: true}}
+	}
+	return c.lowerFields(t)
 }
 
 // loweredStorages lowers a Go function type's parameters and results to
@@ -94,12 +104,12 @@ func (c *typeCollector) loweredSignature(ft *types.Type) obj.WasmFuncType {
 // entry the linker needs.
 func (c *typeCollector) loweredStorages(ft *types.Type) (params, results []wasmgc.Storage) {
 	for _, p := range ft.RecvParams() {
-		for _, f := range c.lowerFields(p.Type) {
+		for _, f := range c.topLevelFields(p.Type) {
 			params = append(params, f.Storage)
 		}
 	}
 	for _, r := range ft.Results() {
-		for _, f := range c.lowerFields(r.Type) {
+		for _, f := range c.topLevelFields(r.Type) {
 			results = append(results, f.Storage)
 		}
 	}

@@ -299,7 +299,11 @@ func ssaGenBlock(s *ssagen.State, b, next *ssa.Block) {
 	s.Prog(wasm.ARESUMEPOINT)
 
 	if s.OnWasmStackSkipped != 0 {
-		panic("wasm: bad stack")
+		nm := "?"
+		if fi := s.FuncInfo(); fi != nil && fi.Text != nil && fi.Text.From.Sym != nil {
+			nm = fi.Text.From.Sym.Name
+		}
+		panic("wasm: bad stack in " + nm)
 	}
 }
 

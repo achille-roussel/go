@@ -28,7 +28,9 @@ func wasm3SingleRef(t *types.Type) bool {
 	// WasmGC memory model (doc/wasm3-slice-boxing.md): slices and strings
 	// are boxed as a single WasmGC ref ($go.slice.<T> / $go.string), so
 	// they occupy one register. Interfaces follow next.
-	return buildcfg.GOARCH == "wasm3" && (t.IsSlice() || t.IsString())
+	// A non-zero-size struct is boxed as one $go.struct.T ref; a zero-size
+	// struct (struct{}) takes no register (size.go keeps its intRegs 0).
+	return buildcfg.GOARCH == "wasm3" && (t.IsSlice() || t.IsString() || t.IsInterface() || (t.IsStruct() && t.Size() > 0))
 }
 
 //......................................................................

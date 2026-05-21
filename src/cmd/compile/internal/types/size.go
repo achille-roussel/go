@@ -328,6 +328,9 @@ func CalcSize(t *Type) {
 		w = 2 * int64(PtrSize)
 		t.align = uint8(PtrSize)
 		t.intRegs = 2
+		if buildcfg.GOARCH == "wasm3" {
+			t.intRegs = 1 // boxed as a single WasmGC ref ($go.iface)
+		}
 		expandiface(t)
 		if len(t.allMethods.Slice()) == 0 {
 			t.setAlg(ANILINTER)
@@ -555,6 +558,14 @@ func CalcStructSize(t *Type) {
 	t.align = maxAlign
 	t.intRegs = uint8(intRegs)
 	t.floatRegs = uint8(floatRegs)
+	if buildcfg.GOARCH == "wasm3" && size > 0 {
+		// wasm3 boxes a struct as one WasmGC ref ($go.struct.T): one
+		// pointer-shaped register, not the sum of fields. A zero-size
+		// struct (struct{}) keeps intRegs=0 — it takes no register, and
+		// wasm3SingleRef must agree (it also guards on size > 0).
+		t.intRegs = 1
+		t.floatRegs = 0
+	}
 
 	// Compute eq/hash algorithm type.
 	t.alg = AMEM // default

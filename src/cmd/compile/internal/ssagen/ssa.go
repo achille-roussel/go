@@ -479,6 +479,13 @@ func buildssa(fn *ir.Func, worker int, isPgoHot bool) *ssa.Func {
 	for _, n := range fn.Dcl {
 		switch n.Class {
 		case ir.PPARAM:
+			// wasm3: a struct param arrives as one boxed $go.struct.T ref
+			// (one register); the ref IS its address, so bind the decladdr
+			// to the incoming OpArg ref directly rather than a linear slot.
+			if buildcfg.GOARCH == "wasm3" && n.Type().IsStruct() && n.Type().Size() > 0 {
+				s.decladdrs[n] = s.newValue0A(ssa.OpArg, types.NewPtr(n.Type()), n)
+				break
+			}
 			// Be aware that blank and unnamed input parameters will not appear here, but do appear in the type
 			s.decladdrs[n] = s.entryNewValue2A(ssa.OpLocalAddr, types.NewPtr(n.Type()), n, s.sp, s.startmem)
 		case ir.PPARAMOUT:
@@ -505,6 +512,11 @@ func buildssa(fn *ir.Func, worker int, isPgoHot bool) *ssa.Func {
 	// Populate SSAable arguments.
 	for _, n := range fn.Dcl {
 		if n.Class == ir.PPARAM {
+			if buildcfg.GOARCH == "wasm3" && n.Type().IsStruct() && n.Type().Size() > 0 {
+				// Decladdr already bound to the incoming OpArg ref; one
+				// register, nothing to spill.
+				continue
+			}
 			if s.canSSA(n) {
 				v := s.newValue0A(ssa.OpArg, n.Type(), n)
 				s.vars[n] = v
@@ -2587,6 +2599,14 @@ func (s *state) exit() *ssa.Block {
 	// Store SSAable and heap-escaped PPARAMOUT variables back to stack locations.
 	for i, f := range resultFields {
 		n := f.Nname.(*ir.Name)
+		if buildcfg.GOARCH == "wasm3" && n.Type().IsStruct() && n.Type().Size() > 0 {
+			// wasm3: a struct result is one boxed $go.struct.T ref. addr(n)
+			// is that ref (a StackStruct); it IS the result value (no
+			// dereference/decomposition), matching the single-ref result
+			// signature.
+			results[i] = s.addr(n)
+			continue
+		}
 		if s.canSSA(n) { // result is in some SSA variable
 			if !n.IsOutputParamInRegisters() && n.Type().HasPointers() {
 				// We are about to store to the result slot.

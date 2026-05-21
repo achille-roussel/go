@@ -8486,6 +8486,16 @@ func rewriteValueWasm3_OpZero(v *Value) bool {
 		v.copyOf(mem)
 		return true
 	}
+	// match: (Zero [_] (StackStruct _) mem)
+	// result: mem
+	for {
+		if v_0.Op != OpWasm3StackStruct {
+			break
+		}
+		mem := v_1
+		v.copyOf(mem)
+		return true
+	}
 	// match: (Zero [0] _ mem)
 	// result: mem
 	for {

@@ -482,6 +482,15 @@ func buildssa(fn *ir.Func, worker int, isPgoHot bool) *ssa.Func {
 			// Be aware that blank and unnamed input parameters will not appear here, but do appear in the type
 			s.decladdrs[n] = s.entryNewValue2A(ssa.OpLocalAddr, types.NewPtr(n.Type()), n, s.sp, s.startmem)
 		case ir.PPARAMOUT:
+			// wasm3: a composite result is a boxed ref (StackArray/
+			// StackStruct), so its decladdr must match addr()'s — otherwise
+			// the result-zeroing init uses a linear LocalAddr while body
+			// access uses the ref, and the linear Zero{T} decomposes to
+			// offsets that name no wasm field.
+			if v := s.wasm3StackComposite(n, types.NewPtr(n.Type())); v != nil {
+				s.decladdrs[n] = v
+				continue
+			}
 			s.decladdrs[n] = s.entryNewValue2A(ssa.OpLocalAddr, types.NewPtr(n.Type()), n, s.sp, s.startmem)
 		case ir.PAUTO:
 			// processed at each use, to prevent Addr coming

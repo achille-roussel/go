@@ -329,6 +329,9 @@
 // below so we don't expand into linear-memory I64Stores against a
 // (ref (array T)) destination.
 (Zero [_] (StackArray _) mem) => mem
+// A StackStruct is already constructed as its zero value (struct.new_default
+// + array.new_default for array fields), so zeroing it is a no-op.
+(Zero [_] (StackStruct _) mem) => mem
 
 (Zero [0] _ mem) => mem
 (Zero [1] destptr mem) => (I64Store8 destptr (I64Const [0]) mem)

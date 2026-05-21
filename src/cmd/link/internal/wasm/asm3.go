@@ -57,8 +57,22 @@ type wasm3Module struct {
 	// `(struct.new $closureCtx (ref.func $sym) (i64.const 0))`
 	// global per pair, and again at reloc resolution time so the
 	// `global.get` operand patches to the right index.
-	closureSingletons     map[wasm3SingletonKey]uint64
-	closureSingletonOrder []wasm3SingletonKey
+	closureSingletons map[wasm3SingletonKey]uint64
+	boxedGlobals      map[loader.Sym]uint64
+	// globalEntries is the unified, index-ordered list of dynamically
+	// allocated wasm globals (closure singletons + boxed package-level
+	// vars). They are assigned indices 3,4,... after the three fixed
+	// globals (bump, CTXT, CTXT_REF) and share ONE index space because
+	// both kinds are allocated interleaved during the reloc walk; a
+	// per-kind counter would collide.
+	globalEntries []wasm3GlobalEntry
+}
+
+// wasm3GlobalEntry is one dynamically-allocated wasm global.
+type wasm3GlobalEntry struct {
+	boxed  bool              // true: boxed package-level var; false: closure singleton
+	key    wasm3SingletonKey // closure singleton (when !boxed)
+	boxSym loader.Sym        // boxed package-level var (when boxed)
 }
 
 // wasm3SingletonKey identifies a closure-singleton uniquely by the
@@ -81,9 +95,26 @@ func (m *wasm3Module) getOrAllocSingleton(sym loader.Sym, globalCtxIx int) uint6
 	if idx, ok := m.closureSingletons[key]; ok {
 		return idx
 	}
-	idx := uint64(3 + len(m.closureSingletonOrder)) // 0=bump, 1=CTXT, 2=CTXT_REF, then singletons
+	idx := uint64(3 + len(m.globalEntries)) // 0=bump, 1=CTXT, 2=CTXT_REF, then dynamic globals
 	m.closureSingletons[key] = idx
-	m.closureSingletonOrder = append(m.closureSingletonOrder, key)
+	m.globalEntries = append(m.globalEntries, wasm3GlobalEntry{key: key})
+	return idx
+}
+
+// getOrAllocBoxedGlobal returns the wasm global index assigned to the
+// boxed package-level variable sym, allocating it on first use. Shares
+// the dynamic-global index space with closure singletons (see
+// globalEntries). See R_WASMGLOBAL / doc/wasm3-pointer-cutover.
+func (m *wasm3Module) getOrAllocBoxedGlobal(sym loader.Sym) uint64 {
+	if m.boxedGlobals == nil {
+		m.boxedGlobals = map[loader.Sym]uint64{}
+	}
+	if idx, ok := m.boxedGlobals[sym]; ok {
+		return idx
+	}
+	idx := uint64(3 + len(m.globalEntries))
+	m.boxedGlobals[sym] = idx
+	m.globalEntries = append(m.globalEntries, wasm3GlobalEntry{boxed: true, boxSym: sym})
 	return idx
 }
 
@@ -676,6 +707,11 @@ func writeWasm3FuncBody(ctxt *ld.Link, ldr *loader.Loader, fn loader.Sym, wfn *b
 				continue
 			}
 			writeUleb128(wfn, uint64(remap[pkgIx]))
+		case objabi.R_WASMGLOBAL:
+			// Boxed package-level variable: r.Sym names the variable.
+			// Allocate (or reuse) one wasm anyref ref-global for it and
+			// patch the global.get/global.set operand to its index.
+			writeUleb128(wfn, m.getOrAllocBoxedGlobal(rs))
 		default:
 			ldr.Errorf(fn, "bad reloc type %d for wasm3", r.Type())
 		}
@@ -749,7 +785,7 @@ func writeFunctionSec3(ctxt *ld.Link, fns []*wasm3Func) {
 //	  this).
 func writeGlobalSec3(ctxt *ld.Link, ldr *loader.Loader, m *wasm3Module, hostImportMap map[loader.Sym]int64) {
 	sizeOffset := writeSecHeader(ctxt, sectionGlobal)
-	nGlobals := uint64(3 + len(m.closureSingletonOrder))
+	nGlobals := uint64(3 + len(m.globalEntries))
 	writeUleb128(ctxt.Out, nGlobals)
 	// global 0: bump pointer (i32, mutable).
 	ctxt.Out.WriteByte(I32)
@@ -769,8 +805,26 @@ func writeGlobalSec3(ctxt *ld.Link, ldr *loader.Loader, m *wasm3Module, hostImpo
 	ctxt.Out.WriteByte(0xD0) // ref.null
 	ctxt.Out.WriteByte(0x6E) // heaptype = any
 	ctxt.Out.WriteByte(0x0b) // end
-	// globals 3..N: closure singletons.
-	for _, key := range m.closureSingletonOrder {
+	// globals 3..N: dynamically allocated globals, in index order
+	// (closure singletons and boxed package-level vars, interleaved).
+	for _, e := range m.globalEntries {
+		if e.boxed {
+			// Boxed package-level variable: (global (mut anyref)),
+			// initialised to ref.null any. Using anyref (not the
+			// precise (ref null $T)) keeps the linker from needing the
+			// variable's Go type: global.get yields anyref, matching
+			// the anyref per-value local OpWasm3GlobalGet lands in, and
+			// global.set accepts any subtype. The package init function
+			// constructs the real value and global.sets it (a nil
+			// boxed var simply stays ref.null).
+			ctxt.Out.WriteByte(0x6E) // anyref
+			ctxt.Out.WriteByte(0x01) // mutable
+			ctxt.Out.WriteByte(0xD0) // ref.null
+			ctxt.Out.WriteByte(0x6E) // heaptype = any
+			ctxt.Out.WriteByte(0x0b) // end
+			continue
+		}
+		key := e.key
 		// valtype = (ref null $closureCtx). The "null" form (0x63)
 		// is required because struct.new's result is non-null but
 		// global initializers accept either form; (ref null $t) is

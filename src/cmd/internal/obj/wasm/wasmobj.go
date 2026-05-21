@@ -148,6 +148,11 @@ var (
 const (
 	/* mark flags */
 	WasmImport = 1 << 0
+	// Wasm3GlobalRef (GOARCH=wasm3) marks a global.get/global.set that
+	// accesses a boxed package-level variable's wasm ref-global, so the
+	// obj backend emits an R_WASMGLOBAL relocation rather than the
+	// R_WASMCLOSURESINGLETON it emits for a bare NAME_EXTERN global.get.
+	Wasm3GlobalRef = 1 << 1
 )
 
 const (

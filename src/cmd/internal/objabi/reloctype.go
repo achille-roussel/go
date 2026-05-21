@@ -470,6 +470,16 @@ const (
 	// instead of allocating a fresh struct.new per evaluation.
 	R_WASMCLOSURESINGLETON
 
+	// R_WASMGLOBAL (GOARCH=wasm3 only) resolves to the wasm global index
+	// of a package-level variable of a boxed (WasmGC-reference) type.
+	// Sym names the variable. Such a global cannot live in linear-memory
+	// static data — its value is a host-GC reference — so the linker
+	// allocates one mutable wasm ref-global per variable, initialised to
+	// ref.null, and the package init function populates it via global.set.
+	// OpWasm3GlobalGet / OpWasm3GlobalSet codegen emit global.get /
+	// global.set carrying this reloc. See doc/wasm3-pointer-cutover.
+	R_WASMGLOBAL
+
 	// R_WEAK marks the relocation as a weak reference.
 	// A weak relocation does not make the symbol it refers to reachable,
 	// and is only honored by the linker if the symbol is in some other way

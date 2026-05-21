@@ -801,8 +801,16 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 				return nil, false
 			}
 			writeOpcode(w, AGlobalGet)
+			// (c) Boxed package-level variable read (GOARCH=wasm3): a
+			//     global.get of the variable's wasm ref-global, marked
+			//     Wasm3GlobalRef. The linker resolves R_WASMGLOBAL to the
+			//     variable's allocated ref-global index.
+			relocType := objabi.R_WASMCLOSURESINGLETON
+			if p.Mark&Wasm3GlobalRef != 0 {
+				relocType = objabi.R_WASMGLOBAL
+			}
 			relocs = append(relocs, obj.Reloc{
-				Type: objabi.R_WASMCLOSURESINGLETON,
+				Type: relocType,
 				Off:  int32(w.Len()),
 				Siz:  1, // variable-sized; the linker writes the global index
 				Sym:  p.From.Sym,
@@ -810,14 +818,30 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 			})
 
 		case AGlobalSet:
-			// Captures-in-struct CTXT_REF write at indirect-call
-			// sites: From={TYPE_CONST, Offset=Wasm3GlobalIndexCtxRef}.
-			// Plain literal global index; no relocation.
-			if p.From.Type != obj.TYPE_CONST {
+			// (a) Captures-in-struct CTXT_REF write at indirect-call
+			//     sites: From={TYPE_CONST, Offset=Wasm3GlobalIndexCtxRef}.
+			//     Plain literal global index; no relocation.
+			if p.From.Type == obj.TYPE_CONST {
+				writeOpcode(w, AGlobalSet)
+				writeUleb128(w, uint64(p.From.Offset))
+				break
+			}
+			// (b) Boxed package-level variable write (GOARCH=wasm3):
+			//     global.set of the variable's wasm ref-global, marked
+			//     Wasm3GlobalRef; R_WASMGLOBAL carries the index.
+			if p.From.Type != obj.TYPE_MEM ||
+				(p.From.Name != obj.NAME_EXTERN && p.From.Name != obj.NAME_STATIC) ||
+				p.Mark&Wasm3GlobalRef == 0 {
 				return nil, false
 			}
 			writeOpcode(w, AGlobalSet)
-			writeUleb128(w, uint64(p.From.Offset))
+			relocs = append(relocs, obj.Reloc{
+				Type: objabi.R_WASMGLOBAL,
+				Off:  int32(w.Len()),
+				Siz:  1,
+				Sym:  p.From.Sym,
+				Add:  p.From.Offset,
+			})
 
 		default:
 			// Specific operand-carrying ops (wasmgc struct.* / array.* /

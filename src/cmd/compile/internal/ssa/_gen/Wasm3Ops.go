@@ -399,6 +399,18 @@ func init() {
 		// anyref-typed per-value local.
 		{name: "FuncValue", argLength: 0, reg: gp01, aux: "Sym", symEffect: "Addr", rematerializeable: true, typ: "BytePtr"},
 
+		// Pointer-representation cutover (doc/wasm3-pointer-cutover):
+		// read/write a package-level variable of a boxed (WasmGC-ref)
+		// type, which lives in a wasm mutable ref-global rather than
+		// linear-memory static data. v.Aux is the variable's *obj.LSym.
+		// GlobalGet reads it (global.get); GlobalSet writes it
+		// (global.set, arg0=value, arg1=mem). Codegen emits the
+		// instruction carrying an R_WASMGLOBAL reloc the linker resolves
+		// to the variable's allocated wasm global index. The result of
+		// GlobalGet lands in an anyref per-value local.
+		{name: "GlobalGet", argLength: 0, reg: gp01, aux: "Sym", symEffect: "Read"},
+		{name: "GlobalSet", argLength: 2, reg: regInfo{inputs: []regMask{gp}}, aux: "Sym", symEffect: "Write", typ: "Mem"},
+
 		// M3 Stage G closures: materialise a closure value as `(ref
 		// $go.closure.<sig>)` wrapping a linear-memory captures
 		// struct. v.Aux is the synthetic function's *obj.LSym; arg0

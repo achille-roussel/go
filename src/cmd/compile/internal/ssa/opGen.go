@@ -5881,6 +5881,8 @@ const (
 	OpWasm3SubSlice
 	OpWasm3ArrayCopy
 	OpWasm3FuncValue
+	OpWasm3GlobalGet
+	OpWasm3GlobalSet
 	OpWasm3MakeClosureRef
 	OpWasm3MakeClosureRefInline
 	OpWasm3LoweredGetClosureRef
@@ -88844,6 +88846,28 @@ var opcodeTable = [...]opInfo{
 		symEffect:         SymAddr,
 		reg: regInfo{
 			outputs: []outputInfo{
+				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:      "GlobalGet",
+		auxType:   auxSym,
+		argLen:    0,
+		symEffect: SymRead,
+		reg: regInfo{
+			outputs: []outputInfo{
+				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:      "GlobalSet",
+		auxType:   auxSym,
+		argLen:    2,
+		symEffect: SymWrite,
+		reg: regInfo{
+			inputs: []inputInfo{
 				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
 			},
 		},

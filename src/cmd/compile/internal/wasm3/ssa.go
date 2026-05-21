@@ -660,6 +660,20 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(fieldIdx)}
 
+	case ssa.OpWasm3GlobalSet:
+		// Write a boxed package-level variable's wasm ref-global
+		// (pointer-representation cutover). v.Aux is the variable's
+		// *obj.LSym; arg0 is the value (a ref). Emit `global.set $var`
+		// marked Wasm3GlobalRef so the obj backend attaches R_WASMGLOBAL.
+		sym, ok := v.Aux.(*obj.LSym)
+		if !ok {
+			v.Fatalf("OpWasm3GlobalSet: v.Aux is not *obj.LSym: %T", v.Aux)
+		}
+		getValue64(s, v.Args[0])
+		p := s.Prog(wasm.AGlobalSet)
+		p.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: sym}
+		p.Mark = wasm.Wasm3GlobalRef
+
 	case ssa.OpWasm3ArrayCopy:
 		// M3 Stage E phase 4: copy(dst, src) lowered to `array.copy`
 		// on two wasmgc backings. arg0=dst (anyref), arg1=src
@@ -1081,6 +1095,20 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p := s.Prog(wasm.AStructGet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoString)}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
+
+	case ssa.OpWasm3GlobalGet:
+		// Read a boxed package-level variable's wasm ref-global
+		// (pointer-representation cutover). v.Aux is the variable's
+		// *obj.LSym. Emit `global.get $var` marked Wasm3GlobalRef so the
+		// obj backend attaches R_WASMGLOBAL; the result (a ref) lands in
+		// v's anyref per-value local via the value-on-stack store path.
+		sym, ok := v.Aux.(*obj.LSym)
+		if !ok {
+			v.Fatalf("OpWasm3GlobalGet: v.Aux is not *obj.LSym: %T", v.Aux)
+		}
+		p := s.Prog(wasm.AGlobalGet)
+		p.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: sym}
+		p.Mark = wasm.Wasm3GlobalRef
 
 	case ssa.OpWasm3FieldGet:
 		// struct.get of a Go struct field addressed by byte offset

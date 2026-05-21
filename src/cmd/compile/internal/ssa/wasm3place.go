@@ -293,7 +293,8 @@ func wasm3IsDirectAnyref(v *Value) bool {
 		OpWasm3StackArray, OpWasm3MakeSlice, OpWasm3SubSlice, OpWasm3SliceData, OpWasm3StringData,
 		OpWasm3FuncValue, OpWasm3MakeClosureRef,
 		OpWasm3MakeClosureRefInline,
-		OpWasm3LoweredGetClosureRef, OpWasm3LoweredCastClosureRef:
+		OpWasm3LoweredGetClosureRef, OpWasm3LoweredCastClosureRef,
+		OpWasm3GlobalGet:
 		return true
 	case OpWasm3GetClosureField:
 		return v.AuxInt&wasm3GetClosureFieldAnyrefBit != 0
@@ -316,6 +317,27 @@ func wasm3PointerIsRef(v *Value) bool {
 	}
 	e := t.Elem()
 	return e != nil && e.IsStruct()
+}
+
+// wasm3IsBoxedType reports whether a value of type t is represented as a
+// single WasmGC reference (so a package-level var of type t cannot live
+// in linear-memory static data and must be a wasm ref-global; see
+// doc/wasm3-pointer-cutover). Covers the directly-ref-shaped types;
+// composite value types (struct/array) that merely *contain* a ref are
+// not handled here (they need finer-grained global handling).
+func wasm3IsBoxedType(t *types.Type) bool {
+	if t == nil {
+		return false
+	}
+	switch t.Kind() {
+	case types.TSLICE, types.TSTRING, types.TINTER,
+		types.TMAP, types.TCHAN, types.TFUNC:
+		return true
+	case types.TPTR:
+		e := t.Elem()
+		return e != nil && e.IsStruct()
+	}
+	return false
 }
 
 // wasm3HasOutput reports whether v produces a value that needs a
@@ -411,7 +433,7 @@ func wasm3ValueType(v *Value) byte {
 		OpWasm3FuncValue, OpWasm3MakeClosureRef,
 		OpWasm3MakeClosureRefInline,
 		OpWasm3LoweredGetClosureRef, OpWasm3LoweredCastClosureRef,
-		OpWasm3InteriorPtr:
+		OpWasm3InteriorPtr, OpWasm3GlobalGet:
 		return wasm3ValAnyref
 	case OpWasm3GetClosureField:
 		// Whether a GetClosureField produces an anyref or an i64

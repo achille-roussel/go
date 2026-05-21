@@ -95,6 +95,14 @@
 (Store {t} (OffPtr [off] base) val mem) && base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct() =>
 	(FieldSet {base.Type.Elem()} [off] base val mem)
 
+// Boxed package-level variables (pointer-representation cutover): a
+// global of a boxed (WasmGC-reference) type lives in a wasm ref-global,
+// so a load/store of it through its symbol address becomes global.get /
+// global.set rather than a linear-memory load/store. Must precede the
+// generic linear Load/Store and the symIsRO const-fold.
+(Load <t> (LoweredAddr {sym} [0] (SB)) _) && config.arch == "wasm3" && wasm3IsBoxedType(t) => (GlobalGet <t> {sym})
+(Store {t} (LoweredAddr {sym} [0] (SB)) val mem) && config.arch == "wasm3" && wasm3IsBoxedType(t) => (GlobalSet {sym} val mem)
+
 // Lowering extension
 // It is unnecessary to extend loads
 (SignExt32to64        x:(I64Load32S _ _)) => x

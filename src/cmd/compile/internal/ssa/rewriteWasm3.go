@@ -1593,6 +1593,8 @@ func rewriteValueWasm3_OpLess8U(v *Value) bool {
 func rewriteValueWasm3_OpLoad(v *Value) bool {
 	v_1 := v.Args[1]
 	v_0 := v.Args[0]
+	b := v.Block
+	config := b.Func.Config
 	// match: (Load <t> (OffPtr [off] base) mem)
 	// cond: base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct()
 	// result: (FieldGet <t> {base.Type.Elem()} [off] base mem)
@@ -1612,6 +1614,24 @@ func rewriteValueWasm3_OpLoad(v *Value) bool {
 		v.AuxInt = int64ToAuxInt(off)
 		v.Aux = typeToAux(base.Type.Elem())
 		v.AddArg2(base, mem)
+		return true
+	}
+	// match: (Load <t> (LoweredAddr {sym} [0] (SB)) _)
+	// cond: config.arch == "wasm3" && wasm3IsBoxedType(t)
+	// result: (GlobalGet <t> {sym})
+	for {
+		t := v.Type
+		if v_0.Op != OpWasm3LoweredAddr || auxIntToInt32(v_0.AuxInt) != 0 {
+			break
+		}
+		sym := auxToSym(v_0.Aux)
+		v_0_0 := v_0.Args[0]
+		if v_0_0.Op != OpSB || !(config.arch == "wasm3" && wasm3IsBoxedType(t)) {
+			break
+		}
+		v.reset(OpWasm3GlobalGet)
+		v.Type = t
+		v.Aux = symToAux(sym)
 		return true
 	}
 	// match: (Load <t> ptr mem)
@@ -3737,6 +3757,8 @@ func rewriteValueWasm3_OpStore(v *Value) bool {
 	v_2 := v.Args[2]
 	v_1 := v.Args[1]
 	v_0 := v.Args[0]
+	b := v.Block
+	config := b.Func.Config
 	// match: (Store {t} (OffPtr [off] base) val mem)
 	// cond: base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct()
 	// result: (FieldSet {base.Type.Elem()} [off] base val mem)
@@ -3755,6 +3777,29 @@ func rewriteValueWasm3_OpStore(v *Value) bool {
 		v.AuxInt = int64ToAuxInt(off)
 		v.Aux = typeToAux(base.Type.Elem())
 		v.AddArg3(base, val, mem)
+		return true
+	}
+	// match: (Store {t} (LoweredAddr {sym} [0] (SB)) val mem)
+	// cond: config.arch == "wasm3" && wasm3IsBoxedType(t)
+	// result: (GlobalSet {sym} val mem)
+	for {
+		t := auxToType(v.Aux)
+		if v_0.Op != OpWasm3LoweredAddr || auxIntToInt32(v_0.AuxInt) != 0 {
+			break
+		}
+		sym := auxToSym(v_0.Aux)
+		v_0_0 := v_0.Args[0]
+		if v_0_0.Op != OpSB {
+			break
+		}
+		val := v_1
+		mem := v_2
+		if !(config.arch == "wasm3" && wasm3IsBoxedType(t)) {
+			break
+		}
+		v.reset(OpWasm3GlobalSet)
+		v.Aux = symToAux(sym)
+		v.AddArg2(val, mem)
 		return true
 	}
 	// match: (Store {t} ptr val mem)

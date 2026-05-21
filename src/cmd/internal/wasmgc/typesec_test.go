@@ -72,7 +72,7 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 	// (i8, i16, i32, i64, f32, f64, ref), then go.iface. Pin the exact
 	// bytes — this is the module preamble every wasm3 binary starts with.
 	want := []byte{
-		0x0b, // 11 rec groups
+		0x0e, // 14 rec groups
 
 		// rec { go.object }: sub, 0 supertypes, struct with 0 fields.
 		opRec, 0x01,
@@ -108,6 +108,25 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 		// rec { go.iface }: sub, supertype go.object (index 0), struct of
 		// { anyref itab const, anyref data const } — a boxed interface.
 		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02, valAnyref, fieldConst, valAnyref, fieldConst,
+
+		// rec { go.getter.i64 }: final func type (anyref, i32) -> i64 —
+		// the reader half of an i64-class interior-pointer accessor pair
+		// (doc/wasm3-fat-pointer-derisk.wat).
+		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x02, valAnyref, valI32, 0x01, valI64,
+
+		// rec { go.setter.i64 }: final func type (anyref, i32, i64) -> ()
+		// — the writer half.
+		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x03, valAnyref, valI32, valI64, 0x00,
+
+		// rec { go.ptr.i64 }: sub, supertype go.object (index 0), struct of
+		// { anyref base, i32 offset, (ref go.getter.i64)=index 11,
+		// (ref go.setter.i64)=index 12 } — the accessor-pair fat pointer
+		// for an i64-class interior pointer.
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x04,
+		valAnyref, fieldConst,
+		valI32, fieldConst,
+		opRef, 0x0b, fieldConst,
+		opRef, 0x0c, fieldConst,
 	}
 	if !bytes.Equal(payload, want) {
 		t.Fatalf("prelude type section mismatch:\n got % x\nwant % x", payload, want)

@@ -126,6 +126,9 @@ const (
 	TypeGoIptrF64        // go.iptr.f64: fat pointer to an f64-class interior slot
 	TypeGoIptrRef        // go.iptr.ref: fat pointer to a ref-typed interior slot
 	TypeGoIface          // go.iface:  {itab anyref, data anyref} — boxed interface (doc/wasm3-slice-boxing.md)
+	TypeGoGetterI64      // go.getter.i64: func(anyref base, i32 off) -> i64 — interior-pointer reader (i64 pointee class)
+	TypeGoSetterI64      // go.setter.i64: func(anyref base, i32 off, i64 v) — interior-pointer writer (i64 pointee class)
+	TypeGoPtrI64         // go.ptr.i64: {base anyref, off i32, get, set} accessor-pair fat pointer (doc/wasm3-fat-pointer-derisk.wat)
 	NumPreludeTypes
 )
 
@@ -211,6 +214,41 @@ func PreludeTypes() []Type {
 		Fields: []Field{
 			{Storage: AnyRefStorage()}, // itab
 			{Storage: AnyRefStorage()}, // data
+		},
+	}
+
+	// Interior-pointer accessor-pair fat pointer (doc/wasm3-pointer-cutover,
+	// de-risked in doc/wasm3-fat-pointer-derisk.wat). A pointer into a
+	// struct field / array element that escapes or crosses a function
+	// boundary is represented as $go.ptr.<class>: {base, offset, get,
+	// set}. The get/set funcs are compiler-generated per CONTAINER type
+	// (they ref.cast base and struct.get/array.get at offset), so a
+	// generic callee can deref via call_ref WITHOUT the container's static
+	// type. Parameterized by pointee wasm class; the i64 class is the
+	// prelude starter (covers int/uintptr/pointer-width fields and the
+	// atomic types). Other classes (anyref/f64/f32/...) follow.
+	t[TypeGoGetterI64] = Type{
+		Name:    "go.getter.i64",
+		Kind:    KindFunc,
+		Super:   -1,
+		Params:  []Storage{AnyRefStorage(), PrimStorage(I32)},
+		Results: []Storage{PrimStorage(I64)},
+	}
+	t[TypeGoSetterI64] = Type{
+		Name:   "go.setter.i64",
+		Kind:   KindFunc,
+		Super:  -1,
+		Params: []Storage{AnyRefStorage(), PrimStorage(I32), PrimStorage(I64)},
+	}
+	t[TypeGoPtrI64] = Type{
+		Name:  "go.ptr.i64",
+		Kind:  KindStruct,
+		Super: TypeGoObject,
+		Fields: []Field{
+			{Storage: AnyRefStorage()},                       // base: container ref
+			{Storage: PrimStorage(I32)},                      // offset / field index
+			{Storage: RefStorage(TypeGoGetterI64, false)},    // get
+			{Storage: RefStorage(TypeGoSetterI64, false)},    // set
 		},
 	}
 

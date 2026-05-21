@@ -382,6 +382,66 @@ func TestCollectArrayBackingPacked(t *testing.T) {
 	}
 }
 
+// TestCollectSliceStruct locks in the boxed slice header
+// (doc/wasm3-slice-boxing.md): a Go []T lowers to a 4-field struct
+// (data (ref go.array.T), off i32, len i32, cap i32) subtyping
+// go.object, with the backing array collected first so the data field
+// can reference it. All fields are mutable so the backend may rewrite
+// a header in place.
+func TestCollectSliceStruct(t *testing.T) {
+	sl := types.NewSlice(types.Types[types.TINT32])
+	c := newTypeCollector()
+	idx := c.collectSliceStruct(sl)
+
+	got := c.table[idx]
+	if got.Kind != wasmgc.KindStruct || got.Super != wasmgc.TypeGoObject {
+		t.Fatalf("slice header: kind=%d super=%d, want struct subtyping go.object", got.Kind, got.Super)
+	}
+	if len(got.Fields) != 4 {
+		t.Fatalf("slice header has %d fields, want 4 (data, off, len, cap)", len(got.Fields))
+	}
+	data := got.Fields[0]
+	if !data.Storage.IsRef() || !data.Mutable {
+		t.Fatalf("data field = %+v, want a mutable ref", data)
+	}
+	if backing := c.table[data.Storage.RefType]; backing.Kind != wasmgc.KindArray {
+		t.Errorf("data field refers to type[%d] kind=%d, want array", data.Storage.RefType, backing.Kind)
+	}
+	for i, name := range []string{"off", "len", "cap"} {
+		f := got.Fields[1+i]
+		if f.Storage != wasmgc.PrimStorage(wasmgc.I32) || !f.Mutable {
+			t.Errorf("%s field = %+v, want mutable i32", name, f)
+		}
+	}
+	checkDependencyOrder(t, c.table)
+
+	// Memoized: re-collecting the same slice type returns the same index
+	// and does not grow the table.
+	n := len(c.table)
+	if again := c.collectSliceStruct(sl); again != idx || len(c.table) != n {
+		t.Errorf("re-collecting []int32 grew/changed the table (idx %d->%d, len %d->%d)", idx, again, n, len(c.table))
+	}
+}
+
+// TestCollectSliceStructByteBacking confirms []byte's boxed header
+// reuses a packed (array (mut i8)) backing — the same go.bytes shape
+// strings use — so the slice ref can flow to the host boundary over a
+// byte-tight array.
+func TestCollectSliceStructByteBacking(t *testing.T) {
+	sl := types.NewSlice(types.Types[types.TUINT8])
+	c := newTypeCollector()
+	idx := c.collectSliceStruct(sl)
+	data := c.table[idx].Fields[0]
+	backing := c.table[data.Storage.RefType]
+	if backing.Kind != wasmgc.KindArray {
+		t.Fatalf("[]byte backing kind=%d, want array", backing.Kind)
+	}
+	if backing.Elem.IsRef() || backing.Elem.Prim != wasmgc.I8 {
+		t.Errorf("[]byte backing elem = %+v, want packed i8", backing.Elem)
+	}
+	checkDependencyOrder(t, c.table)
+}
+
 func TestEncodedCollectedTypesValidate(t *testing.T) {
 	// A program-like mix: a recursive struct, a struct with a string
 	// and a slice, mutually recursive structs, and a pointer to a

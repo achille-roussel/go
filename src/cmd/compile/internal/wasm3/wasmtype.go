@@ -35,6 +35,7 @@ type typeCollector struct {
 	table          wasmgc.Table
 	structs        map[*types.Type]int // Go struct type -> table index
 	backing        map[*types.Type]int // slice/array element type -> backing array index
+	slices         map[*types.Type]int // Go slice type -> boxed slice-header struct index (doc/wasm3-slice-boxing.md)
 	boxed          map[wasmgc.Prim]int // primitive -> boxed-scalar struct index
 	funcs          map[*types.Type]int // Go func type -> func-type table index
 	closureCtxs    map[*types.Type]int // Go func type -> per-signature closure-struct table index
@@ -46,6 +47,7 @@ func newTypeCollector() *typeCollector {
 		table:          wasmgc.PreludeTypes(),
 		structs:        make(map[*types.Type]int),
 		backing:        make(map[*types.Type]int),
+		slices:         make(map[*types.Type]int),
 		boxed:          make(map[wasmgc.Prim]int),
 		funcs:          make(map[*types.Type]int),
 		closureCtxs:    make(map[*types.Type]int),
@@ -279,6 +281,46 @@ func (c *typeCollector) collectBacking(elem *types.Type) int {
 		Super:   -1,
 		Elem:    st,
 		ElemMut: true,
+	})
+	return idx
+}
+
+// collectSliceStruct reserves and returns the table index of the
+// boxed slice-header struct for a Go slice type t (doc/wasm3-slice-
+// boxing.md). The header is
+//
+//	(type go.slice.<T> (struct
+//	    (field (mut (ref go.array.<T>)))  ;; data backing
+//	    (field (mut i32))                 ;; off
+//	    (field (mut i32))                 ;; len
+//	    (field (mut i32))))               ;; cap
+//
+// The backing array type is collected first so the struct's data
+// field can reference it by index. cap is a stored field (Go-faithful
+// 3-index slices); fields are mutable so the backend may rewrite a
+// header in place. nil slices are represented as a null slice ref, so
+// the data field is non-nullable (a non-nil slice always has a real,
+// possibly zero-length, backing array — mirroring go.string).
+func (c *typeCollector) collectSliceStruct(t *types.Type) int {
+	if !t.IsSlice() {
+		panic("wasm3: collectSliceStruct on non-slice type " + t.Kind().String())
+	}
+	if idx, ok := c.slices[t]; ok {
+		return idx
+	}
+	arrIdx := c.collectBacking(t.Elem())
+	idx := len(c.table)
+	c.slices[t] = idx
+	c.table = append(c.table, wasmgc.Type{
+		Name:  "go.slice." + typeName(t.Elem()),
+		Kind:  wasmgc.KindStruct,
+		Super: wasmgc.TypeGoObject,
+		Fields: []wasmgc.Field{
+			{Storage: wasmgc.RefStorage(arrIdx, false), Mutable: true}, // data
+			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},   // off
+			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},   // len
+			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},   // cap
+		},
 	})
 	return idx
 }

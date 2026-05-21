@@ -723,6 +723,33 @@ func wasm3RegisterArrayBacking(fi *obj.FuncInfo, elem *types.Type) uint32 {
 	return uint32(idx)
 }
 
+// wasm3RegisterSliceStruct registers the boxed slice-header struct
+// $go.slice.<T> for the Go slice type t, returning its module-internal
+// type index. Counterpart of wasm3RegisterArrayBacking (which it uses
+// to register the backing array first). See doc/wasm3-slice-boxing.md.
+// Same lazy collector-init pattern as the other wasm3Register* helpers.
+func wasm3RegisterSliceStruct(fi *obj.FuncInfo, t *types.Type) uint32 {
+	if fi == nil {
+		base.Fatalf("wasm3RegisterSliceStruct: fi is nil")
+	}
+	cAny, ok := wasm3LiveCollector.Load(fi)
+	var c *typeCollector
+	if ok {
+		c = cAny.(*typeCollector)
+	} else {
+		c = newTypeCollector()
+		wasm3LiveCollector.Store(fi, c)
+		if fi.WasmType == nil {
+			fi.WasmType = &obj.WasmType{}
+		}
+	}
+	idx := c.collectSliceStruct(t)
+	var b bytes.Buffer
+	c.table.Write(&b)
+	fi.WasmType.Table = b.Bytes()
+	return uint32(idx)
+}
+
 // wasm3EnsureCollector lazily initialises the function's
 // typeCollector (and the WasmType.Table the linker reads for the
 // per-package -> module-global type-index remap) without registering

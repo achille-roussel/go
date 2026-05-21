@@ -377,8 +377,10 @@ signatures; there is no Go body and no `.s`.
 
 **Enabler — ref-typed `//go:wasmimport` (the successor "ref interop"
 item, pulled forward).** To hand `WriteLinearMemory` a `[]byte`, the
-import signature must carry a WasmGC `(ref $go.bytes)` (+ len), not an
-i32 offset. That is the module-boundary ref interop recorded under
+import signature must carry a WasmGC slice ref (a single
+`(ref $go.slice.byte)` once slices are boxed — see
+**doc/wasm3-slice-boxing.md**, the prerequisite rep change), not an i32
+offset. That is the module-boundary ref interop recorded under
 *Successor milestones*; this approach makes it the foundation. It
 reuses the wasm3 backend's existing ref-passing call machinery (an
 import is a call whose body is elsewhere) rather than a new

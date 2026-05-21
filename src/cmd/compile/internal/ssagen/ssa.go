@@ -1746,6 +1746,24 @@ func (s *state) move(t *types.Type, dst, src *ssa.Value) {
 }
 func (s *state) moveWhichMayOverlap(t *types.Type, dst, src *ssa.Value, mayOverlap bool) {
 	s.instrumentMove(t, dst, src)
+	if buildcfg.GOARCH == "wasm3" && t.IsStruct() {
+		// wasm3 boxes a struct; a whole-struct value copy must be done
+		// field-by-field (scalar fields copy by value, array/nested-struct
+		// fields recurse into their value-copy), not as a linear memcpy
+		// (which writes Go ABI bytes at offsets that name no wasm3 field —
+		// e.g. inside a boxed array field). Recurse s.move per field: the
+		// field address &dst.f / &src.f folds to FieldSet/FieldGet (scalar)
+		// or the array value-copy path above.
+		for _, f := range t.Fields() {
+			if f.Sym != nil && f.Sym.IsBlank() {
+				continue
+			}
+			dstF := s.newValue1I(ssa.OpOffPtr, f.Type.PtrTo(), f.Offset, dst)
+			srcF := s.newValue1I(ssa.OpOffPtr, f.Type.PtrTo(), f.Offset, src)
+			s.moveWhichMayOverlap(f.Type, dstF, srcF, mayOverlap)
+		}
+		return
+	}
 	if buildcfg.GOARCH == "wasm3" && t.IsArray() && wasm3SliceElemInteriorOK(t.Elem()) {
 		// wasm3 boxes an array as (ref (array T)); a value copy (b := a,
 		// s.field = arr, *dst = src) must DEEP-COPY for Go value semantics,

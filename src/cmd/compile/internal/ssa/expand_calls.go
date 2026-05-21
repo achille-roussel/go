@@ -401,6 +401,9 @@ func (x *expandState) decomposeAsNecessary(pos src.XPos, b *Block, a, m0 *Value,
 		if at.IsSIMD() {
 			break // XXX
 		}
+		if x.f.Config.arch == "wasm3" && at.Size() > 0 {
+			break // boxed as one $go.struct.T ref: a single register (atomic leaf below)
+		}
 		for i := 0; i < at.NumFields(); i++ {
 			et := at.Field(i).Type // might need to read offsets from the fields
 			e := b.NewValue1I(pos, OpStructSelect, et, int64(i), a)
@@ -428,6 +431,9 @@ func (x *expandState) decomposeAsNecessary(pos src.XPos, b *Block, a, m0 *Value,
 		return x.decomposePair(pos, b, a, mem, x.typs.BytePtr, x.typs.Int, OpStringPtr, OpStringLen, &rc)
 
 	case types.TINTER:
+		if x.f.Config.arch == "wasm3" {
+			break // boxed as one $go.iface ref: a single register (atomic leaf below)
+		}
 		mem = x.decomposeOne(pos, b, a, mem, x.typs.Uintptr, OpITab, &rc)
 		pos = pos.WithNotStmt()
 		// Immediate interfaces cause so many headaches.
@@ -559,6 +565,9 @@ func (x *expandState) rewriteSelectOrArg(pos src.XPos, b *Block, container, a, m
 		if at.IsSIMD() {
 			break // XXX
 		}
+		if x.f.Config.arch == "wasm3" && at.Size() > 0 {
+			break // boxed as one $go.struct.T ref: read from a single register
+		}
 		for i := 0; i < at.NumFields(); i++ {
 			et := at.Field(i).Type
 			e := x.rewriteSelectOrArg(pos, b, container, nil, m0, et, rc.next(et))
@@ -599,6 +608,9 @@ func (x *expandState) rewriteSelectOrArg(pos src.XPos, b *Block, container, a, m
 		return a
 
 	case types.TINTER:
+		if x.f.Config.arch == "wasm3" {
+			break // boxed as one $go.iface ref: read from a single register
+		}
 		addArg(x.rewriteSelectOrArg(pos, b, container, nil, m0, x.typs.Uintptr, rc.next(x.typs.Uintptr)))
 		pos = pos.WithNotStmt()
 		addArg(x.rewriteSelectOrArg(pos, b, container, nil, m0, x.typs.BytePtr, rc.next(x.typs.BytePtr)))

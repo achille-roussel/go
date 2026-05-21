@@ -124,7 +124,7 @@
 // e.g. the (*[N]T)(p) load in a generated array equality func.) Element
 // access then uses array.get/array.set via interior pointers; whole-array
 // value copy is handled by Move/Zero, not this load.
-(Load <t> ptr mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && t.IsArray() => (Copy ptr)
+(Load <t> ptr mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && (t.IsArray() || t.IsStruct()) => (Copy ptr)
 
 // wasm3: storing a whole array value (b := a — Load(array)=>Copy above
 // makes the array a single-ref SSA value, so the assignment is a Store,

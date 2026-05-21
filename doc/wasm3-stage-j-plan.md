@@ -104,12 +104,12 @@ After Stage J:
   for objects (where the per-type struct is registered via the
   Stage E type collector). The bump heap (`var wasm3Heap`) is
   deleted.
-- `unsafe.Pointer` in wasm3 runtime code becomes restricted. The
-  only legitimate uses are (1) interior pointers into wasmgc
-  arrays/structs, materialised via the existing selective-boxing
-  scheme (doc/wasm3-design.md §7), and (2) wasip1 boundary
-  buffers, which use a dedicated `LinearPtr` type whose conversions
-  to/from `unsafe.Pointer` are explicit.
+- `unsafe.Pointer` in wasm3 runtime code becomes restricted. Its
+  only legitimate use is interior pointers into wasmgc
+  arrays/structs (the fat-pointer primitive; doc/wasm3-design.md §7
+  and doc/wasm3-fat-pointers-design.md). The wasip1 boundary no
+  longer uses pointers at all — it serializes through linear memory
+  via the `runtime/wasm` intrinsics (see Piece 5).
 - The runtime's map storage is a wasmgc array of key/value pairs,
   not a linear-memory bump-allocated buffer. The faststr
   linear-scan shim is **deleted**.
@@ -208,24 +208,22 @@ referenced anywhere in the linker's reachable set.
 ### Piece 3: `unsafe.Pointer` discipline
 
 `unsafe.Pointer` is the API surface through which the linear-memory
-world leaks into the rest of the runtime. After Stage J, the
-runtime uses it only for two narrow cases.
+world leaks into the rest of the runtime. After Stage J, the runtime
+uses it for one narrow case only.
 
-- **Interior pointers into wasmgc arrays** continue to work via
-  the existing selective-boxing scheme (`doc/wasm3-design.md` §7):
-  taking `&buf[i]` when `buf` is `[]byte` materialises an
-  `(arrayref, index)` fat pointer encoded as the per-package
-  `$go.box.scalar` wrapper struct. No raw linear-memory arithmetic
-  is permitted on these — operations go through array indexing on
-  the underlying ref.
-- **wasip1 boundary buffers** use a new type
-  `internal/runtime/wasip1.LinearPtr`. Its conversions to/from
-  `unsafe.Pointer` are explicit (`LinearPtr.UnsafePointer()`,
-  `wasip1.FromUnsafe(p)`), and the only sites that produce
-  `LinearPtr` are the syscall trampolines themselves
-  (`runtime/sys_wasm3.s` and friends). Any `unsafe.Pointer`
-  arithmetic on wasm3 outside those boundaries is a build error
-  enforced by a vet check.
+- **Interior pointers into wasmgc arrays/structs** — the fat-pointer
+  primitive (`doc/wasm3-design.md` §7,
+  `doc/wasm3-fat-pointers-design.md`): taking `&buf[i]` when `buf` is
+  `[]byte` materialises an `(arrayref, index)` fat pointer. No raw
+  linear-memory arithmetic is permitted — operations go through array
+  indexing on the underlying ref. Every Go pointer the compiler sees
+  is a gc ref; there is no second (linear) pointer representation.
+- **The wasip1 boundary uses no pointers at all.** It serializes
+  through linear memory via the `runtime/wasm` intrinsics (Piece 5),
+  so there is no `LinearPtr` type and no `unsafe.Pointer`-to-linear
+  conversion to police. Any `unsafe.Pointer` arithmetic on wasm3
+  outside the interior-pointer case is a build error enforced by a
+  vet check.
 
 #### `unsafe.StringData` / `unsafe.SliceData` are the canonical API
 
@@ -320,25 +318,79 @@ is one small file.
 `proc_exit`, the handful of WASI calls the runtime makes — these
 are the only legitimate linear-memory consumers post-cutover.
 
-- A `LinearPtr` arena in `runtime/wasip1_buffer_wasm3.go` provides
-  scratch space for marshalling. Caller pattern is:
+**Model: linear memory is a serialization layer, opaque to the
+compiler.** This supersedes the earlier `LinearPtr`-typed-parameter
+sketch. The problem with making any pointer type mean "linear" — a
+dedicated `LinearPtr`, or "a `structs.HostLayout` value lives in
+linear memory" — is that such values flow everywhere (locals,
+fields of gc structs, slice elements), so the compiler would have to
+insert gc↔linear conversions wherever they flow, and for anything
+with interior pointers (a linked list, a tree) there is no
+well-defined automatic translation at all. The compiler must keep a
+**single** pointer representation (gc ref) and never manufacture a
+linear pointer.
 
-      buf, ret := wasip1.WithLinearBuffer(n, func(p LinearPtr) {
-          // populate p[0:n] from a wasmgc array via array.copy
-          ...syscall...
-          // copy results back from p[0:n] to a wasmgc array
-      })
+So linear memory is reached only through three intrinsics, exported
+from package **`runtime/wasm`** (the FFI-boundary analog of
+`runtime/cgo` — runtime-owned state, compiler-intrinsified, usable by
+third-party `//go:wasmimport`/`//go:wasmexport` authors):
 
-- The trampoline functions take `LinearPtr`-typed parameters.
-  Their bodies use linear-memory loads/stores. They never escape
-  outside the wasip1 package.
-- For `fd_write` specifically: the iovec struct itself is also a
-  linear-memory buffer (per the wasip1 ABI). The wasmgc-array
-  `[]byte` payload is `array.copy`'d into a `LinearPtr` region;
-  the iovec points there.
+    // copy out of linear memory into a fresh gc []byte
+    func ReadLinearMemory(mem int32, off, len uint32) []byte
+    // bump-allocate, copy a gc []byte into linear memory, return offset
+    func WriteLinearMemory(mem int32, data []byte) uint32
+    // rewind the bump allocator to off (frees everything above)
+    func ResetLinearMemory(mem int32, off uint32)
 
-This is the *only* code that knowingly straddles two worlds, and
-it's small and stable.
+These are the *only* code that knows linear memory exists. They are
+intrinsics, not hand-written `.s` (the wasm3 obj backend can't lower
+the linear-frame asm ABI; the bodies are the mirror of the
+fat-pointer load/store — `array.get_u` ↔ `i32.store8` and back). The
+`mem` operand is a wasm memory index (a dedicated scratch `(memory)`,
+or memory 0); for wasip1 it is effectively constant.
+
+**wasmimport/wasmexport signatures on wasm3 use only primitive
+numeric types** (`int32/int64/uint32/uint64/float32/float64`). A WASI
+"pointer" is just a `uint32` linear-memory offset — which is the
+*faithful* representation, since the host has never seen a Go
+pointer; `unsafe.Pointer` only ever worked on plain wasm because Go
+pointers there already were i32 offsets. Per-call marshalling is
+ordinary Go in `os_wasip1_wasm3.go`, e.g. `fd_write`:
+
+    //go:wasmimport wasi_snapshot_preview1 fd_write
+    func fd_write(fd, iovsOff int32, iovsLen, nwrittenOff int32) int32
+
+    func write1(fd int32, b []byte) int32 {
+        dataOff := wasm.WriteLinearMemory(mem, b)
+        var iov [8]byte                       // iovec built in gc memory
+        le.PutUint32(iov[0:], dataOff)
+        le.PutUint32(iov[4:], uint32(len(b)))
+        iovOff := wasm.WriteLinearMemory(mem, iov[:])
+        nwOff := wasm.WriteLinearMemory(mem, make([]byte, 4))
+        errno := fd_write(fd, int32(iovOff), 1, int32(nwOff))
+        nw := le.Uint32(wasm.ReadLinearMemory(mem, nwOff, 4))
+        wasm.ResetLinearMemory(mem, dataOff)
+        _ = errno
+        return int32(nw)
+    }
+
+Everything except the three intrinsics is plain Go on gc `[]byte`.
+Two consequences fall out for free: the `uintptr32`/`KeepAlive`
+dance (today in `os_wasip1.go`) disappears — no pointer crosses, so
+the GC can't reclaim anything mid-call — and `//go:noescape` becomes
+irrelevant on these signatures.
+
+The arena is a bump allocator with strict per-call stack discipline
+(`Write` advances, `Reset` rewinds). Fine for single-goroutine M2;
+once goroutines land (M4) it needs a per-goroutine or guarded arena
+— note it, defer it.
+
+This is copy-based marshalling (like cgo or a syscall ABI), not
+FlatBuffers' zero-copy: the two memory models are disjoint, so we
+copy in and copy out. The deliberate limitation — **no shared live
+views, no pointer graphs across the boundary** — is exactly what
+makes the linked-list problem a non-problem: you serialize the flat
+thing a given call needs, by hand, the way that call's ABI defines.
 
 ## Deprecation list
 
@@ -448,7 +500,31 @@ After Stage J:
 - **M6 (reflect).** Now feasible because type descriptors are
   wasmgc and `reflect.Value` can be a thin wasmgc wrapper.
 
-The remaining linear-memory surface (wasip1 scratch arena) is
+- **wasmgc ref interop at the module boundary (future).** A step
+  beyond the numeric-only serialization of Piece 5. Today Piece 5
+  restricts `//go:wasmimport`/`//go:wasmexport` to primitive numeric
+  params and serializes everything through linear memory. Once
+  wasmgc-aware peer modules are a target, those boundaries should
+  *also* be able to carry **wasmgc refs directly**: a Go pointer /
+  slice / string at the boundary lowers to its wasmgc `(ref …)` and
+  passes to/from the peer module with no linear-memory copy. This is
+  a superset, not an exception:
+
+    - The boundary's parameter *types* select the mechanism — numeric
+      (i32/i64/f32/f64) → marshal through linear memory via the
+      `runtime/wasm` intrinsics; ref-typed → pass the gc ref through.
+    - It preserves the core invariant: the compiler still only ever
+      sees gc pointers and never manufactures a linear pointer. Refs
+      pass through; numbers serialize.
+    - It stays compatible with the wasip1 numeric-only constraint —
+      WASI hosts simply never use ref params, so they keep getting
+      the serialization path.
+
+  Net: full module-to-module wasmgc interop with high-level Go values
+  (structs, slices, strings) as the currency, sharing the same
+  compiler model as the numeric path.
+
+The remaining *linear-memory* surface (wasip1 scratch arena) is
 small enough that it doesn't grow as new functionality lands.
 
 ## Note

@@ -378,6 +378,13 @@ func NewConfig(arch string, types Types, ctxt *obj.Link, optimize, softfloat boo
 		c.RegSize = 8
 		c.lowerBlock = rewriteBlockWasm3
 		c.lowerValue = rewriteValueWasm3
+		// Late-lower runs after the main lower pass so FieldGet/FieldSet
+		// fold the direct Load/Store-of-OffPtr first, leaving only the
+		// leftover (address-taken / escaping) interior-pointer OffPtrs for
+		// the &scalar-field -> MakeFieldPtr conversion. See
+		// Wasm3latelower.rules and doc/wasm3-pointer-cutover.
+		c.lateLowerBlock = rewriteBlockWasm3latelower
+		c.lateLowerValue = rewriteValueWasm3latelower
 		c.registers = registersWasm3[:]
 		c.gpRegMask = gpRegMaskWasm3
 		c.fpRegMask = fpRegMaskWasm3

@@ -103,6 +103,15 @@
 (Load <t> (LoweredAddr {sym} [0] (SB)) _) && config.arch == "wasm3" && wasm3IsBoxedType(t) => (GlobalGet <t> {sym})
 (Store {t} (LoweredAddr {sym} [0] (SB)) val mem) && config.arch == "wasm3" && wasm3IsBoxedType(t) => (GlobalSet {sym} val mem)
 
+// Dereference of an i64-class interior pointer ($go.ptr.i64 accessor-pair
+// fat pointer): a Load/Store through a *i64-scalar value that is NOT a
+// &struct.field OffPtr — those fold to FieldGet/FieldSet above — i.e. a
+// fat pointer received as a parameter or materialized by MakeFieldPtr,
+// becomes a call_ref through the get/set accessor. See
+// doc/wasm3-pointer-cutover.
+(Load <t> ptr mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && wasm3IsI64ScalarPtr(ptr.Type) => (PtrLoad ptr)
+(Store {t} ptr val mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && wasm3IsI64ScalarPtr(ptr.Type) => (PtrStore ptr val mem)
+
 // Lowering extension
 // It is unnecessary to extend loads
 (SignExt32to64        x:(I64Load32S _ _)) => x

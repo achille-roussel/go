@@ -1,0 +1,19 @@
+// Copyright 2026 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+// wasm3 late-lower rules: run after the main lower pass.
+//
+// By this point the main-pass FieldGet/FieldSet rules have folded every
+// Load/Store directly through a &struct.field OffPtr into struct.get/
+// struct.set. The OffPtrs that remain are the ones used as pointer
+// VALUES — &container.field whose address escapes or crosses a function
+// boundary (e.g. &x.value passed to atomic.Store64). For an i64-class
+// scalar field, that pointer is represented as a $go.ptr.i64 accessor-
+// pair fat pointer so a generic callee can dereference it via call_ref
+// without the container's static type (doc/wasm3-pointer-cutover).
+//
+// MakeFieldPtr carries the container struct type (aux) and the field
+// byte offset (auxint); codegen emits struct.new $go.ptr.i64 with
+// ref.func get/set accessors generated for (struct, field).
+(OffPtr <t> [off] base) && base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct() && wasm3IsI64ScalarPtr(t) => (MakeFieldPtr <t> {base.Type.Elem()} [off] base)

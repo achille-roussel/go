@@ -217,6 +217,40 @@ load shim in a uniform way rather than ad-hoc.
 - `runtime.printstring`, `runtime.gwrite` materialise via fat
   pointers + the wasip1 scratch boundary.
 
+**Status / finding (2026-05-20).** The fat-pointer primitive is
+*consumer-ready for the per-access pattern* and proven end to end by
+`runtime.wasm3TestInteriorCopy` — a `for i { dst[i] = src[i] }` loop
+that load**s and** stores between two wasmgc `[]byte` backings
+entirely through fresh interior pointers (the exact shape
+`printstring`/`gwrite`/element iteration use). Each access
+materialises a fresh `OpWasm3InteriorPtr` that the
+`(I64Load*/I64Store* (InteriorPtr ...))` rewrite rules match
+directly, so this is the form the rules already cover.
+
+The remaining two forms — a fat pointer flowing through a **control-
+flow merge** (`var p *byte; if … p=&x else p=&y; *p`) and a fat
+pointer **crossing a call boundary** as a `*T` parameter — both fail
+wasm validation today (`type mismatch: expected i64, found anyref`),
+and both are blocked on the *same* root cause: **a pointer's
+representation cannot be decided from its Go type.** A `*byte`/
+`unsafe.Pointer` is sometimes a wasmgc fat pointer (anyref, e.g. the
+intrinsic's result) and sometimes a linear-memory address (i64, e.g.
+`fd_write`'s `nwritten *size`, which the host writes through). The
+rewrite rules only know a value is fat where it is *syntactically* an
+`OpWasm3InteriorPtr`; once that identity is lost through a Phi or an
+`OpArg`, the type alone can't recover it.
+
+Resolving this is exactly the job of the Stage J wasmgc-vs-linear
+representation model (strings/slices/structs become wasmgc-backed;
+the wasip1 scratch boundary keeps explicit linear `uintptr`/LinearPtr
+addresses). The helper migrations above (`printstring`, `gwrite`,
+`memequal`) are therefore sequenced **into Stage J**, where the
+helper's pointee is unambiguously wasmgc-backed and the `*T`-param-is-
+a-fat-pointer / Phi-of-fat-pointers cases become decidable. Routing
+those helpers through fat pointers *before* that model exists would
+either break the working linear-memory paths or add gratuitous
+per-byte `struct.new` overhead with no correctness gain.
+
 ### Piece 5: subsume `$go.box.scalar`
 
 - The selective-boxing scheme (doc/wasm3-design.md §7) continues

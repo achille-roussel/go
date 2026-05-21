@@ -64,3 +64,23 @@ func wasm3TestInteriorByteSet(s []byte, i int, v byte) {
 	p := wasm3InteriorPtrByte(s, i)
 	*p = v
 }
+
+// wasm3TestInteriorCopy copies n bytes from src to dst element by
+// element through fat pointers. This is the exact loop shape the
+// Stage J string/byte materialisation helpers (printstring, gwrite)
+// use — `for i { dst[i] = src[i] }` — but kept entirely within
+// wasmgc `(array i8)` backings so it exercises load-and-store
+// through interior pointers without the wasip1 linear-memory
+// boundary. Each iteration materialises a fresh InteriorPtr for the
+// read and another for the write, which is what the (I64Load* /
+// I64Store* (InteriorPtr ...)) rewrite rules match.
+//
+//go:linkname wasm3TestInteriorCopy
+//go:nosplit
+func wasm3TestInteriorCopy(dst, src []byte, n int) {
+	for i := 0; i < n; i++ {
+		d := wasm3InteriorPtrByte(dst, i)
+		s := wasm3InteriorPtrByte(src, i)
+		*d = *s
+	}
+}

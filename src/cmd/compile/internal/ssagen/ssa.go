@@ -1746,6 +1746,18 @@ func (s *state) move(t *types.Type, dst, src *ssa.Value) {
 }
 func (s *state) moveWhichMayOverlap(t *types.Type, dst, src *ssa.Value, mayOverlap bool) {
 	s.instrumentMove(t, dst, src)
+	if buildcfg.GOARCH == "wasm3" && t.IsArray() && wasm3SliceElemInteriorOK(t.Elem()) {
+		// wasm3 boxes an array as (ref (array T)); a value copy (b := a,
+		// s.field = arr, *dst = src) must DEEP-COPY for Go value semantics,
+		// not memcpy linear bytes or alias the ref. Load the source array
+		// ref, clone it (array.new_default + array.copy), and store the
+		// fresh ref. Gated to scalar/ref element arrays the Clone codegen
+		// handles; composite-element arrays fall through (deferred).
+		srcRef := s.load(t, src)
+		cloned := s.newValue1A(ssa.OpWasm3Clone, t, t, srcRef)
+		s.store(t, dst, cloned)
+		return
+	}
 	if mayOverlap && t.IsArray() && t.NumElem() > 1 && !ssa.IsInlinableMemmove(dst, src, t.Size(), s.f.Config) {
 		// Normally, when moving Go values of type T from one location to another,
 		// we don't need to worry about partial overlaps. The two Ts must either be

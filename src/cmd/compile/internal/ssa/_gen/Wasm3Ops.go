@@ -501,6 +501,15 @@ func init() {
 		// Result lands in an anyref per-value local.
 		{name: "InteriorPtr", argLength: 2, reg: gp21, aux: "Typ", typ: "BytePtr"},
 
+		// OpWasm3Clone deep-copies a boxed composite value for Go value
+		// semantics (b := a / s.field = arr must copy, not alias). arg0 is
+		// the source ref; v.Aux is the Go composite type. Result is a fresh
+		// independent ref. Array: array.new_default + array.copy (scalar/
+		// ref elements; validated in doc/wasm3-array-valuecopy-derisk.wat).
+		// Struct: struct.new with each field cloned (scalars copied,
+		// composite fields recursively cloned). Pure (no mem).
+		{name: "Clone", argLength: 1, reg: gp11, aux: "Typ", typ: "BytePtr"},
+
 		// OpWasm3LoadInterior reads through a fat pointer. arg0 is the
 		// fat-pointer ref. v.Aux is the pointee Go type so the backend
 		// derives the wrapper type and the read width. v.Type drives

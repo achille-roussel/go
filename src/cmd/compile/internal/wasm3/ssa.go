@@ -1492,6 +1492,44 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		fieldOff := ssa.Wasm3GetClosureFieldOffset(v.AuxInt)
 		pg.To = obj.Addr{Type: obj.TYPE_CONST, Offset: fieldOff + 2}
 
+	case ssa.OpWasm3Clone:
+		// Deep-copy a boxed composite for Go value semantics. v.Aux is the
+		// Go composite type; arg0 is the source ref. Array case (scalar/
+		// ref elements): newArr = array.new_default $arr N; array.copy the
+		// N elements; result is newArr. Validated in
+		// doc/wasm3-array-valuecopy-derisk.wat.
+		ct := v.Aux.(*types.Type)
+		if !ct.IsArray() {
+			v.Fatalf("OpWasm3Clone: only array types supported so far, got %v", ct)
+		}
+		elem := ct.Elem()
+		if elem.IsStruct() || elem.IsArray() {
+			v.Fatalf("OpWasm3Clone: composite element %v deferred (needs recursive clone)", elem)
+		}
+		arrIdx := int64(wasm3RegisterArrayBacking(s.FuncInfo(), elem))
+		n := ct.NumElem()
+		tmp := wasm3AllocAnyrefTempLocal(s)
+		// newArr = array.new_default $arr N
+		i32Const(s, int32(n))
+		pNew := s.Prog(wasm.AArrayNewDefault)
+		pNew.From = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdx}
+		// tee into tmp, leaving newArr on the stack as array.copy's dst
+		pTee := s.Prog(wasm.ALocalTee)
+		pTee.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(tmp)}
+		// array.copy dst=newArr(on stack) dstidx=0 src=arg0 srcidx=0 len=N
+		i32Const(s, 0)
+		getValue64(s, v.Args[0])
+		pCast := s.Prog(wasm.ARefCast)
+		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdx}
+		i32Const(s, 0)
+		i32Const(s, int32(n))
+		pCopy := s.Prog(wasm.AArrayCopy)
+		pCopy.From = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdx}
+		pCopy.To = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdx}
+		// result = newArr (from tmp)
+		pGet := s.Prog(wasm.ALocalGet)
+		pGet.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(tmp)}
+
 	case ssa.OpWasm3InteriorPtr:
 		// doc/wasm3-fat-pointers-design.md Piece 2: materialise a fat
 		// pointer for an interior slot of a wasmgc container.

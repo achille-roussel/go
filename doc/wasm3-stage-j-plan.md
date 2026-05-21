@@ -342,12 +342,58 @@ third-party `//go:wasmimport`/`//go:wasmexport` authors):
     // rewind the bump allocator to off (frees everything above)
     func ResetLinearMemory(mem int32, off uint32)
 
-These are the *only* code that knows linear memory exists. They are
-intrinsics, not hand-written `.s` (the wasm3 obj backend can't lower
-the linear-frame asm ABI; the bodies are the mirror of the
-fat-pointer load/store — `array.get_u` ↔ `i32.store8` and back). The
-`mem` operand is a wasm memory index (a dedicated scratch `(memory)`,
-or memory 0); for wasip1 it is effectively constant.
+These are the *only* code that knows linear memory exists, and they
+live in a **separate hand-written wasm module — the "go runtime"
+module — dynamically linked** to the compiled Go program. This was
+chosen over two alternatives:
+
+  - *compiler intrinsics*: rejected — an intrinsic means the compiler
+    keeps SSA ops and codegen for linear load/store, exactly the
+    dependency we are deleting.
+  - *a `.s` file + a new wasm3 assembler rung*: `encodeWasm3Body`
+    (`cmd/internal/obj/wasm/wasm3obj.go`) bails to the `unreachable`
+    stub on any linear-memory access, so hand-written `.s` would need
+    a from-scratch linear-memory body encoder. Large, and it puts
+    linear-memory knowledge back into the toolchain.
+
+The winning insight: **wat is already the assembler for wasm**, and a
+wasm3 program is itself a WasmGC module, so the primitives can be
+written in wat, validated with `wasm-tools`, and linked as an ordinary
+wasm module. The runtime module declares the linear memory and the
+bump-pointer global and exports the three functions; the program
+imports them. Because the program never touches that memory directly
+(it only passes WasmGC `[]byte`s and receives offsets / `[]byte`s
+back), the linear memory is fully encapsulated in the runtime module —
+the compiler emits WasmGC only, end to end.
+
+The functions reach the program through the **existing import
+mechanism**: `//go:wasmimport go_runtime WriteLinearMemory` declares an
+import from module `go_runtime`, exactly as `//go:wasmimport
+wasi_snapshot_preview1 fd_write` declares one from WASI. The embedder
+wires it at instantiation — e.g. `wasmtime run --preload
+go_runtime=runtime.wasm program.wasm`, or the WebAssembly JS API on
+Node. So `runtime/wasm` collapses to three `//go:wasmimport go_runtime`
+signatures; there is no Go body and no `.s`.
+
+**Enabler — ref-typed `//go:wasmimport` (the successor "ref interop"
+item, pulled forward).** To hand `WriteLinearMemory` a `[]byte`, the
+import signature must carry a WasmGC `(ref $go.bytes)` (+ len), not an
+i32 offset. That is the module-boundary ref interop recorded under
+*Successor milestones*; this approach makes it the foundation. It
+reuses the wasm3 backend's existing ref-passing call machinery (an
+import is a call whose body is elsewhere) rather than a new
+linear-memory encoder. `ReadLinearMemory` additionally needs a ref
+*result* (`[]byte`), so sequence it after `WriteLinearMemory`
+(ref param, scalar result).
+
+**De-risk (done, 2026-05-20).** A pure-wat experiment confirmed the
+load-bearing assumption: `wasmtime --preload` links two modules that
+*independently* declare `(array (mut i8))` — the `$go.bytes` shape — and
+the cross-module `(ref $go.bytes)` import matches structurally (the
+prelude emits each type as a singleton rec group, so structural
+equivalence holds). `array.get_u` on the passed ref, `i32.store8` into
+the runtime module's memory, and the bump global all work; a negative
+control traps as expected.
 
 **wasmimport/wasmexport signatures on wasm3 use only primitive
 numeric types** (`int32/int64/uint32/uint64/float32/float64`). A WASI
@@ -374,11 +420,11 @@ ordinary Go in `os_wasip1_wasm3.go`, e.g. `fd_write`:
         return int32(nw)
     }
 
-Everything except the three intrinsics is plain Go on gc `[]byte`.
-Two consequences fall out for free: the `uintptr32`/`KeepAlive`
-dance (today in `os_wasip1.go`) disappears — no pointer crosses, so
-the GC can't reclaim anything mid-call — and `//go:noescape` becomes
-irrelevant on these signatures.
+Everything except the three runtime-module primitives is plain Go on
+gc `[]byte`. Two consequences fall out for free: the `uintptr32`/
+`KeepAlive` dance (today in `os_wasip1.go`) disappears — no pointer
+crosses, so the GC can't reclaim anything mid-call — and
+`//go:noescape` becomes irrelevant on these signatures.
 
 The arena is a bump allocator with strict per-call stack discipline
 (`Write` advances, `Reset` rewinds). Fine for single-goroutine M2;

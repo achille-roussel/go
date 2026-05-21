@@ -140,7 +140,18 @@ func objStorage(f obj.WasmField) wasmgc.Storage {
 	case obj.WasmF64:
 		return wasmgc.PrimStorage(wasmgc.F64)
 	case obj.WasmRef:
-		panic("wasm3: WasmRef in a host-import signature has no per-package table to remap against")
+		// A WasmRef whose Offset is a fixed prelude type index (e.g.
+		// TypeGoString for a string parameter of a go_runtime import)
+		// needs no per-package remap — the prelude types occupy the same
+		// fixed low indices in every module's table. Nullable, matching
+		// the boxed field representation (a nil string is a null ref) and
+		// the go_runtime.wat import signatures. Non-prelude indices in a
+		// no-remap context remain an error: a program type can only be
+		// referenced through objStorageRemapped's per-package table.
+		if int(f.Offset) < wasmgc.NumPreludeTypes {
+			return wasmgc.RefStorage(int(f.Offset), true)
+		}
+		panic("wasm3: WasmRef program-type index in a no-remap signature has no per-package table to remap against")
 	case obj.WasmAnyref:
 		return wasmgc.AnyRefStorage()
 	default:

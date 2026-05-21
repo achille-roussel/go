@@ -3330,6 +3330,19 @@ func (s *state) exprCheckPtr(n ir.Node, checkPtrOK bool) *ssa.Value {
 			if s.checkPtrEnabled && checkPtrOK && to.IsPtr() && from.IsUnsafePtr() {
 				s.checkPtrAlignment(n, v, nil)
 			}
+			if buildcfg.GOARCH == "wasm3" {
+				// Boxed WasmGC model: unsafe.Pointer (ref $go.object) and
+				// *T (ref $go.struct.T) are distinct reference types, not
+				// interchangeable linear addresses. The conversion must
+				// survive as a value of the target type so downstream
+				// field access can recover the struct type (the FieldGet
+				// rule keys on base.Type being *struct). A plain OpCopy is
+				// copy-elided, degrading the OffPtr base back to the
+				// source's type (e.g. TUNSAFEPTR), which leaves the field
+				// Load unlowered. OpConvert is not copy-elided and carries
+				// the target type. See doc/wasm3-slice-boxing.md.
+				return s.newValue2(ssa.OpConvert, to, x, s.mem())
+			}
 			return v
 		}
 

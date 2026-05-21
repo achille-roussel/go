@@ -19,9 +19,19 @@ import (
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
 	"cmd/internal/obj/wasm"
+	"cmd/internal/wasmgc"
 
 	rtabi "internal/abi"
 )
+
+// wasm3GoRuntimeModule is the import module name of the dynamically-
+// linked wasm3 runtime primitive module (see src/runtime/wasm/
+// go_runtime.wat). //go:wasmimport calls to this module use the boxed
+// WasmGC reference ABI — a string crosses as a (ref $go.string), not the
+// linear (ptr,len) pair the host-facing modules use — because both sides
+// are WasmGC and the host links them by structural type. Host modules
+// (wasi_snapshot_preview1, gojs) keep the linear ABI.
+const wasm3GoRuntimeModule = "go_runtime"
 
 // SymABIs records information provided by the assembler about symbol
 // definition ABIs and reference ABIs.
@@ -440,10 +450,21 @@ func GenWasmExportWrapper(wrapped *ir.Func) {
 }
 
 func paramsToWasmFields(f *ir.Func, pragma string, result *abi.ABIParamResultInfo, abiParams []abi.ABIParamAssignment) []obj.WasmField {
+	// Boxed reference ABI: //go:wasmimport calls into the internal
+	// go_runtime module pass WasmGC references (a string is a single
+	// (ref $go.string), not a linear (ptr,len) pair). Only for wasm3 and
+	// only for that module; host-facing imports keep the linear ABI.
+	refABI := buildcfg.GOARCH == "wasm3" && f.WasmImport != nil && f.WasmImport.Module == wasm3GoRuntimeModule
 	wfs := make([]obj.WasmField, 0, len(abiParams))
 	for _, p := range abiParams {
 		t := p.Type
 		var wt obj.WasmFieldType
+		if refABI {
+			if rf, ok := wasm3RefField(t, p.FrameOffset(result)); ok {
+				wfs = append(wfs, rf)
+				continue
+			}
+		}
 		switch t.Kind() {
 		case types.TINT32, types.TUINT32:
 			wt = obj.WasmI32
@@ -477,14 +498,38 @@ func paramsToWasmFields(f *ir.Func, pragma string, result *abi.ABIParamResultInf
 	return wfs
 }
 
+// wasm3RefField returns the boxed WasmGC reference field for a Go type
+// crossing the go_runtime boundary, or ok=false if t has no boxed
+// reference form (a scalar — handled by the caller's linear switch). A
+// string is a single (ref null $go.string), whose type index is the
+// fixed prelude TypeGoString (the linker emits the prelude types first,
+// so the index is stable and needs no R_WASMTYPE relocation). The
+// WasmRef field carries that type index in Offset (per obj.WasmField);
+// the Go-stack frameOff that linear fields use is irrelevant to the
+// wasm3 typed ABI, which has no Go stack frame.
+func wasm3RefField(t *types.Type, frameOff int64) (obj.WasmField, bool) {
+	switch t.Kind() {
+	case types.TSTRING:
+		return obj.WasmField{Type: obj.WasmRef, Offset: int64(wasmgc.TypeGoString)}, true
+	}
+	return obj.WasmField{}, false
+}
+
 func resultsToWasmFields(f *ir.Func, pragma string, result *abi.ABIParamResultInfo, abiParams []abi.ABIParamAssignment) []obj.WasmField {
 	if len(abiParams) > 1 {
 		base.ErrorfAt(f.Pos(), 0, "%s: too many return values", pragma)
 		return nil
 	}
+	refABI := buildcfg.GOARCH == "wasm3" && f.WasmImport != nil && f.WasmImport.Module == wasm3GoRuntimeModule
 	wfs := make([]obj.WasmField, len(abiParams))
 	for i, p := range abiParams {
 		t := p.Type
+		if refABI {
+			if rf, ok := wasm3RefField(t, p.FrameOffset(result)); ok {
+				wfs[i] = rf
+				continue
+			}
+		}
 		switch t.Kind() {
 		case types.TINT32, types.TUINT32:
 			wfs[i].Type = obj.WasmI32

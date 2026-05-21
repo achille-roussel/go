@@ -41,3 +41,26 @@ func wasm3InteriorPtrByte(s []byte, i int) *byte {
 	throw("wasm3InteriorPtrByte: not intrinsified by the wasm3 backend")
 	return nil
 }
+
+// wasm3TestInteriorByteAt and wasm3TestInteriorByteSet are smoke
+// tests that exercise the fat-pointer pipeline end to end from
+// runtime code: a direct call to wasm3InteriorPtrByte intrinsifies
+// to OpWasm3InteriorPtr, and the *p / *p = v dereferences rewrite
+// through the load/store-through-InteriorPtr rules in Wasm3.rules.
+// Exposed via linkname so a wasm3 test program (which can't trigger
+// the intrinsic on a linkname'd call from its own package) can
+// drive them.
+//
+//go:linkname wasm3TestInteriorByteAt
+//go:nosplit
+func wasm3TestInteriorByteAt(s []byte, i int) byte {
+	p := wasm3InteriorPtrByte(s, i)
+	return *p
+}
+
+//go:linkname wasm3TestInteriorByteSet
+//go:nosplit
+func wasm3TestInteriorByteSet(s []byte, i int, v byte) {
+	p := wasm3InteriorPtrByte(s, i)
+	*p = v
+}

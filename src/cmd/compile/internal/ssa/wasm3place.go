@@ -59,7 +59,7 @@ func wasm3MarkOnStack(f *Func) {
 		}
 		for i := len(b.Values) - 1; i >= 0; i-- {
 			v := b.Values[i]
-			if canLiveOnStack.contains(v.ID) {
+			if canLiveOnStack.contains(v.ID) && !wasm3SkipOnStackMark(v) {
 				v.OnWasmStack = true
 			} else {
 				canLiveOnStack.clear()
@@ -77,6 +77,17 @@ func wasm3MarkOnStack(f *Func) {
 			if opcodeTable[v.Op].generic && v.Op != OpMakeResult {
 				continue
 			}
+			// Fat-pointer ops (Piece 3 of
+			// doc/wasm3-fat-pointers-design.md) are kept out of the
+			// OnWasmStack optimisation entirely — see
+			// wasm3SkipOnStackMark for why. They use per-value-local
+			// writeback unconditionally, which means their args also
+			// shouldn't be promoted (the codegen reads each arg via a
+			// plain local.get rather than relying on the stack-passing
+			// contract).
+			if wasm3SkipOnStackMark(v) {
+				continue
+			}
 			for _, arg := range v.Args {
 				if arg.Uses == 1 && arg.Block == v.Block && !arg.Type.IsMemory() && !opcodeTable[arg.Op].generic {
 					canLiveOnStack.add(arg.ID)
@@ -84,6 +95,35 @@ func wasm3MarkOnStack(f *Func) {
 			}
 		}
 	}
+}
+
+// wasm3SkipOnStackMark reports whether v should be excluded from the
+// OnWasmStack optimisation entirely — its result is always written to
+// a per-value local, never left transient on the wasm stack for the
+// next op to consume. Used for the fat-pointer ops added in Piece 3
+// of doc/wasm3-fat-pointers-design.md.
+//
+// Why opt out: OpWasm3LoadInterior and OpWasm3StoreInterior read two
+// fields from the same iptr arg (container + offset), which forces
+// them to either call getValue64 twice on the arg or to stash it in
+// a temp local. With OnWasmStack=true on the arg, the first
+// getValue64 emits the producer inline; a second call would emit it
+// AGAIN. The temp-local workaround works for the codegen but the
+// extra local.tee + local.get isn't free, and more importantly the
+// OnWasmStack accounting (OnWasmStackSkipped) gets confused by the
+// nested inline-emission paths the new ops introduce, surfacing as
+// "wasm: bad stack" failures at block end.
+//
+// Per the project-level guidance (correctness first, optimisation
+// later), the simplest fix is to skip the OnWasmStack analysis for
+// these ops: their args and results always go through per-value
+// locals. Slower, but trivially correct.
+func wasm3SkipOnStackMark(v *Value) bool {
+	switch v.Op {
+	case OpWasm3InteriorPtr, OpWasm3LoadInterior, OpWasm3StoreInterior:
+		return true
+	}
+	return false
 }
 
 // wasm3PlaceValues populates f.Wasm3ValueLocals and f.Wasm3LocalTypes

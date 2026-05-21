@@ -5552,6 +5552,23 @@ func (s *state) addr(n ir.Node) *ssa.Value {
 			}
 			return s.newValue2(ssa.OpPtrIndex, t, p, i)
 		} else { // array
+			// wasm3: a Go array is a single (ref (array T)) — the same
+			// backing collectBacking builds for a []T slice. The array
+			// value (s.expr) IS that container ref, so &a[i] is a fat
+			// interior pointer (container ref + element index), like a
+			// slice element. Element access goes through the array ref
+			// and does not copy the array, so it is independent of
+			// whole-array value-copy semantics. Gated to the element
+			// kinds LoadInterior/StoreInterior handle.
+			if buildcfg.GOARCH == "wasm3" && wasm3SliceElemInteriorOK(n.X.Type().Elem()) {
+				arrRef := s.expr(n.X)
+				i := s.expr(n.Index)
+				length := s.constInt(types.Types[types.TINT], n.X.Type().NumElem())
+				i = s.boundsCheck(i, length, ssa.BoundsIndex, n.Bounded())
+				v := s.newValue2(ssa.OpWasm3InteriorPtr, t, arrRef, i)
+				v.Aux = n.X.Type()
+				return v
+			}
 			a := s.addr(n.X)
 			i := s.expr(n.Index)
 			len := s.constInt(types.Types[types.TINT], n.X.Type().NumElem())

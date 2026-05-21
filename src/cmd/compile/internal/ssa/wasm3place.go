@@ -577,6 +577,13 @@ func wasm3ValueType(v *Value) byte {
 		// sites). Scoped to *struct first to limit blast radius; other
 		// pointee kinds follow as the cutover lands.
 		return wasm3ValAnyref
+	} else if t.IsArray() {
+		// A Go array lowers to a single (ref (array T)) (wasmtype.go
+		// TARRAY), so an array-typed value (e.g. FieldGet of an array
+		// struct field, an array param, or a StackArray) is the array
+		// ref — its per-value local is anyref. Element access goes
+		// through array.get/array.set on the ref (interior pointers).
+		return wasm3ValAnyref
 	}
 	return wasm3ValI64
 }

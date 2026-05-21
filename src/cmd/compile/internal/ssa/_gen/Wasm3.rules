@@ -117,6 +117,15 @@
 (Load <t> ptr mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && wasm3IsScalarPtr(ptr.Type) => (PtrLoad ptr)
 (Store {t} ptr val mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && wasm3IsScalarPtr(ptr.Type) => (PtrStore ptr val mem)
 
+// wasm3: a Go array is a single (ref (array T)) and *[N]T IS that ref, so
+// dereferencing an array pointer is the identity — the loaded array value
+// is the pointer's ref. (&struct.arrayField Loads fold to FieldGet above,
+// which yields the field's array ref; this handles a direct *[N]T deref,
+// e.g. the (*[N]T)(p) load in a generated array equality func.) Element
+// access then uses array.get/array.set via interior pointers; whole-array
+// value copy is handled by Move/Zero, not this load.
+(Load <t> ptr mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && t.IsArray() => (Copy ptr)
+
 // Lowering extension
 // It is unnecessary to extend loads
 (SignExt32to64        x:(I64Load32S _ _)) => x

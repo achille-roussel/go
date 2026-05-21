@@ -1655,6 +1655,19 @@ func rewriteValueWasm3_OpLoad(v *Value) bool {
 		return true
 	}
 	// match: (Load <t> ptr mem)
+	// cond: config.arch == "wasm3" && ptr.Op != OpOffPtr && t.IsArray()
+	// result: (Copy ptr)
+	for {
+		t := v.Type
+		ptr := v_0
+		if !(config.arch == "wasm3" && ptr.Op != OpOffPtr && t.IsArray()) {
+			break
+		}
+		v.reset(OpCopy)
+		v.AddArg(ptr)
+		return true
+	}
+	// match: (Load <t> ptr mem)
 	// cond: is32BitFloat(t)
 	// result: (F32Load ptr mem)
 	for {

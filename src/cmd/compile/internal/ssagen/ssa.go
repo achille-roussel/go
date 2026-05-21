@@ -5538,6 +5538,18 @@ func (s *state) addr(n ir.Node) *ssa.Value {
 			len := s.newValue1(ssa.OpSliceLen, types.Types[types.TINT], a)
 			i = s.boundsCheck(i, len, ssa.BoundsIndex, n.Bounded())
 			p := s.newValue1(ssa.OpSlicePtr, t, a)
+			// wasm3: a pointer is a ref, never an i64 — so &s[i] cannot be
+			// (data + i*elemsize) linear arithmetic over the boxed array
+			// ref. Materialise a fat interior pointer (container ref +
+			// element index, $go.iptr.<class>) directly. Gated to integer/
+			// bool scalar elements, which LoadInterior/StoreInterior lower
+			// via array.get/array.set; float, ref, and composite element
+			// interior pointers fall through to the generic path for now.
+			if buildcfg.GOARCH == "wasm3" && wasm3SliceElemInteriorOK(n.X.Type().Elem()) {
+				v := s.newValue2(ssa.OpWasm3InteriorPtr, t, p, i)
+				v.Aux = n.X.Type()
+				return v
+			}
 			return s.newValue2(ssa.OpPtrIndex, t, p, i)
 		} else { // array
 			a := s.addr(n.X)
@@ -8081,6 +8093,25 @@ func CheckLoweredPhi(v *ssa.Value) {
 // using the linear-memory captures-struct + CTXT-i64 prologue.
 // walkClosure's wasm3 path must apply the *same* predicate so call-
 // site and body agree on which scheme the closureCtx subtype uses.
+// wasm3SliceElemInteriorOK reports whether &s[i] for a slice with this
+// element type can be lowered to a fat interior pointer (OpWasm3
+// InteriorPtr) on wasm3. Restricted to integer/bool scalars, which the
+// LoadInterior/StoreInterior codegen lowers via array.get/array.set with
+// the i64-extension polarity it implements. Float, reference, and
+// composite element interior pointers are deferred to later pieces.
+func wasm3SliceElemInteriorOK(elem *types.Type) bool {
+	switch elem.Kind() {
+	case types.TBOOL,
+		types.TINT8, types.TUINT8,
+		types.TINT16, types.TUINT16,
+		types.TINT32, types.TUINT32,
+		types.TINT64, types.TUINT64,
+		types.TINT, types.TUINT, types.TUINTPTR:
+		return true
+	}
+	return false
+}
+
 func wasm3ClosureUsesCapturesInStruct(fn *ir.Func) bool {
 	if len(fn.ClosureVars) == 0 {
 		return false

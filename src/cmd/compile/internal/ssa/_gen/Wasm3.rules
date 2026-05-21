@@ -109,8 +109,13 @@
 // fat pointer received as a parameter or materialized by MakeFieldPtr,
 // becomes a call_ref through the get/set accessor. See
 // doc/wasm3-pointer-cutover.
-(Load <t> ptr mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && wasm3IsScalarPtr(ptr.Type) => (PtrLoad ptr)
-(Store {t} ptr val mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && wasm3IsScalarPtr(ptr.Type) => (PtrStore ptr val mem)
+// OpWasm3InteriorPtr is the *other* fat-pointer family (container ref +
+// element index, $go.iptr.<class>); a Load/Store through it must reach
+// the LoadInterior/StoreInterior rules below (matching I64Load/I64Store),
+// so it is excluded here and falls through to the generic Load/Store
+// lowering that produces those I64Load/I64Store nodes.
+(Load <t> ptr mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && wasm3IsScalarPtr(ptr.Type) => (PtrLoad ptr)
+(Store {t} ptr val mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && wasm3IsScalarPtr(ptr.Type) => (PtrStore ptr val mem)
 
 // Lowering extension
 // It is unnecessary to extend loads

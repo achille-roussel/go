@@ -1410,6 +1410,21 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p := s.Prog(wasm.AArrayNewDefault)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterArrayAux(s, v))}
 
+	case ssa.OpWasm3ArrayElemRef:
+		// &arr[i] for a struct element (boxed in the (array (ref box.E))
+		// backing): ref.cast the container to the typed backing, narrow idx
+		// to i32, array.get the boxed element ref. The result IS the *E
+		// interior pointer in the boxed model, so a following field access
+		// folds to FieldGet on it.
+		backingIdx := int64(wasm3RegisterArrayAux(s, v))
+		getValue64(s, v.Args[0])
+		pCast := s.Prog(wasm.ARefCast)
+		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: backingIdx}
+		getValue64(s, v.Args[1])
+		s.Prog(wasm.AI32WrapI64)
+		p := s.Prog(wasm.AArrayGet)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: backingIdx}
+
 	case ssa.OpWasm3ArrayGet:
 		// M3 Stage D: array.get $arr_T (ref idx). Same shape as
 		// ArraySet: ref.cast the anyref to typed ref, narrow idx

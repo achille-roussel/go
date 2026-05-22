@@ -537,6 +537,18 @@ func init() {
 		// Result lands in an anyref per-value local.
 		{name: "InteriorPtr", argLength: 2, reg: gp21, aux: "Typ", typ: "BytePtr"},
 
+		// OpWasm3ArrayElemRef materialises &arr[i] for an array/slice whose
+		// element is a struct (a boxed ref in the (array (ref box.E))
+		// backing). arg0 is the container ref (anyref), arg1 is the i64
+		// element index. Result is the element's boxed ref, which IS the
+		// *E interior pointer in the boxed model — so a following field
+		// access folds to FieldGet on it. Emits: ref.cast (ref array);
+		// i32.wrap idx; array.get -> element ref. v.Aux is the array/slice
+		// Go *types.Type (its elem keys the backing). Distinct from
+		// OpWasm3InteriorPtr (scalar element, deref'd via LoadInterior) and
+		// OpWasm3ArrayGet (returns a scalar element value, not a ref).
+		{name: "ArrayElemRef", argLength: 2, reg: gp21, aux: "Typ", typ: "BytePtr"},
+
 		// OpWasm3Clone deep-copies a boxed composite value for Go value
 		// semantics (b := a / s.field = arr must copy, not alias). arg0 is
 		// the source ref; v.Aux is the Go composite type. Result is a fresh

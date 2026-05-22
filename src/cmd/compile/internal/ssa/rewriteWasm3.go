@@ -571,6 +571,10 @@ func rewriteValueWasm3(v *Value) bool {
 		return rewriteValueWasm3_OpStringMake(v)
 	case OpStringPtr:
 		return rewriteValueWasm3_OpStringPtr(v)
+	case OpStructMake:
+		return rewriteValueWasm3_OpStructMake(v)
+	case OpStructSelect:
+		return rewriteValueWasm3_OpStructSelect(v)
 	case OpSub16:
 		v.Op = OpWasm3I64Sub
 		return true
@@ -4054,6 +4058,32 @@ func rewriteValueWasm3_OpStringPtr(v *Value) bool {
 		v.reset(OpWasm3StringData)
 		v.Type = t
 		v.AddArg(s)
+		return true
+	}
+}
+func rewriteValueWasm3_OpStructMake(v *Value) bool {
+	// match: (StructMake ___)
+	// result: (StructNew {v.Type} ___)
+	for {
+		___ := v.Args[0]
+		v.reset(OpWasm3StructNew)
+		v.Aux = typeToAux(v.Type)
+		v.AddArg(___)
+		return true
+	}
+}
+func rewriteValueWasm3_OpStructSelect(v *Value) bool {
+	v_0 := v.Args[0]
+	// match: (StructSelect [i] x)
+	// result: (StructGet <v.Type> {x.Type} [i] x)
+	for {
+		i := auxIntToInt64(v.AuxInt)
+		x := v_0
+		v.reset(OpWasm3StructGet)
+		v.Type = v.Type
+		v.AuxInt = int64ToAuxInt(i)
+		v.Aux = typeToAux(x.Type)
+		v.AddArg(x)
 		return true
 	}
 }

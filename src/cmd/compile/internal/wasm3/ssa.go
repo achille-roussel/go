@@ -1141,10 +1141,20 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterStructAux(s, v))}
 
 	case ssa.OpWasm3StructGet:
+		// Read field v.AuxInt (a Go field index) of a boxed struct value.
+		// The struct value is an anyref local; ref.cast to (ref $go.struct.T)
+		// before struct.get, and map the Go field index to the WasmGC field
+		// index via the field's byte offset (lowerFields may expand fields).
+		st := v.Aux.(*types.Type)
+		structIdx := wasm3RegisterStruct(s.FuncInfo(), st)
+		off := st.Field(int(v.AuxInt)).Offset
+		fieldIdx := wasm3FieldIndexAtOffset(s.FuncInfo(), st, off)
 		getValue64(s, v.Args[0])
+		pCast := s.Prog(wasm.ARefCast)
+		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
 		p := s.Prog(wasm.AStructGet)
-		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterStructAux(s, v))}
-		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: v.AuxInt}
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
+		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(fieldIdx)}
 
 	case ssa.OpWasm3SliceData, ssa.OpWasm3SliceLength, ssa.OpWasm3SliceCapacity:
 		// Boxed slice header field reads (doc/wasm3-slice-boxing.md):

@@ -659,6 +659,16 @@
 (IData x) => (IfaceData x)
 (IMake itab data) => (IfaceMake itab data)
 
+// Boxed struct values: a wasm3 struct stays whole (one $go.struct.T ref),
+// so the generic StructMake (build a struct value) / StructSelect (read a
+// field) survive to lowering (most fold away in dec.rules; these handle
+// the rest — e.g. a uint128 struct in float ftoa). StructMake -> struct.new
+// with the field values; StructSelect [i] -> struct.get field i (the
+// StructGet AuxInt is the Go field index; codegen maps it to the WasmGC
+// field index via the byte offset).
+(StructMake ___) => (StructNew {v.Type} ___)
+(StructSelect [i] x) => (StructGet <v.Type> {x.Type} [i] x)
+
 // M3 Stage E phase 2: ref-backed slice element access lowered to
 // array.get / array.set on the wasmgc backing.
 //

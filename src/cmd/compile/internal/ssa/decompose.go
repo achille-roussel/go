@@ -130,10 +130,12 @@ func maybeAppend2(f *Func, ss []*LocalSlot, s1, s2 *LocalSlot) []*LocalSlot {
 
 func decomposeBuiltinPhi(v *Value) {
 	switch {
-	case v.Block.Func.Config.arch == "wasm3" && (v.Type.IsSlice() || v.Type.IsString() || v.Type.IsInterface()):
-		// wasm3 boxes a slice/string/interface as a single WasmGC ref, so
-		// the Phi stays whole (one ref) rather than being split into
-		// component Phis. See doc/wasm3-slice-boxing.md.
+	case v.Block.Func.Config.arch == "wasm3" && (v.Type.IsSlice() || v.Type.IsString() || v.Type.IsInterface() || ((v.Type.IsArray() || isStructNotSIMD(v.Type)) && v.Type.Size() > 0)):
+		// wasm3 boxes a slice/string/interface, and a non-empty array/
+		// struct, as a single WasmGC ref, so the Phi stays whole (one ref)
+		// rather than being split into component Phis — and avoids the
+		// "undecomposed type" fatal for an aggregate phi (e.g. a uint128
+		// struct phi). See doc/wasm3-slice-boxing.md.
 	case v.Type.IsInteger() && v.Type.Size() > v.Block.Func.Config.RegSize:
 		decomposeInt64Phi(v)
 	case v.Type.IsComplex():

@@ -1795,6 +1795,14 @@ func (s *state) moveWhichMayOverlap(t *types.Type, dst, src *ssa.Value, mayOverl
 			}
 			dstF := s.newValue1I(ssa.OpOffPtr, f.Type.PtrTo(), f.Offset, dst)
 			srcF := s.newValue1I(ssa.OpOffPtr, f.Type.PtrTo(), f.Offset, src)
+			if f.Type.IsSlice() || f.Type.IsString() || f.Type.IsInterface() {
+				// A boxed single-ref field (slice/string/interface) copies as
+				// the whole ref: load it (Load(&src.f) folds to FieldGet) and
+				// store it (FieldSet). A linear Move of its Go ABI words
+				// (data ptr/len/cap, itab/data) would name no wasm3 field.
+				s.store(f.Type, dstF, s.load(f.Type, srcF))
+				continue
+			}
 			s.moveWhichMayOverlap(f.Type, dstF, srcF, mayOverlap)
 		}
 		return

@@ -1026,6 +1026,30 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 					Add:  p.To.Offset,
 				})
 				continue
+
+			case AArrayNewFixed:
+				// array.new_fixed: 0xFB 0x08 <typeidx> <count>. Pops
+				// `count` element values off the stack and builds a fixed-
+				// size (array T) from them. p.From.Offset = array typeidx
+				// (R_WASMTYPE-relocated, linker-inserted at the reloc off),
+				// p.To.Offset = element count (a plain uleb128 immediate
+				// written after, so the linker inserts the type index
+				// between the opcode and the count). Used to construct a
+				// constant (array i8) for a string literal at startup
+				// without a data segment (doc/wasm3-design.md; the
+				// globals/constants-in-wasmgc init path).
+				if p.From.Type != obj.TYPE_CONST || p.To.Type != obj.TYPE_CONST || p.To.Offset < 0 {
+					return nil, false
+				}
+				writeOpcode(w, p.As)
+				relocs = append(relocs, obj.Reloc{
+					Type: objabi.R_WASMTYPE,
+					Off:  int32(w.Len()),
+					Siz:  1,
+					Add:  p.From.Offset,
+				})
+				writeUleb128(w, uint64(p.To.Offset))
+				continue
 			}
 			// Operand-less wasm stack instructions only. If an
 			// operand-carrying op landed here, it's an unhandled

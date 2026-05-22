@@ -434,10 +434,24 @@ func wasm3RegisterStruct(fi *obj.FuncInfo, t *types.Type) uint32 {
 		}
 	}
 	idx := c.collectBox(t)
+	c.writeTable(fi)
+	return uint32(idx)
+}
+
+// writeTable serializes the collector's type table into fi.WasmType.Table,
+// but only when the table has grown since the last call. The table is
+// append-only, so re-serializing it on every wasm3Register* call (there are
+// many per function) is O(table) per call and O(table^2) per function — the
+// dominant cost when compiling type-heavy packages like internal/abi. The
+// length guard makes the common "type already registered" path O(1).
+func (c *typeCollector) writeTable(fi *obj.FuncInfo) {
+	if fi.WasmType.Table != nil && len(c.table) == c.serializedLen {
+		return
+	}
 	var b bytes.Buffer
 	c.table.Write(&b)
 	fi.WasmType.Table = b.Bytes()
-	return uint32(idx)
+	c.serializedLen = len(c.table)
 }
 
 // wasm3StashCollector hands off c to the wasm3LiveCollector map so
@@ -473,9 +487,7 @@ func wasm3RegisterClosureCtx(fi *obj.FuncInfo, ft *types.Type) uint32 {
 		}
 	}
 	idx := c.collectClosureCtx(ft)
-	var b bytes.Buffer
-	c.table.Write(&b)
-	fi.WasmType.Table = b.Bytes()
+	c.writeTable(fi)
 	return uint32(idx)
 }
 
@@ -511,9 +523,7 @@ func wasm3RegisterPerClosureCtx(fi *obj.FuncInfo, sym *obj.LSym, ft *types.Type,
 		}
 	}
 	idx := c.collectPerClosureCtx(sym, ft, captureTypes)
-	var b bytes.Buffer
-	c.table.Write(&b)
-	fi.WasmType.Table = b.Bytes()
+	c.writeTable(fi)
 	return uint32(idx)
 }
 
@@ -673,9 +683,7 @@ func wasm3EnsurePerClosureCtxFromSide(fi *obj.FuncInfo, sym *obj.LSym, _ *types.
 		base.Fatalf("wasm3EnsurePerClosureCtxFromSide: side-channel Captures for %v is %T, want []*types.Type", sym, info.Captures)
 	}
 	idx := c.collectPerClosureCtx(sym, ft, captures)
-	var b bytes.Buffer
-	c.table.Write(&b)
-	fi.WasmType.Table = b.Bytes()
+	c.writeTable(fi)
 	return uint32(idx)
 }
 
@@ -700,9 +708,7 @@ func wasm3RegisterFuncSig(fi *obj.FuncInfo, ft *types.Type) uint32 {
 		}
 	}
 	idx := c.collectSignature(ft)
-	var b bytes.Buffer
-	c.table.Write(&b)
-	fi.WasmType.Table = b.Bytes()
+	c.writeTable(fi)
 	return uint32(idx)
 }
 
@@ -727,9 +733,7 @@ func wasm3RegisterArrayBacking(fi *obj.FuncInfo, elem *types.Type) uint32 {
 		}
 	}
 	idx := c.collectBacking(elem)
-	var b bytes.Buffer
-	c.table.Write(&b)
-	fi.WasmType.Table = b.Bytes()
+	c.writeTable(fi)
 	return uint32(idx)
 }
 
@@ -773,9 +777,7 @@ func wasm3RegisterSliceElemRef(fi *obj.FuncInfo, elem *types.Type) uint32 {
 	if st.RefType < 0 {
 		base.Fatalf("wasm3RegisterSliceElemRef: %v element did not lower to a typed ref", elem)
 	}
-	var b bytes.Buffer
-	c.table.Write(&b)
-	fi.WasmType.Table = b.Bytes()
+	c.writeTable(fi)
 	return uint32(st.RefType)
 }
 
@@ -800,9 +802,7 @@ func wasm3RegisterSliceStruct(fi *obj.FuncInfo, t *types.Type) uint32 {
 		}
 	}
 	idx := c.collectSliceStruct(t)
-	var b bytes.Buffer
-	c.table.Write(&b)
-	fi.WasmType.Table = b.Bytes()
+	c.writeTable(fi)
 	return uint32(idx)
 }
 
@@ -825,9 +825,7 @@ func wasm3EnsureCollector(fi *obj.FuncInfo) {
 	if fi.WasmType == nil {
 		fi.WasmType = &obj.WasmType{}
 	}
-	var b bytes.Buffer
-	c.table.Write(&b)
-	fi.WasmType.Table = b.Bytes()
+	c.writeTable(fi)
 }
 
 // wasm3IptrTypeIdx returns the prelude wrapper-type index for a fat

@@ -39,7 +39,9 @@ type typeCollector struct {
 	boxed          map[wasmgc.Prim]int // primitive -> boxed-scalar struct index
 	funcs          map[*types.Type]int // Go func type -> func-type table index
 	closureCtxs    map[*types.Type]int // Go func type -> per-signature closure-struct table index
-	perClosureCtxs map[*obj.LSym]int   // closure body LSym -> per-closure closure-struct subtype index (doc/wasm3-m3-captures-in-struct.md)
+	perClosureCtxs map[*obj.LSym]int              // closure body LSym -> per-closure closure-struct subtype index (doc/wasm3-m3-captures-in-struct.md)
+	lowered        map[*types.Type][]wasmgc.Field // memoized lowerFields result (deterministic per type; no caller mutates the returned slice)
+	serializedLen  int                            // table length at last writeTable; the table only grows, so a re-serialize is redundant unless it changed
 }
 
 func newTypeCollector() *typeCollector {
@@ -52,6 +54,7 @@ func newTypeCollector() *typeCollector {
 		funcs:          make(map[*types.Type]int),
 		closureCtxs:    make(map[*types.Type]int),
 		perClosureCtxs: make(map[*obj.LSym]int),
+		lowered:        make(map[*types.Type][]wasmgc.Field),
 	}
 }
 
@@ -102,6 +105,21 @@ func scalarPrim(k types.Kind) (wasmgc.Prim, bool) {
 // mutable: a flattened field can be assigned through its enclosing
 // struct.
 func (c *typeCollector) lowerFields(t *types.Type) []wasmgc.Field {
+	// Memoize: the lowering is deterministic per type and no caller mutates
+	// the result (append copies; the table stores it read-only), and the dep
+	// registrations it triggers are idempotent. Without this the per-field-op
+	// component scanners (wasm3BoxedComponentAtOffset/ArrayComponentAtOffset)
+	// and wasm3FieldIndexRec recompute the full recursive lowering on every
+	// struct field access — super-linear on large generated algs.
+	if f, ok := c.lowered[t]; ok {
+		return f
+	}
+	f := c.lowerFieldsImpl(t)
+	c.lowered[t] = f
+	return f
+}
+
+func (c *typeCollector) lowerFieldsImpl(t *types.Type) []wasmgc.Field {
 	if p, ok := scalarPrim(t.Kind()); ok {
 		return []wasmgc.Field{{Storage: wasmgc.PrimStorage(p), Mutable: true}}
 	}

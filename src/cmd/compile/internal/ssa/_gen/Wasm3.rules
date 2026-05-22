@@ -643,6 +643,14 @@
 (StringPtr <t> s) => (StringData <t> s)
 (StringLen <t> s) => (StringLength <t> s)
 
+// Boxed interface ($go.iface = {itab, data}): extract the itab/data refs
+// from an interface value (struct.get $go.iface 0/1). ITab/IData of a
+// local IMake fold away in dec.rules; these handle a real interface ref
+// (loaded, passed in, or a struct field). (IMake construction needs the
+// descriptor-as-ref work and is lowered separately.)
+(ITab x) => (IfaceItab x)
+(IData x) => (IfaceData x)
+
 // M3 Stage E phase 2: ref-backed slice element access lowered to
 // array.get / array.set on the wasmgc backing.
 //

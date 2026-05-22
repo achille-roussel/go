@@ -1178,6 +1178,20 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoString)}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
 
+	case ssa.OpWasm3IfaceItab, ssa.OpWasm3IfaceData:
+		// Boxed interface component reads: struct.get $go.iface at the
+		// fixed field index (0=itab ref, 1=data ref). $go.iface is the
+		// prelude type TypeGoIface; both fields are anyref.
+		wasm3EnsureCollector(s.FuncInfo())
+		field := int64(0)
+		if v.Op == ssa.OpWasm3IfaceData {
+			field = 1
+		}
+		getValue64(s, v.Args[0])
+		p := s.Prog(wasm.AStructGet)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoIface)}
+		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
+
 	case ssa.OpWasm3MakeFieldPtr:
 		// Materialize $go.ptr.i64 for &container.field. v.Aux is the
 		// container struct *types.Type; v.AuxInt is the field byte

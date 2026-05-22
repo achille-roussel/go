@@ -316,6 +316,14 @@ func init() {
 		{name: "StringData", argLength: 1, reg: gp11, typ: "BytePtr"},   // struct.get $go.string 0
 		{name: "StringLength", argLength: 1, reg: gp11, typ: "Int64"},   // struct.get $go.string 2
 
+		// Boxed interface ($go.iface = {itab anyref, data anyref}) component
+		// reads (doc/wasm3-slice-boxing.md). IfaceItab reads field 0 (the
+		// type-descriptor/itab ref); IfaceData field 1 (the data ref). Both
+		// anyref results — dedicated ops so wasm3ValueType classifies them
+		// as anyref. arg0 = interface ref.
+		{name: "IfaceItab", argLength: 1, reg: gp11, typ: "BytePtr"}, // struct.get $go.iface 0
+		{name: "IfaceData", argLength: 1, reg: gp11, typ: "BytePtr"}, // struct.get $go.iface 1
+
 		{name: "ArrayNew", argLength: 2, reg: gp21, aux: "Typ"},                                               // array.new $Aux; arg0=element value, arg1=length
 		{name: "ArrayNewDefault", argLength: 1, reg: gp11, aux: "Typ"},                                        // array.new_default $Aux; arg0=length
 		{name: "ArrayGet", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}, outputs: []regMask{gp}}, aux: "Typ"}, // array.get $Aux; arg0=array, arg1=index, arg2=mem (ordering only — array elements are mutable, so reads must order against ArraySet writes)

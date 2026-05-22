@@ -4184,7 +4184,15 @@ func (s *state) append(n *ir.CallExpr, inplace bool) *ssa.Value {
 	// Record values of ptr/len/cap before branch.
 	s.vars[ptrVar] = p
 	s.vars[lenVar] = l
-	if !inplace {
+	// wasm3 boxes a slice as one $go.slice ref, so an inplace append
+	// stores the whole new header once (FieldSet/GlobalSet) instead of
+	// the per-word *a.ptr/*a.len/*a.cap component stores below — which
+	// would write into a boxed slice field's interior (no such wasm
+	// fields) and mutate a header that must stay immutable. Thread cap
+	// through the phis for the inplace path too so the whole-header store
+	// has it.
+	wasm3Inplace := inplace && buildcfg.GOARCH == "wasm3"
+	if !inplace || wasm3Inplace {
 		s.vars[capVar] = c
 	}
 
@@ -4363,9 +4371,11 @@ func (s *state) append(n *ir.CallExpr, inplace bool) *ssa.Value {
 				s.vars[memVar] = s.newValue1A(ssa.OpVarDef, types.TypeMem, sn, s.mem())
 			}
 		}
-		capaddr := s.newValue1I(ssa.OpOffPtr, s.f.Config.Types.IntPtr, types.SliceCapOffset, addr)
-		s.store(types.Types[types.TINT], capaddr, c)
-		s.store(pt, addr, p)
+		if !wasm3Inplace {
+			capaddr := s.newValue1I(ssa.OpOffPtr, s.f.Config.Types.IntPtr, types.SliceCapOffset, addr)
+			s.store(types.Types[types.TINT], capaddr, c)
+			s.store(pt, addr, p)
+		}
 	}
 
 	b = s.endBlock()
@@ -4375,11 +4385,18 @@ func (s *state) append(n *ir.CallExpr, inplace bool) *ssa.Value {
 	s.startBlock(assign)
 	p = s.variable(ptrVar, pt)                      // generates phi for ptr
 	l = s.variable(lenVar, types.Types[types.TINT]) // generates phi for len
-	if !inplace {
+	if !inplace || wasm3Inplace {
 		c = s.variable(capVar, types.Types[types.TINT]) // generates phi for cap
 	}
 
-	if inplace {
+	if wasm3Inplace {
+		// wasm3: store the whole new boxed slice header once (the data
+		// ptr is the same backing array ref; len/cap are updated). This
+		// lowers to a single FieldSet/GlobalSet of the $go.slice ref —
+		// not interior component writes — and replaces the header rather
+		// than mutating the immutable old one.
+		s.store(n.Type(), addr, s.newValue3(ssa.OpSliceMake, n.Type(), p, l, c))
+	} else if inplace {
 		// Update length in place.
 		// We have to wait until here to make sure growslice succeeded.
 		lenaddr := s.newValue1I(ssa.OpOffPtr, s.f.Config.Types.IntPtr, types.SliceLenOffset, addr)
@@ -4421,7 +4438,7 @@ func (s *state) append(n *ir.CallExpr, inplace bool) *ssa.Value {
 	// the current scope.
 	delete(s.vars, ptrVar)
 	delete(s.vars, lenVar)
-	if !inplace {
+	if !inplace || wasm3Inplace {
 		delete(s.vars, capVar)
 	}
 

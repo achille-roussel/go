@@ -514,8 +514,14 @@ func buildssa(fn *ir.Func, worker int, isPgoHot bool) *ssa.Func {
 	for _, n := range fn.Dcl {
 		if n.Class == ir.PPARAM {
 			if buildcfg.GOARCH == "wasm3" && (n.Type().IsStruct() || n.Type().IsArray()) && n.Type().Size() > 0 {
-				// Decladdr already bound to the incoming OpArg ref; one
-				// register, nothing to spill.
+				// The struct/array param arrives as one boxed ref, already
+				// bound to its decladdr (a *T view) — nothing to spill. But
+				// reading the param BY VALUE (s.expr, e.g. append(s, h))
+				// goes through s.vars; without an entry there it would fault
+				// "incorrectly live at entry". In wasm3 *T and T are the same
+				// ref, so make the value var a copy of the decladdr ref.
+				s.vars[n] = s.newValue1(ssa.OpCopy, n.Type(), s.decladdrs[n])
+				s.addNamedValue(n, s.vars[n])
 				continue
 			}
 			if s.canSSA(n) {

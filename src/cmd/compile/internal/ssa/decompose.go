@@ -41,12 +41,13 @@ func decomposeBuiltin(f *Func) {
 	for i, name := range f.Names {
 		t := name.Type
 		switch {
-		case f.Config.arch == "wasm3" && (t.IsSlice() || t.IsString() || t.IsInterface()):
-			// wasm3 boxes a slice/string/interface as a single WasmGC ref;
-			// the named value stays whole (one slot), not split into
-			// components. This also keeps it from reaching the
-			// "undecomposed named type" fatal below.
-			// See doc/wasm3-slice-boxing.md.
+		case f.Config.arch == "wasm3" && (t.IsSlice() || t.IsString() || t.IsInterface() || ((t.IsArray() || t.IsStruct()) && t.Size() > 0)):
+			// wasm3 boxes a slice/string/interface, and a non-empty
+			// array/struct, as a single WasmGC ref; the named value stays
+			// whole (one slot), not split into components. Splitting would
+			// also recurse into a boxed array field and hit the
+			// "array not of size 1" fatal (a [16]byte field is one ref,
+			// not 16 SSA-able elements). See doc/wasm3-slice-boxing.md.
 		case t.IsInteger() && t.Size() > f.Config.RegSize:
 			hiName, loName := f.SplitInt64(name)
 			newNames = maybeAppend2(f, newNames, hiName, loName)
@@ -258,6 +259,13 @@ func decomposeUser(f *Func) {
 	for _, name := range f.Names {
 		t := name.Type
 		switch {
+		case f.Config.arch == "wasm3" && (t.IsArray() || isStructNotSIMD(t)) && t.Size() > 0:
+			// wasm3 boxes a non-empty struct/array as a single WasmGC ref;
+			// keep the name whole rather than splitting into field/element
+			// names (which would recurse into a boxed array field and hit
+			// the "array not of size 1" fatal). See doc/wasm3-slice-boxing.md.
+			f.Names[i] = name
+			i++
 		case isStructNotSIMD(t):
 			newNames = decomposeUserStructInto(f, name, newNames)
 		case t.IsArray():
@@ -360,6 +368,12 @@ func decomposeUserStructInto(f *Func, name *LocalSlot, slots []*LocalSlot) []*Lo
 	return slots
 }
 func decomposeUserPhi(v *Value) {
+	if v.Block.Func.Config.arch == "wasm3" && (v.Type.IsArray() || isStructNotSIMD(v.Type)) && v.Type.Size() > 0 {
+		// wasm3 boxes a non-empty struct/array as a single WasmGC ref; the
+		// Phi stays whole (one ref) rather than being split into per-field/
+		// per-element component Phis. See doc/wasm3-slice-boxing.md.
+		return
+	}
 	switch {
 	case isStructNotSIMD(v.Type):
 		decomposeStructPhi(v)

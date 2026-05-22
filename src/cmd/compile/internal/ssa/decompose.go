@@ -41,11 +41,11 @@ func decomposeBuiltin(f *Func) {
 	for i, name := range f.Names {
 		t := name.Type
 		switch {
-		case f.Config.arch == "wasm3" && (t.IsSlice() || t.IsString()):
-			// wasm3 boxes a slice/string as a single WasmGC ref; the named
-			// value stays whole (one slot), not split into components.
-			// This also keeps it from reaching the "undecomposed named
-			// type" fatal below. Interfaces follow next.
+		case f.Config.arch == "wasm3" && (t.IsSlice() || t.IsString() || t.IsInterface()):
+			// wasm3 boxes a slice/string/interface as a single WasmGC ref;
+			// the named value stays whole (one slot), not split into
+			// components. This also keeps it from reaching the
+			// "undecomposed named type" fatal below.
 			// See doc/wasm3-slice-boxing.md.
 		case t.IsInteger() && t.Size() > f.Config.RegSize:
 			hiName, loName := f.SplitInt64(name)
@@ -129,10 +129,10 @@ func maybeAppend2(f *Func, ss []*LocalSlot, s1, s2 *LocalSlot) []*LocalSlot {
 
 func decomposeBuiltinPhi(v *Value) {
 	switch {
-	case v.Block.Func.Config.arch == "wasm3" && (v.Type.IsSlice() || v.Type.IsString()):
-		// wasm3 boxes a slice/string as a single WasmGC ref, so the Phi
-		// stays whole (one ref) rather than being split into component
-		// Phis. Interfaces follow next. See doc/wasm3-slice-boxing.md.
+	case v.Block.Func.Config.arch == "wasm3" && (v.Type.IsSlice() || v.Type.IsString() || v.Type.IsInterface()):
+		// wasm3 boxes a slice/string/interface as a single WasmGC ref, so
+		// the Phi stays whole (one ref) rather than being split into
+		// component Phis. See doc/wasm3-slice-boxing.md.
 	case v.Type.IsInteger() && v.Type.Size() > v.Block.Func.Config.RegSize:
 		decomposeInt64Phi(v)
 	case v.Type.IsComplex():

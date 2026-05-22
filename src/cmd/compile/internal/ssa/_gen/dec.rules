@@ -84,13 +84,13 @@
 // Note: the conditional on data.Op ensures that StructMake/ArrayMake1 ops are
 // unwrapped before the IMake is thrown away. See issue 77534.
 
-(Load <t> ptr mem) && t.IsInterface() =>
+(Load <t> ptr mem) && t.IsInterface() && config.arch != "wasm3" =>
   (IMake
     (Load <typ.Uintptr> ptr mem)
     (Load <typ.BytePtr>
       (OffPtr <typ.BytePtrPtr> [config.PtrSize] ptr)
       mem))
-(Store dst (IMake itab data) mem) =>
+(Store dst (IMake itab data) mem) && config.arch != "wasm3" =>
   (Store {typ.BytePtr}
     (OffPtr <typ.BytePtrPtr> [config.PtrSize] dst)
     data
@@ -141,9 +141,9 @@
 (StructSelect [i] x:(Load <t> ptr mem)) =>
   @x.Block (Load <v.Type> (OffPtr <v.Type.PtrTo()> [t.FieldOff(int(i))] ptr) mem)
 
-(ITab x:(Load <t> ptr mem)) && t.IsInterface() => @x.Block (Load <typ.Uintptr> ptr mem)
+(ITab x:(Load <t> ptr mem)) && t.IsInterface() && config.arch != "wasm3" => @x.Block (Load <typ.Uintptr> ptr mem)
 
-(IData x:(Load <t> ptr mem)) && t.IsInterface() => @x.Block (Load <typ.BytePtr>
+(IData x:(Load <t> ptr mem)) && t.IsInterface() && config.arch != "wasm3" => @x.Block (Load <typ.BytePtr>
       (OffPtr <typ.BytePtrPtr> [config.PtrSize] ptr)
       mem)
 

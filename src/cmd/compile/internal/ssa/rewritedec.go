@@ -256,7 +256,7 @@ func rewriteValuedec_OpIData(v *Value) bool {
 		return true
 	}
 	// match: (IData x:(Load <t> ptr mem))
-	// cond: t.IsInterface()
+	// cond: t.IsInterface() && config.arch != "wasm3"
 	// result: @x.Block (Load <typ.BytePtr> (OffPtr <typ.BytePtrPtr> [config.PtrSize] ptr) mem)
 	for {
 		x := v_0
@@ -266,7 +266,7 @@ func rewriteValuedec_OpIData(v *Value) bool {
 		t := x.Type
 		mem := x.Args[1]
 		ptr := x.Args[0]
-		if !(t.IsInterface()) {
+		if !(t.IsInterface() && config.arch != "wasm3") {
 			break
 		}
 		b = x.Block
@@ -309,6 +309,7 @@ func rewriteValuedec_OpIMake(v *Value) bool {
 func rewriteValuedec_OpITab(v *Value) bool {
 	v_0 := v.Args[0]
 	b := v.Block
+	config := b.Func.Config
 	typ := &b.Func.Config.Types
 	// match: (ITab (IMake itab _))
 	// result: itab
@@ -321,7 +322,7 @@ func rewriteValuedec_OpITab(v *Value) bool {
 		return true
 	}
 	// match: (ITab x:(Load <t> ptr mem))
-	// cond: t.IsInterface()
+	// cond: t.IsInterface() && config.arch != "wasm3"
 	// result: @x.Block (Load <typ.Uintptr> ptr mem)
 	for {
 		x := v_0
@@ -331,7 +332,7 @@ func rewriteValuedec_OpITab(v *Value) bool {
 		t := x.Type
 		mem := x.Args[1]
 		ptr := x.Args[0]
-		if !(t.IsInterface()) {
+		if !(t.IsInterface() && config.arch != "wasm3") {
 			break
 		}
 		b = x.Block
@@ -438,13 +439,13 @@ func rewriteValuedec_OpLoad(v *Value) bool {
 		return true
 	}
 	// match: (Load <t> ptr mem)
-	// cond: t.IsInterface()
+	// cond: t.IsInterface() && config.arch != "wasm3"
 	// result: (IMake (Load <typ.Uintptr> ptr mem) (Load <typ.BytePtr> (OffPtr <typ.BytePtrPtr> [config.PtrSize] ptr) mem))
 	for {
 		t := v.Type
 		ptr := v_0
 		mem := v_1
-		if !(t.IsInterface()) {
+		if !(t.IsInterface() && config.arch != "wasm3") {
 			break
 		}
 		v.reset(OpIMake)
@@ -738,6 +739,7 @@ func rewriteValuedec_OpStore(v *Value) bool {
 		return true
 	}
 	// match: (Store dst (IMake itab data) mem)
+	// cond: config.arch != "wasm3"
 	// result: (Store {typ.BytePtr} (OffPtr <typ.BytePtrPtr> [config.PtrSize] dst) data (Store {typ.Uintptr} dst itab mem))
 	for {
 		dst := v_0
@@ -747,6 +749,9 @@ func rewriteValuedec_OpStore(v *Value) bool {
 		data := v_1.Args[1]
 		itab := v_1.Args[0]
 		mem := v_2
+		if !(config.arch != "wasm3") {
+			break
+		}
 		v.reset(OpStore)
 		v.Aux = typeToAux(typ.BytePtr)
 		v0 := b.NewValue0(v.Pos, OpOffPtr, typ.BytePtrPtr)

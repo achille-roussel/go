@@ -1105,7 +1105,7 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		if aggT != nil && aggT.IsString() && len(v.Args) > 0 {
 			a0 := v.Args[0]
 			if a0.Op == ssa.OpWasm3LoweredAddr && a0.AuxInt == 0 {
-				if sym, ok := a0.Aux.(*obj.LSym); ok && len(sym.P) > 0 && len(sym.P) <= 256 {
+				if sym, ok := a0.Aux.(*obj.LSym); ok && len(sym.P) > 0 {
 					inlineBytes = sym.P
 				}
 			}

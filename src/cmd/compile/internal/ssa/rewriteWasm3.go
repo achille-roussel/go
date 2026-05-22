@@ -1714,15 +1714,18 @@ func rewriteValueWasm3_OpLoad(v *Value) bool {
 	}
 	// match: (Load <t> ptr mem)
 	// cond: config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && (t.IsString() || t.IsSlice() || t.IsInterface())
-	// result: (Copy ptr)
+	// result: (BoxLoad <t> {t} ptr mem)
 	for {
 		t := v.Type
 		ptr := v_0
+		mem := v_1
 		if !(config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && (t.IsString() || t.IsSlice() || t.IsInterface())) {
 			break
 		}
-		v.reset(OpCopy)
-		v.AddArg(ptr)
+		v.reset(OpWasm3BoxLoad)
+		v.Type = t
+		v.Aux = typeToAux(t)
+		v.AddArg2(ptr, mem)
 		return true
 	}
 	// match: (Load <t> ptr mem)
@@ -3904,6 +3907,22 @@ func rewriteValueWasm3_OpStore(v *Value) bool {
 			break
 		}
 		v.reset(OpWasm3PtrStore)
+		v.AddArg3(ptr, val, mem)
+		return true
+	}
+	// match: (Store {t} ptr val mem)
+	// cond: config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && (t.IsString() || t.IsSlice() || t.IsInterface())
+	// result: (BoxStore {t} ptr val mem)
+	for {
+		t := auxToType(v.Aux)
+		ptr := v_0
+		val := v_1
+		mem := v_2
+		if !(config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && (t.IsString() || t.IsSlice() || t.IsInterface())) {
+			break
+		}
+		v.reset(OpWasm3BoxStore)
+		v.Aux = typeToAux(t)
 		v.AddArg3(ptr, val, mem)
 		return true
 	}

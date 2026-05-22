@@ -665,6 +665,20 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(fieldIdx)}
 
+	case ssa.OpWasm3BoxStore:
+		// Write a *string/*slice/*interface cell: ref.cast the cell ref to
+		// (ref $go.box.T) and struct.set field 0 = the boxed value. v.Aux is
+		// the boxed pointee Go type, registered as the cell via collectBox.
+		bt := v.Aux.(*types.Type)
+		cellIdx := wasm3RegisterStruct(s.FuncInfo(), bt)
+		getValue64(s, v.Args[0])
+		pCast := s.Prog(wasm.ARefCast)
+		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(cellIdx)}
+		getValue64(s, v.Args[1])
+		p := s.Prog(wasm.AStructSet)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(cellIdx)}
+		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+
 	case ssa.OpWasm3PtrStore:
 		// Write through $go.ptr.i64: call_ref the setter with (base,
 		// offset, value). arg0=ptr, arg1=value, arg2=mem.
@@ -1319,6 +1333,28 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p := s.Prog(wasm.AStructGet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(fieldIdx)}
+
+	case ssa.OpWasm3BoxNewDefault:
+		// Allocate a zeroed go.box.T cell for an escaping &localBoxed / a
+		// new(string|slice|interface). v.Aux is the boxed pointee Go type,
+		// registered as the cell via collectBox (wasm3RegisterStruct).
+		bt := v.Aux.(*types.Type)
+		cellIdx := wasm3RegisterStruct(s.FuncInfo(), bt)
+		p := s.Prog(wasm.AStructNewDefault)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(cellIdx)}
+
+	case ssa.OpWasm3BoxLoad:
+		// Read a *string/*slice/*interface cell: ref.cast the cell ref to
+		// (ref $go.box.T) and struct.get field 0 (the boxed value). v.Aux is
+		// the boxed pointee Go type, registered as the cell via collectBox.
+		bt := v.Aux.(*types.Type)
+		cellIdx := wasm3RegisterStruct(s.FuncInfo(), bt)
+		getValue64(s, v.Args[0])
+		pCast := s.Prog(wasm.ARefCast)
+		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(cellIdx)}
+		p := s.Prog(wasm.AStructGet)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(cellIdx)}
+		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
 
 	case ssa.OpWasm3ArrayNew:
 		getValue64(s, v.Args[0])

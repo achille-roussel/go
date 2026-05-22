@@ -125,13 +125,20 @@
 // access then uses array.get/array.set via interior pointers; whole-array
 // value copy is handled by Move/Zero, not this load.
 (Load <t> ptr mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && (t.IsArray() || t.IsStruct()) => (Copy ptr)
-// wasm3: a string/slice/interface is one boxed ref; a *string/*slice/
-// *interface that is not a struct-field OffPtr (folds to FieldGet), a
-// global (GlobalGet), or an array/slice element interior pointer
-// (LoadInterior) — e.g. the (*string)(p) deref in a generated hash/eq
-// function — IS that boxed ref, so the deref is the identity. Excludes
-// OpWasm3InteriorPtr so element loads still reach LoadInterior.
-(Load <t> ptr mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && (t.IsString() || t.IsSlice() || t.IsInterface()) => (Copy ptr)
+// wasm3: a *string/*slice/*interface that is not a struct-field OffPtr
+// (folds to FieldGet), a global (GlobalGet, matched earlier), or an
+// array/slice element interior pointer (LoadInterior) is a reference to a
+// one-field go.box.<T> cell (collectBox; the same cell pointerStorage uses
+// for a *boxed field). Deref reads field 0 (BoxLoad). This replaces the
+// former identity Copy, which returned the cell itself rather than the
+// boxed value. Excludes OpWasm3InteriorPtr so element loads still reach
+// LoadInterior. See doc/wasm3-addressable-boxed-locals.
+(Load <t> ptr mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && (t.IsString() || t.IsSlice() || t.IsInterface()) => (BoxLoad <t> {t} ptr mem)
+// Dual of BoxLoad: a write through a *string/*slice/*interface cell sets
+// field 0. The escaping &localBoxed home (newObject -> a cell) and *p = v
+// both reach here; without it the store falls through to the generic linear
+// Store and is not lowered.
+(Store {t} ptr val mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && (t.IsString() || t.IsSlice() || t.IsInterface()) => (BoxStore {t} ptr val mem)
 
 // wasm3: storing a whole array value (b := a — Load(array)=>Copy above
 // makes the array a single-ref SSA value, so the assignment is a Store,

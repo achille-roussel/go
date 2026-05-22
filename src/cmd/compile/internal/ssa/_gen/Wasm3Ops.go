@@ -300,6 +300,17 @@ func init() {
 		{name: "FieldGet", argLength: 2, reg: gp11, aux: "TypInt"},                                            // struct.get; arg0=struct, arg1=mem (order vs FieldSet)
 		{name: "FieldSet", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "TypInt", typ: "Mem"}, // struct.set; arg0=struct, arg1=value, arg2=mem
 
+		// Box-cell deref (doc/wasm3-addressable-boxed-locals). A pointer to a
+		// boxed type (*string/*slice/*interface) is a reference to a one-field
+		// go.box.<T> cell holding the boxed ref (collectBox; pointerStorage in
+		// wasmtype.go uses the same cell). BoxLoad/BoxStore deref it via
+		// ref.cast (ref go.box.T) + struct.get/struct.set field 0. aux = the
+		// boxed (pointee) Go *types.Type T, registered through collectBox by
+		// wasm3RegisterStruct. arg0 = the cell ref.
+		{name: "BoxLoad", argLength: 2, reg: gp11, aux: "Typ"},                                            // struct.get field 0; arg0=cell, arg1=mem
+		{name: "BoxStore", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "Typ", typ: "Mem"}, // struct.set field 0; arg0=cell, arg1=value, arg2=mem
+		{name: "BoxNewDefault", argLength: 0, reg: gp01, aux: "Typ"},                                      // struct.new_default $go.box.T; allocates a zeroed one-field cell for boxed type Aux
+
 		// Boxed slice header accessors (doc/wasm3-slice-boxing.md). A slice is a
 		// single (ref $go.slice.<T>) struct; these read its fields at fixed
 		// indices. aux=slice *types.Type (resolved to the header type via

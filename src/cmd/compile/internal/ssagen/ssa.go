@@ -1036,6 +1036,17 @@ func (s *state) newObject(typ *types.Type) *ssa.Value {
 		length := s.constInt(types.Types[types.TINT], typ.NumElem())
 		return s.newValue1A(ssa.OpWasm3ArrayNewDefault, types.NewPtr(typ), typ, length)
 	}
+	if buildcfg.GOARCH == "wasm3" && (typ.IsString() || typ.IsSlice() || typ.IsInterface()) {
+		// A boxed value (string/slice/interface) is one WasmGC ref, so an
+		// addressable home for it — an escaping &local, or new(string) — is a
+		// one-field go.box.<T> cell holding that ref (doc/wasm3-addressable-
+		// boxed-locals). The Aux is the boxed Go type; the wasm3 backend
+		// resolves the cell via collectBox. Loads/stores through the *T deref
+		// it as BoxLoad/BoxStore (struct.get/set field 0). Without this the
+		// fallthrough emits a linear runtime.newobject that has no wasm3
+		// lowering, and the spill store crashes (Store SSA PTR STRING/...).
+		return s.newValue0A(ssa.OpWasm3BoxNewDefault, types.NewPtr(typ), typ)
+	}
 	rtype := s.reflectType(typ)
 	if specialMallocSym := s.specializedMallocSym(typ.Size(), typ.HasPointers()); specialMallocSym != nil {
 		return s.rtcall(specialMallocSym, true, []*types.Type{types.NewPtr(typ)},

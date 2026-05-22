@@ -1087,6 +1087,12 @@ func wasmFuncTypeStorage(f obj.WasmField) wasmgc.Storage {
 		return wasmgc.PrimStorage(wasmgc.F32)
 	case obj.WasmF64:
 		return wasmgc.PrimStorage(wasmgc.F64)
+	case obj.WasmRef:
+		// A typed reference; the referenced wasm type index is carried in
+		// Offset (see obj.WasmField). Nullable, matching objField's encoding.
+		return wasmgc.RefStorage(int(f.Offset), true)
+	case obj.WasmAnyref:
+		return wasmgc.AnyRefStorage()
 	}
 	base.Fatalf("wasm3: wasmFuncTypeStorage: unsupported field type %v", f.Type)
 	return wasmgc.Storage{}

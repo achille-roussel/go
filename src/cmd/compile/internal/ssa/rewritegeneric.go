@@ -7902,6 +7902,7 @@ func rewriteValuegeneric_OpConvert(v *Value) bool {
 	v_1 := v.Args[1]
 	v_0 := v.Args[0]
 	b := v.Block
+	config := b.Func.Config
 	// match: (Convert (Add64 (Convert ptr mem) off) mem)
 	// result: (AddPtr ptr off)
 	for {
@@ -7953,6 +7954,7 @@ func rewriteValuegeneric_OpConvert(v *Value) bool {
 		break
 	}
 	// match: (Convert (Convert ptr mem) mem)
+	// cond: (config.arch != "wasm3" || v.Type == ptr.Type)
 	// result: ptr
 	for {
 		if v_0.Op != OpConvert {
@@ -7960,7 +7962,7 @@ func rewriteValuegeneric_OpConvert(v *Value) bool {
 		}
 		mem := v_0.Args[1]
 		ptr := v_0.Args[0]
-		if mem != v_1 {
+		if mem != v_1 || !(config.arch != "wasm3" || v.Type == ptr.Type) {
 			break
 		}
 		v.copyOf(ptr)

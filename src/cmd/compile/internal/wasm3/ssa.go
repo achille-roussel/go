@@ -1094,7 +1094,39 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 			wasm3EnsureCollector(s.FuncInfo())
 			castIdx = int64(wasmgc.TypeGoBytes)
 		}
+		// String CONSTANT backing: field 0 is the linear address of a
+		// string-literal symbol (OpWasm3LoweredAddr). Per the wasmgc-only
+		// rule, a string's backing must be a real (array $go.bytes) ref —
+		// ref.cast'ing a linear i64 address to a ref is invalid. Build the
+		// (array i8) inline from the literal bytes via array.new_fixed.
+		// (Large literals are left to the array.new_data + passive-segment
+		// path; see doc/wasm3-design.md globals/constants-in-wasmgc.)
+		var inlineBytes []byte
+		if aggT != nil && aggT.IsString() && len(v.Args) > 0 {
+			a0 := v.Args[0]
+			if a0.Op == ssa.OpWasm3LoweredAddr && a0.AuxInt == 0 {
+				if sym, ok := a0.Aux.(*obj.LSym); ok && len(sym.P) > 0 && len(sym.P) <= 256 {
+					inlineBytes = sym.P
+				}
+			}
+		}
 		for i, a := range v.Args {
+			if i == 0 && inlineBytes != nil {
+				// Consume + drop the linear address operand (it only
+				// materializes the symbol address constant; it does not
+				// read linear memory) so the OnWasmStack accounting stays
+				// balanced, then build the (array $go.bytes) from the
+				// literal bytes.
+				getValue64(s, a)
+				s.Prog(wasm.ADrop)
+				for _, b := range inlineBytes {
+					i32Const(s, int32(b))
+				}
+				pf := s.Prog(wasm.AArrayNewFixed)
+				pf.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoBytes)}
+				pf.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(len(inlineBytes))}
+				continue
+			}
 			getValue64(s, a)
 			if i == 0 && castIdx >= 0 {
 				pc := s.Prog(wasm.ARefCast)

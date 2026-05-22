@@ -133,6 +133,15 @@
 // former identity Copy, which returned the cell itself rather than the
 // boxed value. Excludes OpWasm3InteriorPtr so element loads still reach
 // LoadInterior. See doc/wasm3-addressable-boxed-locals.
+// A load/store through a boxed array/slice element ref (from
+// OpWasm3ArrayElemRef for a container whose element is struct/string/slice/
+// interface) returns/replaces the whole SLOT via array.get/array.set on the
+// backing — not struct.get/set field 0 on the element. BoxLoad/BoxStore are
+// 1-field collectBox cell ops; they do not match go.string/go.iface/go.slice
+// (multi-field boxes) or struct boxes (multi-field layouts). Must precede
+// the BoxLoad/BoxStore rules below.
+(Load <t> (ArrayElemRef {at} arr idx) mem) && config.arch == "wasm3" && (t.IsString() || t.IsSlice() || t.IsInterface()) => (ArrayGet <t> {at} arr idx mem)
+(Store {_} (ArrayElemRef {at} arr idx) val mem) && config.arch == "wasm3" => (ArraySet {at} arr idx val mem)
 (Load <t> ptr mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && (t.IsString() || t.IsSlice() || t.IsInterface()) => (BoxLoad <t> {t} ptr mem)
 // Dual of BoxLoad: a write through a *string/*slice/*interface cell sets
 // field 0. The escaping &localBoxed home (newObject -> a cell) and *p = v

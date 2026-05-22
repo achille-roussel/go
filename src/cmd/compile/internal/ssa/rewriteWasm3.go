@@ -1712,6 +1712,27 @@ func rewriteValueWasm3_OpLoad(v *Value) bool {
 		v.AddArg(ptr)
 		return true
 	}
+	// match: (Load <t> (ArrayElemRef {at} arr idx) mem)
+	// cond: config.arch == "wasm3" && (t.IsString() || t.IsSlice() || t.IsInterface())
+	// result: (ArrayGet <t> {at} arr idx mem)
+	for {
+		t := v.Type
+		if v_0.Op != OpWasm3ArrayElemRef {
+			break
+		}
+		at := auxToType(v_0.Aux)
+		idx := v_0.Args[1]
+		arr := v_0.Args[0]
+		mem := v_1
+		if !(config.arch == "wasm3" && (t.IsString() || t.IsSlice() || t.IsInterface())) {
+			break
+		}
+		v.reset(OpWasm3ArrayGet)
+		v.Type = t
+		v.Aux = typeToAux(at)
+		v.AddArg3(arr, idx, mem)
+		return true
+	}
 	// match: (Load <t> ptr mem)
 	// cond: config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && (t.IsString() || t.IsSlice() || t.IsInterface())
 	// result: (BoxLoad <t> {t} ptr mem)
@@ -3908,6 +3929,26 @@ func rewriteValueWasm3_OpStore(v *Value) bool {
 		}
 		v.reset(OpWasm3PtrStore)
 		v.AddArg3(ptr, val, mem)
+		return true
+	}
+	// match: (Store {_} (ArrayElemRef {at} arr idx) val mem)
+	// cond: config.arch == "wasm3"
+	// result: (ArraySet {at} arr idx val mem)
+	for {
+		if v_0.Op != OpWasm3ArrayElemRef {
+			break
+		}
+		at := auxToType(v_0.Aux)
+		idx := v_0.Args[1]
+		arr := v_0.Args[0]
+		val := v_1
+		mem := v_2
+		if !(config.arch == "wasm3") {
+			break
+		}
+		v.reset(OpWasm3ArraySet)
+		v.Aux = typeToAux(at)
+		v.AddArg4(arr, idx, val, mem)
 		return true
 	}
 	// match: (Store {t} ptr val mem)

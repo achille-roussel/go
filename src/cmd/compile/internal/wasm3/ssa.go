@@ -656,6 +656,30 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		// rejects the anyref supertype).
 		st := v.Aux.(*types.Type)
 		structIdx := wasm3RegisterStruct(s.FuncInfo(), st)
+		if afw, abIdx, ei, ebIdx, efi, ok := wasm3ArrayComponentAtOffset(s, st, v.AuxInt, 0); ok {
+			// The offset lands inside an inlined array-of-structs field
+			// (e.g. cache.Entries[0].Itab = v): struct.get the boxed array
+			// ref, array.get the static element (a boxed ref), then
+			// struct.set its field — mutating the shared element object.
+			getValue64(s, v.Args[0])
+			pCast := s.Prog(wasm.ARefCast)
+			pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
+			pf := s.Prog(wasm.AStructGet)
+			pf.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
+			pf.To = obj.Addr{Type: obj.TYPE_CONST, Offset: afw}
+			pca := s.Prog(wasm.ARefCast)
+			pca.From = obj.Addr{Type: obj.TYPE_CONST, Offset: abIdx}
+			i32Const(s, int32(ei))
+			pg := s.Prog(wasm.AArrayGet)
+			pg.From = obj.Addr{Type: obj.TYPE_CONST, Offset: abIdx}
+			pce := s.Prog(wasm.ARefCast)
+			pce.From = obj.Addr{Type: obj.TYPE_CONST, Offset: ebIdx}
+			getValue64(s, v.Args[1])
+			pe := s.Prog(wasm.AStructSet)
+			pe.From = obj.Addr{Type: obj.TYPE_CONST, Offset: ebIdx}
+			pe.To = obj.Addr{Type: obj.TYPE_CONST, Offset: efi}
+			break
+		}
 		fieldIdx := wasm3FieldIndexAtOffset(s.FuncInfo(), st, v.AuxInt)
 		getValue64(s, v.Args[0])
 		pCast := s.Prog(wasm.ARefCast)

@@ -1543,20 +1543,14 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// resulting ref in v's per-value local, typed anyref by
 		// wasm3ValueType's OpWasm3MakeSlice case.
 		//
-		// For multi-i64-field element types (string, interface,
-		// slice), the wasmgc backing is (array i64) with stride K
-		// per Go element (string = 2, interface = 2, slice = 3 —
-		// see wasm3FlatStride). Multiply cap by K so the backing
-		// has room for the full per-element layout the body's
-		// access rules expect.
-		sliceType := v.Aux.(*types.Type)
-		stride := wasm3FlatStride(sliceType.Elem())
+		// All element types now use boxed-ref backing (one slot per
+		// Go element): string/slice/interface backings are
+		// (array (ref go.string/slice/iface)), struct backings are
+		// (array (ref box.E)), scalars use packed/primitive storage.
+		// One Go element = one backing slot, so cap is the array length
+		// directly — no stride multiply.
 		getValue64(s, v.Args[1])
 		s.Prog(wasm.AI32WrapI64)
-		if stride > 1 {
-			i32Const(s, int32(stride))
-			s.Prog(wasm.AI32Mul)
-		}
 		p := s.Prog(wasm.AArrayNewDefault)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterArrayAux(s, v))}
 

@@ -5714,6 +5714,17 @@ func (s *state) addr(n ir.Node) *ssa.Value {
 				v.Aux = n.X.Type()
 				return v
 			}
+			// wasm3: composite-element slice (struct/string/slice/interface) — &s[i]
+			// is the element's boxed ref obtained via array.get on the backing,
+			// mirroring the fixed-array path below. p (OpSlicePtr) is the backing
+			// ref. Without this the dynamic index falls through to OpPtrIndex
+			// linear arithmetic over the boxed ref, which is invalid wasm.
+			if et := n.X.Type().Elem(); buildcfg.GOARCH == "wasm3" &&
+				(et.IsStruct() || et.IsString() || et.IsSlice() || et.IsInterface()) {
+				v := s.newValue2(ssa.OpWasm3ArrayElemRef, t, p, i)
+				v.Aux = n.X.Type()
+				return v
+			}
 			return s.newValue2(ssa.OpPtrIndex, t, p, i)
 		} else { // array
 			// wasm3: a Go array is a single (ref (array T)) — the same

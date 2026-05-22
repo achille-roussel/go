@@ -125,6 +125,13 @@
 // access then uses array.get/array.set via interior pointers; whole-array
 // value copy is handled by Move/Zero, not this load.
 (Load <t> ptr mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && (t.IsArray() || t.IsStruct()) => (Copy ptr)
+// wasm3: a string/slice/interface is one boxed ref; a *string/*slice/
+// *interface that is not a struct-field OffPtr (folds to FieldGet), a
+// global (GlobalGet), or an array/slice element interior pointer
+// (LoadInterior) — e.g. the (*string)(p) deref in a generated hash/eq
+// function — IS that boxed ref, so the deref is the identity. Excludes
+// OpWasm3InteriorPtr so element loads still reach LoadInterior.
+(Load <t> ptr mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && (t.IsString() || t.IsSlice() || t.IsInterface()) => (Copy ptr)
 
 // wasm3: storing a whole array value (b := a — Load(array)=>Copy above
 // makes the array a single-ref SSA value, so the assignment is a Store,

@@ -316,7 +316,7 @@ func wasm3PointerIsRef(v *Value) bool {
 		return false
 	}
 	e := t.Elem()
-	return e != nil && (e.IsStruct() || e.IsArray())
+	return e != nil && (e.IsStruct() || e.IsArray() || e.IsString() || e.IsSlice() || e.IsInterface())
 }
 
 // wasm3IsScalarPtr reports whether t is a pointer to an integer/bool Go

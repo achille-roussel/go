@@ -132,6 +132,12 @@ const (
 	TypeGoGetterRef      // go.getter.ref: func(anyref base, i32 off) -> anyref — interior-pointer reader (ref/anyref pointee class)
 	TypeGoSetterRef      // go.setter.ref: func(anyref base, i32 off, anyref v) — interior-pointer writer (ref/anyref pointee class)
 	TypeGoPtrRef         // go.ptr.ref: {base anyref, off i32, get, set} accessor-pair fat pointer (ref/anyref pointee class)
+	TypeGoGetterF64      // go.getter.f64: func(anyref base, i32 off) -> f64 — interior-pointer reader (f64 pointee class)
+	TypeGoSetterF64      // go.setter.f64: func(anyref base, i32 off, f64 v) — interior-pointer writer (f64 pointee class)
+	TypeGoPtrF64         // go.ptr.f64: {base anyref, off i32, get, set} accessor-pair fat pointer (f64 pointee class)
+	TypeGoGetterF32      // go.getter.f32: func(anyref base, i32 off) -> f32 — interior-pointer reader (f32 pointee class)
+	TypeGoSetterF32      // go.setter.f32: func(anyref base, i32 off, f32 v) — interior-pointer writer (f32 pointee class)
+	TypeGoPtrF32         // go.ptr.f32: {base anyref, off i32, get, set} accessor-pair fat pointer (f32 pointee class)
 	NumPreludeTypes
 )
 
@@ -280,6 +286,59 @@ func PreludeTypes() []Type {
 			{Storage: PrimStorage(I32)},
 			{Storage: RefStorage(TypeGoGetterRef, false)},
 			{Storage: RefStorage(TypeGoSetterRef, false)},
+		},
+	}
+
+	// f64/f32 pointee classes — for interior pointers to a float field.
+	// The accessors carry the value untyped through an f64/f32 result/param
+	// (no int reinterpretation), so reads and writes are bit-exact;
+	// otherwise identical to the i64 class.
+	t[TypeGoGetterF64] = Type{
+		Name:    "go.getter.f64",
+		Kind:    KindFunc,
+		Super:   -1,
+		Params:  []Storage{AnyRefStorage(), PrimStorage(I32)},
+		Results: []Storage{PrimStorage(F64)},
+	}
+	t[TypeGoSetterF64] = Type{
+		Name:   "go.setter.f64",
+		Kind:   KindFunc,
+		Super:  -1,
+		Params: []Storage{AnyRefStorage(), PrimStorage(I32), PrimStorage(F64)},
+	}
+	t[TypeGoPtrF64] = Type{
+		Name:  "go.ptr.f64",
+		Kind:  KindStruct,
+		Super: TypeGoObject,
+		Fields: []Field{
+			{Storage: AnyRefStorage()},
+			{Storage: PrimStorage(I32)},
+			{Storage: RefStorage(TypeGoGetterF64, false)},
+			{Storage: RefStorage(TypeGoSetterF64, false)},
+		},
+	}
+	t[TypeGoGetterF32] = Type{
+		Name:    "go.getter.f32",
+		Kind:    KindFunc,
+		Super:   -1,
+		Params:  []Storage{AnyRefStorage(), PrimStorage(I32)},
+		Results: []Storage{PrimStorage(F32)},
+	}
+	t[TypeGoSetterF32] = Type{
+		Name:   "go.setter.f32",
+		Kind:   KindFunc,
+		Super:  -1,
+		Params: []Storage{AnyRefStorage(), PrimStorage(I32), PrimStorage(F32)},
+	}
+	t[TypeGoPtrF32] = Type{
+		Name:  "go.ptr.f32",
+		Kind:  KindStruct,
+		Super: TypeGoObject,
+		Fields: []Field{
+			{Storage: AnyRefStorage()},
+			{Storage: PrimStorage(I32)},
+			{Storage: RefStorage(TypeGoGetterF32, false)},
+			{Storage: RefStorage(TypeGoSetterF32, false)},
 		},
 	}
 

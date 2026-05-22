@@ -341,6 +341,8 @@ func wasm3IsScalarPtr(t *types.Type) bool {
 		types.TINT32, types.TUINT32, types.TINT16, types.TUINT16,
 		types.TINT8, types.TUINT8, types.TBOOL: // i32 class (via i64 ABI)
 		return true
+	case types.TFLOAT64, types.TFLOAT32: // f64/f32 class
+		return true
 	case types.TUNSAFEPTR: // ref/anyref class
 		return true
 	}
@@ -350,12 +352,13 @@ func wasm3IsScalarPtr(t *types.Type) bool {
 // wasm3IsFieldInteriorPtr reports whether t is a pointer to a struct-field
 // leaf class that MakeFieldPtr / the WasmGCFieldGetter/Setter accessor pair
 // can represent as a $go.ptr.<class> fat pointer: the i64 class (integer/
-// bool, via the converting accessors), unsafe.Pointer, and *T pointer
-// fields (ref class). Each of these occupies a single field slot whose
-// byte offset matches what wasm3FieldAtOffset resolves. Float fields are
-// excluded (the i64 converting accessor would truncate, and there is no
-// float $go.ptr class); map/chan/func are excluded (not convertible
-// through the i64 accessor, not in the ref class); and slice/string/
+// bool, via the converting accessors), the f64/f32 class (float fields,
+// via the dedicated float accessors that carry the value untouched),
+// unsafe.Pointer, and *T pointer fields (ref class). Each of these
+// occupies a single field slot whose byte offset matches what
+// wasm3FieldAtOffset resolves. map/chan/func are excluded (not
+// convertible through the i64 accessor, not in the ref class); and
+// slice/string/
 // interface fields are excluded for now — they are boxed but their Go ABI
 // field offsets span multiple linear words (24/16 bytes), which does not
 // match the single boxed ref slot, so an escaping &s.sliceField needs
@@ -374,6 +377,8 @@ func wasm3IsFieldInteriorPtr(t *types.Type) bool {
 	case types.TINT, types.TINT64, types.TUINT, types.TUINT64, types.TUINTPTR,
 		types.TINT32, types.TUINT32, types.TINT16, types.TUINT16,
 		types.TINT8, types.TUINT8, types.TBOOL: // i64 class
+		return true
+	case types.TFLOAT64, types.TFLOAT32: // f64/f32 class
 		return true
 	case types.TUNSAFEPTR, types.TPTR: // ref class (single-slot pointer fields)
 		return true

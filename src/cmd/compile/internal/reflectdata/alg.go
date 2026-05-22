@@ -607,9 +607,16 @@ func WasmGCFieldGetter(t *types.Type, off int64) *ir.Func {
 	types.CalcSize(t) // field offsets/sizes must be set for the leaf walk
 	leafT := wasm3LeafFieldType(t, off)
 	refClass := wasm3IsRefClass(leafT)
+	floatClass := leafT != nil && leafT.IsFloat()
 	class, retType := "i64", types.Types[types.TINT64]
-	if refClass {
+	switch {
+	case refClass:
 		class, retType = "ref", leafT
+	case floatClass:
+		class, retType = "f64", leafT
+		if leafT.Kind() == types.TFLOAT32 {
+			class = "f32"
+		}
 	}
 	sym := types.TypeSymLookup(fmt.Sprintf(".ptrget.%s.%s.%d", class, t.LinkString(), off))
 	if sym.Def != nil {
@@ -633,7 +640,7 @@ func WasmGCFieldGetter(t *types.Type, off int64) *ir.Func {
 	pt := ir.NewConvExpr(pos, ir.OCONVNOP, t.PtrTo(), nbase)
 	sel, _ := wasm3FieldSelector(ir.NewStarExpr(pos, pt), t, off)
 	var ret ir.Node = sel
-	if !refClass {
+	if !refClass && !floatClass {
 		if leafT.IsBoolean() {
 			// bool has no numeric conversion in Go (int64(b) is illegal),
 			// so map it explicitly: ret int64 defaults to 0; if the field
@@ -665,9 +672,16 @@ func WasmGCFieldSetter(t *types.Type, off int64) *ir.Func {
 	types.CalcSize(t) // field offsets/sizes must be set for the leaf walk
 	leafT := wasm3LeafFieldType(t, off)
 	refClass := wasm3IsRefClass(leafT)
+	floatClass := leafT != nil && leafT.IsFloat()
 	class, vType := "i64", types.Types[types.TINT64]
-	if refClass {
+	switch {
+	case refClass:
 		class, vType = "ref", leafT
+	case floatClass:
+		class, vType = "f64", leafT
+		if leafT.Kind() == types.TFLOAT32 {
+			class = "f32"
+		}
 	}
 	sym := types.TypeSymLookup(fmt.Sprintf(".ptrset.%s.%s.%d", class, t.LinkString(), off))
 	if sym.Def != nil {
@@ -691,7 +705,7 @@ func WasmGCFieldSetter(t *types.Type, off int64) *ir.Func {
 	pt := ir.NewConvExpr(pos, ir.OCONVNOP, t.PtrTo(), nbase)
 	lhs, ft := wasm3FieldSelector(ir.NewStarExpr(pos, pt), t, off)
 	var rhs ir.Node = nv
-	if !refClass {
+	if !refClass && !floatClass {
 		if ft.IsBoolean() {
 			// int64 -> bool has no conversion in Go; map nonzero to true.
 			rhs = ir.NewBinaryExpr(pos, ir.ONE, nv, ir.NewInt(pos, 0))

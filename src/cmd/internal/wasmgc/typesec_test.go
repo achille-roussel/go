@@ -67,12 +67,14 @@ func TestAppendLeb128(t *testing.T) {
 func TestEncodePreludeTypeSection(t *testing.T) {
 	payload := Table(PreludeTypes()).EncodeTypeSection()
 
-	// Prelude: 11 singleton rec groups in table order: object, bytes,
+	// Prelude: 23 singleton rec groups in table order: object, bytes,
 	// string, the seven go.iptr.<class> fat-pointer wrappers
-	// (i8, i16, i32, i64, f32, f64, ref), then go.iface. Pin the exact
-	// bytes — this is the module preamble every wasm3 binary starts with.
+	// (i8, i16, i32, i64, f32, f64, ref), go.iface, then the
+	// getter/setter/ptr accessor-pair triples for the i64, ref, f64, and
+	// f32 classes. Pin the exact bytes — this is the module preamble every
+	// wasm3 binary starts with.
 	want := []byte{
-		0x11, // 17 rec groups
+		0x17, // 23 rec groups
 
 		// rec { go.object }: sub, 0 supertypes, struct with 0 fields.
 		opRec, 0x01,
@@ -139,6 +141,32 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 		valI32, fieldConst,
 		opRef, 0x0e, fieldConst,
 		opRef, 0x0f, fieldConst,
+
+		// rec { go.getter.f64 }: final func type (anyref, i32) -> f64 —
+		// the reader half of an f64-class interior-pointer accessor pair.
+		// The float classes carry the value untouched (no int reinterpret).
+		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x02, valAnyref, valI32, 0x01, valF64,
+		// rec { go.setter.f64 }: final func type (anyref, i32, f64) -> ().
+		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x03, valAnyref, valI32, valF64, 0x00,
+		// rec { go.ptr.f64 }: struct { anyref base, i32 offset,
+		// (ref go.getter.f64)=index 17, (ref go.setter.f64)=index 18 }.
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x04,
+		valAnyref, fieldConst,
+		valI32, fieldConst,
+		opRef, 0x11, fieldConst,
+		opRef, 0x12, fieldConst,
+
+		// rec { go.getter.f32 }: final func type (anyref, i32) -> f32.
+		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x02, valAnyref, valI32, 0x01, valF32,
+		// rec { go.setter.f32 }: final func type (anyref, i32, f32) -> ().
+		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x03, valAnyref, valI32, valF32, 0x00,
+		// rec { go.ptr.f32 }: struct { anyref base, i32 offset,
+		// (ref go.getter.f32)=index 20, (ref go.setter.f32)=index 21 }.
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x04,
+		valAnyref, fieldConst,
+		valI32, fieldConst,
+		opRef, 0x14, fieldConst,
+		opRef, 0x15, fieldConst,
 	}
 	if !bytes.Equal(payload, want) {
 		t.Fatalf("prelude type section mismatch:\n got % x\nwant % x", payload, want)

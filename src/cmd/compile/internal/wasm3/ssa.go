@@ -2349,6 +2349,12 @@ func wasm3InteriorPtrClass(t *types.Type) (ptrIdx, getterIdx, setterIdx uint32, 
 	if t != nil && (t.IsUnsafePtr() || t.IsPtr() || t.IsInterface() || t.IsSlice() || t.IsString()) {
 		return wasmgc.TypeGoPtrRef, wasmgc.TypeGoGetterRef, wasmgc.TypeGoSetterRef, true
 	}
+	if t != nil && t.IsFloat() {
+		if t.Kind() == types.TFLOAT32 {
+			return wasmgc.TypeGoPtrF32, wasmgc.TypeGoGetterF32, wasmgc.TypeGoSetterF32, false
+		}
+		return wasmgc.TypeGoPtrF64, wasmgc.TypeGoGetterF64, wasmgc.TypeGoSetterF64, false
+	}
 	return wasmgc.TypeGoPtrI64, wasmgc.TypeGoGetterI64, wasmgc.TypeGoSetterI64, false
 }
 

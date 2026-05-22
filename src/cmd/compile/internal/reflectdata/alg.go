@@ -634,7 +634,21 @@ func WasmGCFieldGetter(t *types.Type, off int64) *ir.Func {
 	sel, _ := wasm3FieldSelector(ir.NewStarExpr(pos, pt), t, off)
 	var ret ir.Node = sel
 	if !refClass {
-		ret = typecheck.Conv(sel, types.Types[types.TINT64])
+		if leafT.IsBoolean() {
+			// bool has no numeric conversion in Go (int64(b) is illegal),
+			// so map it explicitly: ret int64 defaults to 0; if the field
+			// is true, set it to 1.
+			rv := typecheck.TempAt(pos, ir.CurFunc, types.Types[types.TINT64])
+			// Initialize on all paths so rv is not "live at entry" on the
+			// if-false path.
+			fn.Body.Append(ir.NewAssignStmt(pos, rv, ir.NewInt(pos, 0)))
+			fn.Body.Append(ir.NewIfStmt(pos, sel, []ir.Node{
+				ir.NewAssignStmt(pos, rv, ir.NewInt(pos, 1)),
+			}, nil))
+			ret = rv
+		} else {
+			ret = typecheck.Conv(sel, types.Types[types.TINT64])
+		}
 	}
 	fn.Body.Append(ir.NewReturnStmt(pos, []ir.Node{ret}))
 	typecheck.FinishFuncBody()
@@ -678,7 +692,12 @@ func WasmGCFieldSetter(t *types.Type, off int64) *ir.Func {
 	lhs, ft := wasm3FieldSelector(ir.NewStarExpr(pos, pt), t, off)
 	var rhs ir.Node = nv
 	if !refClass {
-		rhs = typecheck.Conv(nv, ft)
+		if ft.IsBoolean() {
+			// int64 -> bool has no conversion in Go; map nonzero to true.
+			rhs = ir.NewBinaryExpr(pos, ir.ONE, nv, ir.NewInt(pos, 0))
+		} else {
+			rhs = typecheck.Conv(nv, ft)
+		}
 	}
 	fn.Body.Append(ir.NewAssignStmt(pos, lhs, rhs))
 	typecheck.FinishFuncBody()

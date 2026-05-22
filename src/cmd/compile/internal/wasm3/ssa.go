@@ -670,14 +670,24 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			pca := s.Prog(wasm.ARefCast)
 			pca.From = obj.Addr{Type: obj.TYPE_CONST, Offset: abIdx}
 			i32Const(s, int32(ei))
-			pg := s.Prog(wasm.AArrayGet)
-			pg.From = obj.Addr{Type: obj.TYPE_CONST, Offset: abIdx}
-			pce := s.Prog(wasm.ARefCast)
-			pce.From = obj.Addr{Type: obj.TYPE_CONST, Offset: ebIdx}
-			getValue64(s, v.Args[1])
-			pe := s.Prog(wasm.AStructSet)
-			pe.From = obj.Addr{Type: obj.TYPE_CONST, Offset: ebIdx}
-			pe.To = obj.Addr{Type: obj.TYPE_CONST, Offset: efi}
+			if efi >= 0 {
+				// Struct element: array.get the element ref, then struct.set
+				// its field (mutating the shared element object).
+				pg := s.Prog(wasm.AArrayGet)
+				pg.From = obj.Addr{Type: obj.TYPE_CONST, Offset: abIdx}
+				pce := s.Prog(wasm.ARefCast)
+				pce.From = obj.Addr{Type: obj.TYPE_CONST, Offset: ebIdx}
+				getValue64(s, v.Args[1])
+				pe := s.Prog(wasm.AStructSet)
+				pe.From = obj.Addr{Type: obj.TYPE_CONST, Offset: ebIdx}
+				pe.To = obj.Addr{Type: obj.TYPE_CONST, Offset: efi}
+			} else {
+				// Whole boxed element (string/slice/interface): array.set the
+				// element ref directly. Stack: arrayref, index, value.
+				getValue64(s, v.Args[1])
+				pset := s.Prog(wasm.AArraySet)
+				pset.From = obj.Addr{Type: obj.TYPE_CONST, Offset: abIdx}
+			}
 			break
 		}
 		fieldIdx := wasm3FieldIndexAtOffset(s.FuncInfo(), st, v.AuxInt)
@@ -1365,11 +1375,16 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 			i32Const(s, int32(ei))
 			pg := s.Prog(wasm.AArrayGet)
 			pg.From = obj.Addr{Type: obj.TYPE_CONST, Offset: abIdx}
-			pce := s.Prog(wasm.ARefCast)
-			pce.From = obj.Addr{Type: obj.TYPE_CONST, Offset: ebIdx}
-			pe := s.Prog(wasm.AStructGet)
-			pe.From = obj.Addr{Type: obj.TYPE_CONST, Offset: ebIdx}
-			pe.To = obj.Addr{Type: obj.TYPE_CONST, Offset: efi}
+			if efi >= 0 {
+				// Struct element: ref.cast + struct.get the element's field.
+				pce := s.Prog(wasm.ARefCast)
+				pce.From = obj.Addr{Type: obj.TYPE_CONST, Offset: ebIdx}
+				pe := s.Prog(wasm.AStructGet)
+				pe.From = obj.Addr{Type: obj.TYPE_CONST, Offset: ebIdx}
+				pe.To = obj.Addr{Type: obj.TYPE_CONST, Offset: efi}
+			}
+			// efi < 0: the element is a whole boxed value (string/slice/
+			// interface); the array.get result IS the value.
 			break
 		}
 		fieldIdx := wasm3FieldIndexAtOffset(s.FuncInfo(), st, v.AuxInt)
@@ -2452,6 +2467,19 @@ func wasm3ArrayComponentAtOffset(s *ssagen.State, t *types.Type, off, base int64
 				}
 				return widx, int64(wasm3RegisterArrayBacking(s.FuncInfo(), elemT)), sub / esz,
 					int64(wasm3RegisterStruct(s.FuncInfo(), elemT)), int64(efi), true
+			case f.Type.IsArray() && (f.Type.Elem().IsString() || f.Type.Elem().IsSlice() || f.Type.Elem().IsInterface()):
+				// A string/slice/interface array element is a single boxed
+				// ref (collectBacking gives (array (ref $go.string|...)). Only
+				// whole-element access is handled (sub-component access into a
+				// boxed element would need a further struct.get); the boxed
+				// element ref IS the value, so elemFieldIdx = -1 signals "no
+				// trailing struct.get — the array.get result is the result".
+				elemT := f.Type.Elem()
+				esz := elemT.Size()
+				if esz == 0 || sub%esz != 0 {
+					return
+				}
+				return widx, int64(wasm3RegisterArrayBacking(s.FuncInfo(), elemT)), sub / esz, 0, -1, true
 			case f.Type.IsStruct():
 				return wasm3ArrayComponentAtOffset(s, f.Type, off-f.Offset, widx)
 			}

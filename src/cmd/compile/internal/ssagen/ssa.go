@@ -5733,12 +5733,13 @@ func (s *state) addr(n ir.Node) *ssa.Value {
 				v.Aux = n.X.Type()
 				return v
 			}
-			// wasm3: a struct element is a boxed ref in the (array (ref
-			// box.E)) backing, so &a[i] is that element ref (which IS the
-			// *E interior pointer) obtained via array.get — a later field
-			// access folds to FieldGet on it. Without this the dynamic
-			// index produces an unlowered OffPtr (PTR PTR).
-			if buildcfg.GOARCH == "wasm3" && n.X.Type().Elem().IsStruct() {
+			// wasm3: a struct/string/slice/interface element is a boxed ref
+			// in the (array (ref ...)) backing, so &a[i] is that element ref
+			// (which IS the *elem interior pointer) obtained via array.get —
+			// a later field access or deref folds onto it. Without this the
+			// dynamic index produces an unlowered OffPtr (PTR PTR).
+			if et := n.X.Type().Elem(); buildcfg.GOARCH == "wasm3" &&
+				(et.IsStruct() || et.IsString() || et.IsSlice() || et.IsInterface()) {
 				arrRef := s.expr(n.X)
 				i := s.expr(n.Index)
 				length := s.constInt(types.Types[types.TINT], n.X.Type().NumElem())

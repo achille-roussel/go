@@ -273,22 +273,16 @@ func (c *typeCollector) collectBacking(elem *types.Type) int {
 		// open base type — same storage as an unsafe.Pointer struct field
 		// (see lowerFields). The element is one (ref null $go.object) slot.
 		st = wasmgc.RefStorage(wasmgc.TypeGoObject, true)
-	} else if k := wasm3FlatStride(elem); k > 0 {
-		// Multi-i64 composite elements (string=2, interface=2,
-		// slice=3) lay out flat in an (array i64): the body's
-		// SSA-level access pattern for these is
-		// `(I64Load [off] (I64Add slice.array (I64Shl idx const)))`
-		// — linear-memory shape — which lowers cleanly to an
-		// `array.get_u` on (array i64) once the slice-of-stride
-		// rewrite rules fire. The wasmgc backing has K * len
-		// slots per slice, where K is the per-Go-elem field count
-		// (string = 2, interface = 2, slice = 3). The contiguous
-		// layout matches what Go code expects when it computes
-		// element addresses by hand (`&s[0]`-style), and avoids
-		// the per-element heap allocation the box path would do.
-		// See wasm3-m3-stage-f-interfaces.md for slice-of-composite
-		// notes.
-		st = wasmgc.PrimStorage(wasmgc.I64)
+	} else if elem.IsString() {
+		// A string element is one boxed $go.string ref (the same storage a
+		// string struct field uses), not a flat (data,len) i64 pair. This
+		// keeps the boxed representation consistent and lets element field
+		// access fold to struct.get on the recovered $go.string.
+		st = wasmgc.RefStorage(wasmgc.TypeGoString, true)
+	} else if elem.IsSlice() {
+		st = wasmgc.RefStorage(c.collectSliceStruct(elem), true)
+	} else if elem.IsInterface() {
+		st = wasmgc.RefStorage(wasmgc.TypeGoIface, true)
 	} else {
 		// Composite element: an array of boxed elements (rule 5). This
 		// loses contiguous value layout — one allocation per element —

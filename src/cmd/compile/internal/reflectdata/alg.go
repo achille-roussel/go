@@ -502,13 +502,41 @@ func eqFuncWasm3(t *types.Type) *ir.Func {
 			return ir.NewBinaryExpr(pos, ir.OEQ, mkp(), mkq())
 		}
 	}
-	r := eqExpr(
-		func() ir.Node { return ir.NewStarExpr(pos, ptVar) },
-		func() ir.Node { return ir.NewStarExpr(pos, qtVar) },
-		cmpT)
+	const eqUnrollMax = 4
+	if cmpT.IsArray() && cmpT.NumElem() > eqUnrollMax {
+		// Large array: compare in a runtime loop rather than unrolling one
+		// comparison per element. Unrolling explodes the SSA for the huge
+		// fixed-array cast targets internal/abi uses (e.g. [1<<16]Method,
+		// [1<<17]*Type) — hundreds of thousands of blocks — which makes
+		// ssagen.insertPhis pathologically slow.
+		//   nr = true
+		//   for idx := 0; idx < N; idx++ {
+		//     if !eqElem((*pt)[idx], (*qt)[idx]) { nr = false; break }
+		//   }
+		fn.Body.Append(ir.NewAssignStmt(pos, nr, ir.NewBool(pos, true)))
+		idx := typecheck.TempAt(pos, ir.CurFunc, types.Types[types.TINT])
+		init := ir.NewAssignStmt(pos, idx, ir.NewInt(pos, 0))
+		cond := ir.NewBinaryExpr(pos, ir.OLT, idx, ir.NewInt(pos, cmpT.NumElem()))
+		post := ir.NewAssignStmt(pos, idx, ir.NewBinaryExpr(pos, ir.OADD, idx, ir.NewInt(pos, 1)))
+		elemEq := eqExpr(
+			func() ir.Node { return ir.NewIndexExpr(pos, ir.NewStarExpr(pos, ptVar), idx) },
+			func() ir.Node { return ir.NewIndexExpr(pos, ir.NewStarExpr(pos, qtVar), idx) },
+			cmpT.Elem())
+		body := ir.NewIfStmt(pos, ir.NewUnaryExpr(pos, ir.ONOT, elemEq), []ir.Node{
+			ir.NewAssignStmt(pos, nr, ir.NewBool(pos, false)),
+			ir.NewBranchStmt(pos, ir.OBREAK, nil),
+		}, nil)
+		fn.Body.Append(ir.NewForStmt(pos, init, cond, post, []ir.Node{body}, false))
+		fn.Body.Append(ir.NewReturnStmt(pos, nil))
+	} else {
+		r := eqExpr(
+			func() ir.Node { return ir.NewStarExpr(pos, ptVar) },
+			func() ir.Node { return ir.NewStarExpr(pos, qtVar) },
+			cmpT)
 
-	fn.Body.Append(ir.NewAssignStmt(pos, nr, r))
-	fn.Body.Append(ir.NewReturnStmt(pos, nil))
+		fn.Body.Append(ir.NewAssignStmt(pos, nr, r))
+		fn.Body.Append(ir.NewReturnStmt(pos, nil))
+	}
 
 	typecheck.FinishFuncBody()
 	fn.SetDupok(true)

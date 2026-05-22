@@ -1285,13 +1285,27 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// (FieldSet, a memory op, stays in the main dispatch).
 		st := v.Aux.(*types.Type)
 		structIdx := wasm3RegisterStruct(s.FuncInfo(), st)
-		fieldIdx := wasm3FieldIndexAtOffset(s.FuncInfo(), st, v.AuxInt)
 		getValue64(s, v.Args[0])
 		// The base (*struct) is an anyref local under the pointer-
 		// representation cutover; ref.cast to (ref $go.struct.T) before
 		// struct.get, which rejects the anyref supertype.
 		pCast := s.Prog(wasm.ARefCast)
 		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
+		if fwidx, boxIdx, comp, ok := wasm3BoxedComponentAtOffset(s, st, v.AuxInt, 0); ok {
+			// The offset lands inside a boxed slice/string/interface field
+			// (e.g. a slice field's len/cap): struct.get the boxed header
+			// ref, then struct.get its component (data/len/cap, ...).
+			pf := s.Prog(wasm.AStructGet)
+			pf.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
+			pf.To = obj.Addr{Type: obj.TYPE_CONST, Offset: fwidx}
+			pbc := s.Prog(wasm.ARefCast)
+			pbc.From = obj.Addr{Type: obj.TYPE_CONST, Offset: boxIdx}
+			pc := s.Prog(wasm.AStructGet)
+			pc.From = obj.Addr{Type: obj.TYPE_CONST, Offset: boxIdx}
+			pc.To = obj.Addr{Type: obj.TYPE_CONST, Offset: comp}
+			break
+		}
+		fieldIdx := wasm3FieldIndexAtOffset(s.FuncInfo(), st, v.AuxInt)
 		p := s.Prog(wasm.AStructGet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(fieldIdx)}
@@ -2220,6 +2234,80 @@ func wasm3FieldIndexRec(c *typeCollector, t *types.Type, off int64, base int) (i
 		widx += n
 	}
 	return 0, false
+}
+
+// wasm3BoxedComponentAtOffset handles a Load/Store at a byte offset that
+// falls INSIDE a boxed slice/string/interface field of struct st (e.g. a
+// slice field's len at +8 or cap at +16), which names no top-level wasm
+// field. It returns the field's WasmGC index (fieldWasmIdx, the boxed
+// header ref), the header's wasm type index (boxTypeIdx), and the
+// component field index within that header (compField) for the sub-word
+// being accessed. Codegen then emits a nested struct.get/set: the field
+// ref, then its data/len/cap (slice 0/2/3), data/len (string 0/2), or
+// itab/data (interface 0/1) component. ok=false if off names a top-level
+// field or no boxed sub-word. Recurses into inlined nested structs.
+func wasm3BoxedComponentAtOffset(s *ssagen.State, t *types.Type, off, base int64) (fieldWasmIdx, boxTypeIdx, compField int64, ok bool) {
+	cAny, has := wasm3LiveCollector.Load(s.FuncInfo())
+	if !has {
+		return 0, 0, 0, false
+	}
+	c := cAny.(*typeCollector)
+	widx := base
+	const ptr = 8 // PtrSize
+	for _, f := range t.Fields() {
+		n := int64(len(c.lowerFields(f.Type)))
+		if off == f.Offset {
+			return 0, 0, 0, false // top-level field start — not our case
+		}
+		if off > f.Offset && off < f.Offset+f.Type.Size() {
+			sub := off - f.Offset
+			switch {
+			case f.Type.IsSlice():
+				comp := int64(-1)
+				switch sub {
+				case 0:
+					comp = 0 // data
+				case ptr:
+					comp = 2 // len
+				case 2 * ptr:
+					comp = 3 // cap
+				}
+				if comp < 0 {
+					return 0, 0, 0, false
+				}
+				return widx, int64(wasm3RegisterSliceStruct(s.FuncInfo(), f.Type)), comp, true
+			case f.Type.IsString():
+				comp := int64(-1)
+				switch sub {
+				case 0:
+					comp = 0 // data
+				case ptr:
+					comp = 2 // len
+				}
+				if comp < 0 {
+					return 0, 0, 0, false
+				}
+				return widx, int64(wasmgc.TypeGoString), comp, true
+			case f.Type.IsInterface():
+				comp := int64(-1)
+				switch sub {
+				case 0:
+					comp = 0 // itab
+				case ptr:
+					comp = 1 // data
+				}
+				if comp < 0 {
+					return 0, 0, 0, false
+				}
+				return widx, int64(wasmgc.TypeGoIface), comp, true
+			case f.Type.IsStruct():
+				return wasm3BoxedComponentAtOffset(s, f.Type, off-f.Offset, widx)
+			}
+			return 0, 0, 0, false
+		}
+		widx += n
+	}
+	return 0, 0, 0, false
 }
 
 // wasm3FieldAtOffset returns the leaf (possibly nested) struct field at

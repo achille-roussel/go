@@ -1192,6 +1192,37 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoIface)}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
 
+	case ssa.OpWasm3IfaceMake:
+		// Build an interface: struct.new $go.iface {itab, data}. Each word
+		// must be an anyref. A word that is a type descriptor / static
+		// symbol address (OpWasm3LoweredAddr — the itab, and the data for a
+		// zero-size concrete type whose new() returns &zerobase) is read
+		// from its opaque WasmGC identity ref-global via global.get +
+		// R_WASMDESCRIPTOR rather than its i64 linear address (an i64 can't
+		// be boxed into an anyref field). Other words are already refs.
+		wasm3EnsureCollector(s.FuncInfo())
+		emitWord := func(a *ssa.Value) {
+			if a.Op == ssa.OpWasm3LoweredAddr {
+				if sym, ok := a.Aux.(*obj.LSym); ok {
+					// Consume + drop the linear address operand (only
+					// materializes the symbol address; no linear read) to
+					// keep the OnWasmStack accounting balanced, then read
+					// the descriptor's identity ref-global.
+					getValue64(s, a)
+					s.Prog(wasm.ADrop)
+					p := s.Prog(wasm.AGlobalGet)
+					p.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: sym}
+					p.Mark = wasm.Wasm3DescriptorRef
+					return
+				}
+			}
+			getValue64(s, a)
+		}
+		emitWord(v.Args[0])
+		emitWord(v.Args[1])
+		p := s.Prog(wasm.AStructNew)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoIface)}
+
 	case ssa.OpWasm3MakeFieldPtr:
 		// Materialize $go.ptr.i64 for &container.field. v.Aux is the
 		// container struct *types.Type; v.AuxInt is the field byte

@@ -153,6 +153,13 @@ const (
 	// obj backend emits an R_WASMGLOBAL relocation rather than the
 	// R_WASMCLOSURESINGLETON it emits for a bare NAME_EXTERN global.get.
 	Wasm3GlobalRef = 1 << 1
+	// Wasm3DescriptorRef (GOARCH=wasm3) marks a global.get that reads a
+	// type descriptor's opaque WasmGC identity ref-global (a
+	// (global (ref $go.object) (struct.new_default $go.object))). The obj
+	// backend emits an R_WASMDESCRIPTOR relocation; the linker allocates
+	// one such global per descriptor symbol so distinct types get distinct
+	// identity refs (ref.eq). Used to box a type descriptor into $go.iface.
+	Wasm3DescriptorRef = 1 << 2
 )
 
 const (

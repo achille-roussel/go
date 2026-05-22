@@ -323,6 +323,12 @@ func init() {
 		// as anyref. arg0 = interface ref.
 		{name: "IfaceItab", argLength: 1, reg: gp11, typ: "BytePtr"}, // struct.get $go.iface 0
 		{name: "IfaceData", argLength: 1, reg: gp11, typ: "BytePtr"}, // struct.get $go.iface 1
+		// IfaceMake builds an interface value: struct.new $go.iface
+		// {itab, data}. arg0 = itab (a type descriptor — its opaque
+		// identity ref via global.get/R_WASMDESCRIPTOR when it is a
+		// descriptor symbol address, else an already-ref value), arg1 =
+		// data (a ref). Result anyref.
+		{name: "IfaceMake", argLength: 2, reg: gp21, typ: "BytePtr"}, // struct.new $go.iface
 
 		{name: "ArrayNew", argLength: 2, reg: gp21, aux: "Typ"},                                               // array.new $Aux; arg0=element value, arg1=length
 		{name: "ArrayNewDefault", argLength: 1, reg: gp11, aux: "Typ"},                                        // array.new_default $Aux; arg0=length

@@ -808,6 +808,8 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 			relocType := objabi.R_WASMCLOSURESINGLETON
 			if p.Mark&Wasm3GlobalRef != 0 {
 				relocType = objabi.R_WASMGLOBAL
+			} else if p.Mark&Wasm3DescriptorRef != 0 {
+				relocType = objabi.R_WASMDESCRIPTOR
 			}
 			relocs = append(relocs, obj.Reloc{
 				Type: relocType,

@@ -480,6 +480,17 @@ const (
 	// global.set carrying this reloc. See doc/wasm3-pointer-cutover.
 	R_WASMGLOBAL
 
+	// R_WASMDESCRIPTOR (GOARCH=wasm3 only) resolves to the wasm global
+	// index of a type descriptor's opaque WasmGC identity ref. Sym names
+	// the descriptor symbol. The linker allocates one immutable
+	// (global (ref $go.object) (struct.new_default $go.object)) per
+	// distinct descriptor symbol, so distinct types get distinct identity
+	// refs (ref.eq); a global.get carrying this reloc reads it. Used to
+	// box a type descriptor into $go.iface for interface construction
+	// (IMake) without dereferencing the descriptor. See
+	// doc/wasm3-iface-boxing-derisk.wat.
+	R_WASMDESCRIPTOR
+
 	// R_WEAK marks the relocation as a weak reference.
 	// A weak relocation does not make the symbol it refers to reachable,
 	// and is only honored by the linker if the symbol is in some other way

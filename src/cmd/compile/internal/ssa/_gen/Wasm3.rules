@@ -650,6 +650,7 @@
 // descriptor-as-ref work and is lowered separately.)
 (ITab x) => (IfaceItab x)
 (IData x) => (IfaceData x)
+(IMake itab data) => (IfaceMake itab data)
 
 // M3 Stage E phase 2: ref-backed slice element access lowered to
 // array.get / array.set on the wasmgc backing.

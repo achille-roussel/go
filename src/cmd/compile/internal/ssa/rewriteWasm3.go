@@ -236,6 +236,8 @@ func rewriteValueWasm3(v *Value) bool {
 		return rewriteValueWasm3_OpHmul64u(v)
 	case OpIData:
 		return rewriteValueWasm3_OpIData(v)
+	case OpIMake:
+		return rewriteValueWasm3_OpIMake(v)
 	case OpITab:
 		return rewriteValueWasm3_OpITab(v)
 	case OpInterCall:
@@ -1359,6 +1361,19 @@ func rewriteValueWasm3_OpIData(v *Value) bool {
 		x := v_0
 		v.reset(OpWasm3IfaceData)
 		v.AddArg(x)
+		return true
+	}
+}
+func rewriteValueWasm3_OpIMake(v *Value) bool {
+	v_1 := v.Args[1]
+	v_0 := v.Args[0]
+	// match: (IMake itab data)
+	// result: (IfaceMake itab data)
+	for {
+		itab := v_0
+		data := v_1
+		v.reset(OpWasm3IfaceMake)
+		v.AddArg2(itab, data)
 		return true
 	}
 }

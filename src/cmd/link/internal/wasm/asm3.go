@@ -59,6 +59,7 @@ type wasm3Module struct {
 	// `global.get` operand patches to the right index.
 	closureSingletons map[wasm3SingletonKey]uint64
 	boxedGlobals      map[loader.Sym]uint64
+	descriptorGlobals map[loader.Sym]uint64
 	// globalEntries is the unified, index-ordered list of dynamically
 	// allocated wasm globals (closure singletons + boxed package-level
 	// vars). They are assigned indices 3,4,... after the three fixed
@@ -70,9 +71,11 @@ type wasm3Module struct {
 
 // wasm3GlobalEntry is one dynamically-allocated wasm global.
 type wasm3GlobalEntry struct {
-	boxed  bool              // true: boxed package-level var; false: closure singleton
-	key    wasm3SingletonKey // closure singleton (when !boxed)
-	boxSym loader.Sym        // boxed package-level var (when boxed)
+	boxed      bool              // true: boxed package-level var
+	descriptor bool              // true: type-descriptor identity ref
+	key        wasm3SingletonKey // closure singleton (when !boxed && !descriptor)
+	boxSym     loader.Sym        // boxed package-level var (when boxed)
+	descSym    loader.Sym        // type-descriptor symbol (when descriptor)
 }
 
 // wasm3SingletonKey identifies a closure-singleton uniquely by the
@@ -115,6 +118,26 @@ func (m *wasm3Module) getOrAllocBoxedGlobal(sym loader.Sym) uint64 {
 	idx := uint64(3 + len(m.globalEntries))
 	m.boxedGlobals[sym] = idx
 	m.globalEntries = append(m.globalEntries, wasm3GlobalEntry{boxed: true, boxSym: sym})
+	return idx
+}
+
+// getOrAllocDescriptorGlobal returns the wasm global index assigned to
+// the type-descriptor symbol sym's opaque WasmGC identity ref, allocating
+// it on first use. Each distinct descriptor gets one immutable
+// (global (ref $go.object) (struct.new_default $go.object)), so distinct
+// types compare distinct under ref.eq. Shares the dynamic-global index
+// space with closure singletons and boxed vars (see globalEntries).
+// See R_WASMDESCRIPTOR / doc/wasm3-iface-boxing-derisk.wat.
+func (m *wasm3Module) getOrAllocDescriptorGlobal(sym loader.Sym) uint64 {
+	if m.descriptorGlobals == nil {
+		m.descriptorGlobals = map[loader.Sym]uint64{}
+	}
+	if idx, ok := m.descriptorGlobals[sym]; ok {
+		return idx
+	}
+	idx := uint64(3 + len(m.globalEntries))
+	m.descriptorGlobals[sym] = idx
+	m.globalEntries = append(m.globalEntries, wasm3GlobalEntry{descriptor: true, descSym: sym})
 	return idx
 }
 
@@ -712,6 +735,11 @@ func writeWasm3FuncBody(ctxt *ld.Link, ldr *loader.Loader, fn loader.Sym, wfn *b
 			// Allocate (or reuse) one wasm anyref ref-global for it and
 			// patch the global.get/global.set operand to its index.
 			writeUleb128(wfn, m.getOrAllocBoxedGlobal(rs))
+		case objabi.R_WASMDESCRIPTOR:
+			// Type-descriptor identity ref: r.Sym names the descriptor.
+			// Allocate (or reuse) one struct.new_default $go.object
+			// identity global and patch the global.get operand to it.
+			writeUleb128(wfn, m.getOrAllocDescriptorGlobal(rs))
 		default:
 			ldr.Errorf(fn, "bad reloc type %d for wasm3", r.Type())
 		}
@@ -821,6 +849,22 @@ func writeGlobalSec3(ctxt *ld.Link, ldr *loader.Loader, m *wasm3Module, hostImpo
 			ctxt.Out.WriteByte(0x01) // mutable
 			ctxt.Out.WriteByte(0xD0) // ref.null
 			ctxt.Out.WriteByte(0x6E) // heaptype = any
+			ctxt.Out.WriteByte(0x0b) // end
+			continue
+		}
+		if e.descriptor {
+			// Type-descriptor identity ref: an immutable
+			// (global (ref null $go.object) (struct.new_default $go.object)).
+			// The constant struct.new_default init runs at instantiation
+			// (no _start needed); each distinct descriptor symbol gets its
+			// own global, so distinct types are distinct refs (ref.eq).
+			// Prelude type indices map identically into the module table.
+			ctxt.Out.WriteByte(0x63) // ref null typeidx
+			writeSleb128(ctxt.Out, int64(wasmgc.TypeGoObject))
+			ctxt.Out.WriteByte(0x00) // immutable
+			ctxt.Out.WriteByte(0xFB) // GC prefix
+			ctxt.Out.WriteByte(0x01) // struct.new_default sub-opcode
+			writeUleb128(ctxt.Out, uint64(wasmgc.TypeGoObject))
 			ctxt.Out.WriteByte(0x0b) // end
 			continue
 		}

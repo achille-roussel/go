@@ -3741,6 +3741,27 @@ func (s *state) exprCheckPtr(n ir.Node, checkPtrOK bool) *ssa.Value {
 
 	case ir.OADDR:
 		n := n.(*ir.AddrExpr)
+		// wasm3: &structval.boxedField (taking the address of a boxed
+		// array/struct field as a VALUE — e.g. a call arg block(&s.seed))
+		// is the field's WasmGC ref (FieldGet), not a linear OffPtr.
+		// Handled here (not in addr) so a field STORE destination still
+		// goes through addr -> OffPtr -> FieldSet.
+		if buildcfg.GOARCH == "wasm3" {
+			if sel, ok := n.X.(*ir.SelectorExpr); ok && (sel.Op() == ir.ODOT || sel.Op() == ir.ODOTPTR) {
+				var base *ssa.Value
+				var structT *types.Type
+				if sel.Op() == ir.ODOTPTR {
+					base = s.exprPtr(sel.X, sel.Bounded(), sel.Pos())
+					structT = sel.X.Type().Elem()
+				} else {
+					base = s.addr(sel.X)
+					structT = sel.X.Type()
+				}
+				if v := s.wasm3BoxedFieldAddr(n.Type(), structT, sel.Offset(), base); v != nil {
+					return v
+				}
+			}
+		}
 		return s.addr(n.X)
 
 	case ir.ORESULT:
@@ -5561,6 +5582,28 @@ func etypesign(e types.Kind) int8 {
 
 // addr converts the address of the expression n to SSA, adds it to s and returns the SSA result.
 // The value that the returned Value represents is guaranteed to be non-nil.
+// wasm3BoxedFieldAddr returns the "address" of a boxed array/struct
+// field base.field as the field's WasmGC ref (a FieldGet), or nil when
+// not applicable (non-wasm3, base not a struct, or the field is not a
+// boxed array/struct). In wasm3 a boxed field is one ref and *fieldType
+// == fieldType (the same ref), so &base.field IS that ref — usable both
+// as a bare pointer value (e.g. a call arg, block(&s.seed, ...)) and as
+// an interior-pointer container. A linear OffPtr into a boxed field
+// names no wasm field. ptrT is the *fieldType address type; structT is
+// the (non-pointer) struct type; base is the struct ref.
+func (s *state) wasm3BoxedFieldAddr(ptrT, structT *types.Type, off int64, base *ssa.Value) *ssa.Value {
+	if buildcfg.GOARCH != "wasm3" || structT == nil || !structT.IsStruct() {
+		return nil
+	}
+	ft := ptrT.Elem()
+	if ft == nil || !(ft.IsArray() || ft.IsStruct()) || ft.Size() == 0 {
+		return nil
+	}
+	v := s.newValue2A(ssa.OpWasm3FieldGet, ptrT, structT, base, s.mem())
+	v.AuxInt = off
+	return v
+}
+
 func (s *state) addr(n ir.Node) *ssa.Value {
 	if n.Op() != ir.ONAME {
 		s.pushLine(n.Pos())

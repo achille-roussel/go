@@ -17,3 +17,14 @@
 // byte offset (auxint); codegen emits struct.new $go.ptr.i64 with
 // ref.func get/set accessors generated for (struct, field).
 (OffPtr <t> [off] base) && base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct() && wasm3IsFieldInteriorPtr(t) => (MakeFieldPtr <t> {base.Type.Elem()} [off] base)
+
+// An escaping &container.embeddedStruct at offset 0 is the same boxed
+// object reinterpreted as the embedded (prefix) struct type. Go C-style
+// struct embedding lays the embedded struct's fields first, and wasm3
+// flattens embedded struct fields (wasmtype.go lowerFields), so the
+// embedded struct is the exact prefix of the container's wasm struct.
+// The "address" is therefore the container ref itself — pointer locals
+// are anyref and the use site ref.casts to the needed type. This is the
+// shape produced by promoted-method wrappers, e.g. internal/abi's
+// (*structTypeUncommon).Elem calling the embedded Type's Elem.
+(OffPtr <t> [0] base) && base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct() && t.Elem() != nil && t.Elem().IsStruct() => base

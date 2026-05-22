@@ -28,6 +28,21 @@ func rewriteValueWasm3latelower_OpOffPtr(v *Value) bool {
 		v.AddArg(base)
 		return true
 	}
+	// match: (OffPtr <t> [0] base)
+	// cond: base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct() && t.Elem() != nil && t.Elem().IsStruct()
+	// result: base
+	for {
+		t := v.Type
+		if auxIntToInt64(v.AuxInt) != 0 {
+			break
+		}
+		base := v_0
+		if !(base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct() && t.Elem() != nil && t.Elem().IsStruct()) {
+			break
+		}
+		v.copyOf(base)
+		return true
+	}
 	return false
 }
 func rewriteBlockWasm3latelower(b *Block) bool {

@@ -656,12 +656,14 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		// rejects the anyref supertype).
 		st := v.Aux.(*types.Type)
 		structIdx := wasm3RegisterStruct(s.FuncInfo(), st)
-		if fwidx, boxIdx, comp, ok := wasm3BoxedComponentAtOffset(s, st, v.AuxInt, 0); ok {
-			// The offset lands inside a boxed slice/string/interface field
-			// (e.g. s.Value.itab/data at off+0/+8 of an iface field):
-			// struct.get the boxed header ref, then struct.set its component
-			// (data/len/cap/itab/...) — mirroring FieldGet's BoxedComponent
-			// branch but with a struct.set at the leaf.
+		// Restrict to iface components: container/ring's autogen eq stores
+		// the iface field's itab/data halves into a temp via per-field
+		// stores at off+0/+8 (FieldSet path), which previously panicked.
+		// String/slice components also reach this offset but pass a value
+		// with no per-value local in some SSA shapes (multi-return tuple
+		// extraction in internal/gover.Parse) — Reg() crashes in
+		// getValue64. Until that shape is understood, fire only for ifaces.
+		if fwidx, boxIdx, comp, ok := wasm3BoxedComponentAtOffset(s, st, v.AuxInt, 0); ok && boxIdx == int64(wasmgc.TypeGoIface) {
 			getValue64(s, v.Args[0])
 			pCast := s.Prog(wasm.ARefCast)
 			pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}

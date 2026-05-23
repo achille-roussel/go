@@ -270,4 +270,83 @@
         (local.set $i (i64.add (local.get $i) (i64.const 1)))
         (br $cmp)))
     (i32.const 1))
+
+  ;; ============================================================
+  ;; Linear-memory boundary
+  ;; ============================================================
+  ;; On wasm3 the host (WASI, the JS embedder, another non-WasmGC
+  ;; module) can only read linear memory — never WasmGC objects. So
+  ;; passing a byte slice to a host import requires serializing it
+  ;; through a linear-memory scratch arena managed here.
+  ;;
+  ;; This module owns the linear memory and a bump pointer global; the
+  ;; three primitives below let callers (the compiler-generated
+  ;; //go:wasmimport bridge in linearmem_wasm3.go) marshal arguments
+  ;; into the arena and unmarshal results back into WasmGC bytes.
+  ;;
+  ;; Memory is exported so the host can pass linear-memory offsets to
+  ;; WASI / other imports that take a `memory` argument referring back
+  ;; into this module's memory (mainwasi sees `go_runtime.mem`).
+  ;;
+  ;; Single-arena, single-memory model — `mem` selector is accepted to
+  ;; match the linearmem_wasm3.go signature but currently ignored (wasip1
+  ;; has one memory).
+  (memory (export "mem") 1)
+  (global $bump (mut i32) (i32.const 0))
+
+  ;; WriteLinearMemory(mem, data) -> i32 (the absolute offset of the
+  ;; copy). Allocates len(data) bytes at $bump, byte-copies data into
+  ;; linear memory using array.get_u + i32.store8, advances $bump,
+  ;; returns the starting offset. The caller saves this offset and
+  ;; passes it to ResetLinearMemory at the end of the marshalling
+  ;; sequence to free the whole sequence at once.
+  (func (export "WriteLinearMemory")
+      (param $mem i32) (param $data (ref null $go.bytes)) (result i32)
+    (local $n i32) (local $off i32) (local $i i32)
+    (local $arr (ref $go.bytes))
+    (if (ref.is_null (local.get $data))
+      (then (return (global.get $bump))))
+    (local.set $arr (ref.as_non_null (local.get $data)))
+    (local.set $n (array.len (local.get $arr)))
+    (local.set $off (global.get $bump))
+    (local.set $i (i32.const 0))
+    (block $done
+      (loop $copy
+        (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+        (i32.store8
+          (i32.add (local.get $off) (local.get $i))
+          (array.get_u $go.bytes (local.get $arr) (local.get $i)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $copy)))
+    (global.set $bump (i32.add (local.get $off) (local.get $n)))
+    (local.get $off))
+
+  ;; ReadLinearMemory(mem, off, length) -> (ref $go.bytes). Allocates
+  ;; a fresh $go.bytes of size length and copies bytes from linear
+  ;; memory at [off, off+length). length==0 returns a fresh empty
+  ;; array (no null pun — string/slice backings are non-null by type).
+  (func (export "ReadLinearMemory")
+      (param $mem i32) (param $off i32) (param $length i32)
+      (result (ref $go.bytes))
+    (local $dst (ref $go.bytes))
+    (local $i i32)
+    (local.set $dst (array.new_default $go.bytes (local.get $length)))
+    (if (i32.eqz (local.get $length)) (then (return (local.get $dst))))
+    (local.set $i (i32.const 0))
+    (block $done
+      (loop $copy
+        (br_if $done (i32.ge_u (local.get $i) (local.get $length)))
+        (array.set $go.bytes (local.get $dst) (local.get $i)
+          (i32.load8_u (i32.add (local.get $off) (local.get $i))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $copy)))
+    (local.get $dst))
+
+  ;; ResetLinearMemory(mem, off) — rewinds $bump to off. Pass the first
+  ;; offset returned by a WriteLinearMemory marshalling sequence to
+  ;; release the whole sequence at once. No-op if off is past $bump
+  ;; (the bump only moves monotonically downward via Reset).
+  (func (export "ResetLinearMemory") (param $mem i32) (param $off i32)
+    (if (i32.lt_u (local.get $off) (global.get $bump))
+      (then (global.set $bump (local.get $off)))))
 )

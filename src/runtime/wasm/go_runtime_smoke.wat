@@ -44,6 +44,12 @@
     (func $stringHash (param (ref null $go.string)) (param i64) (result i64)))
   (import "go_runtime" "stringConcat2"
     (func $stringConcat2 (param (ref null $go.string)) (param (ref null $go.string)) (result (ref $go.string))))
+  (import "go_runtime" "WriteLinearMemory"
+    (func $WriteLinearMemory (param i32) (param (ref null $go.bytes)) (result i32)))
+  (import "go_runtime" "ReadLinearMemory"
+    (func $ReadLinearMemory (param i32) (param i32) (param i32) (result (ref $go.bytes))))
+  (import "go_runtime" "ResetLinearMemory"
+    (func $ResetLinearMemory (param i32) (param i32)))
 
   ;; makeBytes($a, $b, $c) -> a freshly-allocated 3-byte $go.bytes
   ;; holding {a, b, c} (i32 byte values). Used by the test cases to
@@ -82,6 +88,8 @@
     (local $empty (ref $go.string))
     (local $cat (ref $go.string))
     (local $hashed i64)
+    (local $off1 i32) (local $off2 i32) (local $off3 i32)
+    (local $read (ref $go.bytes)) (local $de (ref $go.bytes))
 
     ;; strings: "abc", "abc"(separate backing), "abd", "ab", ""
     (local.set $abc  (call $mkString (call $makeBytes3 (i32.const 97) (i32.const 98) (i32.const 99))
@@ -184,5 +192,52 @@
                   (call $mkString
                     (call $makeBytes5 (i32.const 97) (i32.const 98) (i32.const 99) (i32.const 100) (i32.const 101))
                     (i64.const 0) (i64.const 5))) (i32.const 1)) (then (unreachable)))
+
+    ;; ----- WriteLinearMemory + ReadLinearMemory + ResetLinearMemory round-trip -----
+    ;; write "abc" (3 bytes) into linear memory, read 3 bytes back,
+    ;; compare against the source. Then write "de" (2 bytes), confirm
+    ;; the bump pointer advanced (next write returns a higher offset).
+    ;; Then Reset to the start and confirm the next write reuses the
+    ;; original offset.
+    (block $linmem_done
+      ;; off1 = WriteLinearMemory(0, abc.backing)  -> some offset (typically 0 on first call)
+      ;; read1 = ReadLinearMemory(0, off1, 3)
+      ;; assert bytesEqualRange(abc.backing, 0, read1, 0, 3) == 1
+      (local.set $off1 (call $WriteLinearMemory (i32.const 0)
+                              (struct.get $go.string 0 (local.get $abc))))
+      (local.set $read (call $ReadLinearMemory (i32.const 0) (local.get $off1) (i32.const 3)))
+      (if (i32.ne (call $bytesEqualRange
+                    (struct.get $go.string 0 (local.get $abc)) (i64.const 0)
+                    (local.get $read) (i64.const 0)
+                    (i64.const 3)) (i32.const 1)) (then (unreachable)))
+
+      ;; write "de"; off2 must be > off1 (bump advanced)
+      (local.set $de (call $makeBytes3 (i32.const 100) (i32.const 101) (i32.const 0)))
+      ;; truncate to 2 by cloning the first 2 bytes
+      (local.set $de (call $bytesClone (local.get $de) (i64.const 0) (i64.const 2)))
+      (local.set $off2 (call $WriteLinearMemory (i32.const 0) (local.get $de)))
+      (if (i32.le_u (local.get $off2) (local.get $off1)) (then (unreachable)))
+      ;; read "de" back, compare
+      (local.set $read (call $ReadLinearMemory (i32.const 0) (local.get $off2) (i32.const 2)))
+      (if (i32.ne (call $bytesEqualRange
+                    (local.get $de) (i64.const 0)
+                    (local.get $read) (i64.const 0)
+                    (i64.const 2)) (i32.const 1)) (then (unreachable)))
+
+      ;; Reset to off1 frees both writes; next write should land at off1.
+      (call $ResetLinearMemory (i32.const 0) (local.get $off1))
+      (local.set $off3 (call $WriteLinearMemory (i32.const 0)
+                              (struct.get $go.string 0 (local.get $abc))))
+      (if (i32.ne (local.get $off3) (local.get $off1)) (then (unreachable)))
+
+      ;; ReadLinearMemory(_, _, 0) returns a fresh empty array
+      (if (i32.ne (i32.const 0) (array.len
+                    (call $ReadLinearMemory (i32.const 0) (i32.const 0) (i32.const 0))))
+        (then (unreachable)))
+
+      ;; WriteLinearMemory of null returns the current bump offset (no allocation)
+      (if (i32.ne (call $WriteLinearMemory (i32.const 0) (ref.null $go.bytes))
+                  (i32.add (local.get $off3) (i32.const 3)))
+        (then (unreachable))))
   )
 )

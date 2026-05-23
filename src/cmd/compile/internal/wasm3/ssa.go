@@ -663,7 +663,7 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		// with no per-value local in some SSA shapes (multi-return tuple
 		// extraction in internal/gover.Parse) — Reg() crashes in
 		// getValue64. Until that shape is understood, fire only for ifaces.
-		if fwidx, boxIdx, comp, ok := wasm3BoxedComponentAtOffset(s, st, v.AuxInt, 0); ok && boxIdx == int64(wasmgc.TypeGoIface) {
+		if fwidx, boxIdx, comp, ok := wasm3BoxedComponentAtOffset(s, st, v.AuxInt, 0); ok {
 			getValue64(s, v.Args[0])
 			pCast := s.Prog(wasm.ARefCast)
 			pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
@@ -2078,6 +2078,20 @@ func getValue64(s *ssagen.State, v *ssa.Value) {
 
 	if idx, ok := wasm3ValueLocalIdx(s, v); ok {
 		localGetIdx(s, idx)
+		return
+	}
+
+	// Defensive wasm3 fallback: if a value has no per-value local
+	// (wasm3PlaceValues skipped it, e.g. OpSelectN from a multi-return
+	// Call that survived to genssa) AND no register (wasm3 doesn't run
+	// regalloc, so f.RegAlloc is nil), v.Reg() panics. Re-emit the
+	// producer inline via ssaGenValueOnStack — pure ops are
+	// idempotent; the risk of double-emit only manifests if a side-
+	// effecting op reaches here, which wasm3PlaceValues should have
+	// placed. Single-consumer values are unaffected (they hit the
+	// OnWasmStack branch above).
+	if v.Block.Func.RegAlloc == nil {
+		ssaGenValueOnStack(s, v, true)
 		return
 	}
 

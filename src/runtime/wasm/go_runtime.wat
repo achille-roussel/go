@@ -159,6 +159,65 @@
         (br $hash)))
     (local.get $x))
 
+  ;; stringConcat2(a, b) -> (ref $go.string) holding a + b. The binary
+  ;; concat primitive — the compiler chains it for N-ary `a + b + c`
+  ;; rather than the wat module taking a slice-of-strings (which would
+  ;; need a per-program $go.slice.string type index, not a fixed prelude
+  ;; one). The 0-length operand fast paths return the other operand
+  ;; unchanged, which preserves the shared-backing invariant whenever
+  ;; possible. Null is treated as the empty string. Validation: a
+  ;; non-empty concat needs a non-null backing on the non-empty side(s);
+  ;; the trapping ref.as_non_null is correct (the language guarantees a
+  ;; non-empty string has a backing).
+  (func (export "stringConcat2")
+      (param $a (ref null $go.string)) (param $b (ref null $go.string))
+      (result (ref $go.string))
+    (local $sa (ref null $go.string)) (local $sb (ref null $go.string))
+    (local $la i64) (local $lb i64)
+    (local $ba (ref null $go.bytes)) (local $bb (ref null $go.bytes))
+    (local $oa i64) (local $ob i64)
+    (local $dst (ref $go.bytes))
+    (if (ref.is_null (local.get $a))
+      (then (local.set $la (i64.const 0)))
+      (else
+        (local.set $sa (ref.as_non_null (local.get $a)))
+        (local.set $la (struct.get $go.string 2 (local.get $sa)))))
+    (if (ref.is_null (local.get $b))
+      (then (local.set $lb (i64.const 0)))
+      (else
+        (local.set $sb (ref.as_non_null (local.get $b)))
+        (local.set $lb (struct.get $go.string 2 (local.get $sb)))))
+    ;; fast paths: either operand empty -> return the other (or fresh
+    ;; empty if both empty). Returning sa/sb directly preserves the
+    ;; shared-backing invariant for the empty-concat case.
+    (if (i64.eqz (local.get $lb))
+      (then
+        (if (i64.eqz (local.get $la))
+          (then (return (struct.new $go.string
+                          (array.new_default $go.bytes (i32.const 0))
+                          (i64.const 0) (i64.const 0)))))
+        (return (ref.as_non_null (local.get $sa)))))
+    (if (i64.eqz (local.get $la))
+      (then (return (ref.as_non_null (local.get $sb)))))
+    ;; both non-empty: allocate dst of size la+lb, copy a then b.
+    (local.set $ba (struct.get $go.string 0 (local.get $sa)))
+    (local.set $bb (struct.get $go.string 0 (local.get $sb)))
+    (local.set $oa (struct.get $go.string 1 (local.get $sa)))
+    (local.set $ob (struct.get $go.string 1 (local.get $sb)))
+    (local.set $dst (array.new_default $go.bytes
+                      (i32.wrap_i64 (i64.add (local.get $la) (local.get $lb)))))
+    (array.copy $go.bytes $go.bytes
+      (local.get $dst) (i32.const 0)
+      (local.get $ba) (i32.wrap_i64 (local.get $oa))
+      (i32.wrap_i64 (local.get $la)))
+    (array.copy $go.bytes $go.bytes
+      (local.get $dst) (i32.wrap_i64 (local.get $la))
+      (local.get $bb) (i32.wrap_i64 (local.get $ob))
+      (i32.wrap_i64 (local.get $lb)))
+    (struct.new $go.string
+      (local.get $dst) (i64.const 0)
+      (i64.add (local.get $la) (local.get $lb))))
+
   ;; bytesClone(src, off, n) -> (ref $go.bytes) holding a fresh copy of
   ;; src[off:off+n]. The primitive behind `string(b)` and any
   ;; mutability-breaking copy: the compiler hands the source backing,

@@ -124,6 +124,27 @@
         (br $cmp)))
     (i32.const 1))
 
+  ;; bytesClone(src, off, n) -> (ref $go.bytes) holding a fresh copy of
+  ;; src[off:off+n]. The primitive behind `string(b)` and any
+  ;; mutability-breaking copy: the compiler hands the source backing,
+  ;; offset, and length; this allocates a fresh (mutable) array and
+  ;; fills it with array.copy, returning a backing whose mutability is
+  ;; harmless because it never escapes back to the caller's []byte. The
+  ;; n==0 case returns a fresh zero-length array (no null pun — string
+  ;; backings are non-null by type, and `array.new_default $go.bytes 0`
+  ;; is valid). No bounds checking — the compiler proves off+n in range.
+  (func (export "bytesClone")
+      (param $src (ref null $go.bytes)) (param $off i64) (param $n i64)
+      (result (ref $go.bytes))
+    (local $dst (ref $go.bytes))
+    (local.set $dst (array.new_default $go.bytes (i32.wrap_i64 (local.get $n))))
+    (if (i64.eqz (local.get $n)) (then (return (local.get $dst))))
+    (array.copy $go.bytes $go.bytes
+      (local.get $dst) (i32.const 0)
+      (ref.as_non_null (local.get $src)) (i32.wrap_i64 (local.get $off))
+      (i32.wrap_i64 (local.get $n)))
+    (local.get $dst))
+
   ;; bytesEqualRange(a, ao, b, bo, n) -> 1 if a[ao:ao+n] == b[bo:bo+n],
   ;; else 0. The general byte-equality building block: callers compose
   ;; it for whole-array equality (ao=bo=0, n=array.len), slice equality

@@ -78,4 +78,49 @@
     (if (i64.lt_u (local.get $la) (local.get $lb)) (then (return (i32.const -1))))
     (if (i64.gt_u (local.get $la) (local.get $lb)) (then (return (i32.const  1))))
     (i32.const 0))
+
+  ;; stringEqual(a, b) -> 1 if a == b, else 0. Length-first fast path
+  ;; lets the common unequal-strings case skip the byte loop. Null refs
+  ;; are the empty string (length 0). $sa/$sb are nullable for the same
+  ;; validation reason as in strcmp — only dereferenced once both
+  ;; lengths are confirmed > 0 (hence non-null). Backing/offset are
+  ;; allowed to differ as long as the bytes they project equal.
+  (func (export "stringEqual")
+      (param $a (ref null $go.string)) (param $b (ref null $go.string)) (result i32)
+    (local $sa (ref null $go.string)) (local $sb (ref null $go.string))
+    (local $la i64) (local $lb i64) (local $i i64)
+    (local $ba (ref null $go.bytes)) (local $bb (ref null $go.bytes))
+    (local $oa i64) (local $ob i64)
+    (if (ref.is_null (local.get $a))
+      (then (local.set $la (i64.const 0)))
+      (else
+        (local.set $sa (ref.as_non_null (local.get $a)))
+        (local.set $la (struct.get $go.string 2 (local.get $sa)))))
+    (if (ref.is_null (local.get $b))
+      (then (local.set $lb (i64.const 0)))
+      (else
+        (local.set $sb (ref.as_non_null (local.get $b)))
+        (local.set $lb (struct.get $go.string 2 (local.get $sb)))))
+    ;; lengths must match
+    (if (i64.ne (local.get $la) (local.get $lb)) (then (return (i32.const 0))))
+    ;; both empty -> equal
+    (if (i64.eqz (local.get $la)) (then (return (i32.const 1))))
+    ;; both non-empty here; pre-load backing arrays and offsets once
+    (local.set $ba (struct.get $go.string 0 (local.get $sa)))
+    (local.set $bb (struct.get $go.string 0 (local.get $sb)))
+    (local.set $oa (struct.get $go.string 1 (local.get $sa)))
+    (local.set $ob (struct.get $go.string 1 (local.get $sb)))
+    (local.set $i (i64.const 0))
+    (block $done
+      (loop $cmp
+        (br_if $done (i64.ge_u (local.get $i) (local.get $la)))
+        (if (i32.ne
+              (array.get_u $go.bytes (local.get $ba)
+                (i32.wrap_i64 (i64.add (local.get $oa) (local.get $i))))
+              (array.get_u $go.bytes (local.get $bb)
+                (i32.wrap_i64 (i64.add (local.get $ob) (local.get $i)))))
+          (then (return (i32.const 0))))
+        (local.set $i (i64.add (local.get $i) (i64.const 1)))
+        (br $cmp)))
+    (i32.const 1))
 )

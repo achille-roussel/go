@@ -191,6 +191,16 @@ func ParseFlags() {
 	Debug.ZeroCopy = 1
 	Debug.RangeFuncCheck = 1
 	Debug.MergeLocals = 1
+	if buildcfg.GOARCH == "wasm3" {
+		// wasm3 uses per-value wasm locals (wasm3PlaceValues), not the
+		// shared-stack-slot model MergeLocals assumes. Its interference
+		// analysis doesn't see the wasm3-side liveness, so it can merge
+		// PAUTO vars that are actually live simultaneously in the wasm3
+		// lowering, tripping pointerMap's duplicate-slots check. Disable
+		// the optimization for wasm3 — it's a stack-frame layout
+		// optimization with no benefit on a per-value-local target.
+		Debug.MergeLocals = 0
+	}
 
 	Debug.Checkptr = -1 // so we can tell whether it is set explicitly
 

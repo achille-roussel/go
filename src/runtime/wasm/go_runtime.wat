@@ -124,6 +124,41 @@
         (br $cmp)))
     (i32.const 1))
 
+  ;; stringHash(s, h) -> i64 — mixes s's bytes into the running hash h
+  ;; using the same algorithm as runtime.wasm3StringHash in
+  ;; alg_hash_wasm3.go (`x = (x ^ byte) * 0x9E3779B97F4A7C15`). The
+  ;; two sites MUST stay byte-for-byte equivalent: callers using
+  ;; per-type compiler-generated hash glue mix in non-string leaves via
+  ;; wasm3StringHash/wasm3Uint64Hash, then this primitive for string
+  ;; leaves — divergence breaks map invariants (equal values must hash
+  ;; equal). Null and empty strings hash to the seed unchanged, matching
+  ;; the Go side's `len(s) == 0` early-out.
+  (func (export "stringHash")
+      (param $s (ref null $go.string)) (param $h i64) (result i64)
+    (local $ns (ref $go.string)) (local $b (ref $go.bytes))
+    (local $o i64) (local $n i64) (local $i i64) (local $x i64)
+    (if (ref.is_null (local.get $s)) (then (return (local.get $h))))
+    (local.set $ns (ref.as_non_null (local.get $s)))
+    (local.set $n (struct.get $go.string 2 (local.get $ns)))
+    (if (i64.eqz (local.get $n)) (then (return (local.get $h))))
+    (local.set $b (struct.get $go.string 0 (local.get $ns)))
+    (local.set $o (struct.get $go.string 1 (local.get $ns)))
+    (local.set $x (local.get $h))
+    (local.set $i (i64.const 0))
+    (block $done
+      (loop $hash
+        (br_if $done (i64.ge_u (local.get $i) (local.get $n)))
+        (local.set $x
+          (i64.mul
+            (i64.xor (local.get $x)
+              (i64.extend_i32_u
+                (array.get_u $go.bytes (local.get $b)
+                  (i32.wrap_i64 (i64.add (local.get $o) (local.get $i))))))
+            (i64.const 0x9E3779B97F4A7C15)))
+        (local.set $i (i64.add (local.get $i) (i64.const 1)))
+        (br $hash)))
+    (local.get $x))
+
   ;; bytesClone(src, off, n) -> (ref $go.bytes) holding a fresh copy of
   ;; src[off:off+n]. The primitive behind `string(b)` and any
   ;; mutability-breaking copy: the compiler hands the source backing,

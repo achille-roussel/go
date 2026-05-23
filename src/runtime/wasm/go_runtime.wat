@@ -123,4 +123,36 @@
         (local.set $i (i64.add (local.get $i) (i64.const 1)))
         (br $cmp)))
     (i32.const 1))
+
+  ;; bytesEqualRange(a, ao, b, bo, n) -> 1 if a[ao:ao+n] == b[bo:bo+n],
+  ;; else 0. The general byte-equality building block: callers compose
+  ;; it for whole-array equality (ao=bo=0, n=array.len), slice equality
+  ;; (use the slice header's offset/len), and runtime.memequal's
+  ;; sub-range comparisons. Null refs are valid only when n==0
+  ;; (zero-length comparison is trivially equal); a non-zero range
+  ;; against a null backing is a programmer error and traps via
+  ;; ref.as_non_null. No bounds checking — the host caller is the
+  ;; compiler, which proves ao+n and bo+n in range.
+  (func (export "bytesEqualRange")
+      (param $a (ref null $go.bytes)) (param $ao i64)
+      (param $b (ref null $go.bytes)) (param $bo i64)
+      (param $n i64) (result i32)
+    (local $na (ref $go.bytes)) (local $nb (ref $go.bytes))
+    (local $i i64)
+    (if (i64.eqz (local.get $n)) (then (return (i32.const 1))))
+    (local.set $na (ref.as_non_null (local.get $a)))
+    (local.set $nb (ref.as_non_null (local.get $b)))
+    (local.set $i (i64.const 0))
+    (block $done
+      (loop $cmp
+        (br_if $done (i64.ge_u (local.get $i) (local.get $n)))
+        (if (i32.ne
+              (array.get_u $go.bytes (local.get $na)
+                (i32.wrap_i64 (i64.add (local.get $ao) (local.get $i))))
+              (array.get_u $go.bytes (local.get $nb)
+                (i32.wrap_i64 (i64.add (local.get $bo) (local.get $i)))))
+          (then (return (i32.const 0))))
+        (local.set $i (i64.add (local.get $i) (i64.const 1)))
+        (br $cmp)))
+    (i32.const 1))
 )

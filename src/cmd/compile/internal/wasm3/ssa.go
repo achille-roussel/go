@@ -2093,8 +2093,17 @@ func getValue64(s *ssagen.State, v *ssa.Value) {
 	// "unexpected op: X" if X is unhandled, giving a deterministic
 	// next-session lead.
 	if v.Block.Func.RegAlloc == nil {
-		if v.Op == ssa.OpSelectN {
-			v.Fatalf("wasm3: OpSelectN [%d] of %v survived to genssa without a per-value local — wasm3PlaceValues skipped it or the call codegen at wasm3/ssa.go:543 didn't write its result; in: %s", v.AuxInt, v.Args[0].LongString(), v.LongString())
+		// Mem tokens are dependence markers, not values — they have no
+		// codegen, no wasm stack representation. Silently swallow: the
+		// consumer ABSTRACTLY needs the mem for ordering but doesn't
+		// emit any code for it. Without this, ssaGenValueOnStack's
+		// recursion into a re-emitted op's mem-typed arg trips through
+		// the SelectN<mem> case, which has no placement (expand_calls
+		// keeps it in place for memForCall tracking but wasm3HasOutput
+		// rejects mem) — yielding a false "unexpected op: SelectN"
+		// when the mem token itself isn't actually being consumed.
+		if v.Type != nil && v.Type.IsMemory() {
+			return
 		}
 		ssaGenValueOnStack(s, v, true)
 		return

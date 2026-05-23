@@ -2082,15 +2082,20 @@ func getValue64(s *ssagen.State, v *ssa.Value) {
 	}
 
 	// Defensive wasm3 fallback: if a value has no per-value local
-	// (wasm3PlaceValues skipped it, e.g. OpSelectN from a multi-return
-	// Call that survived to genssa) AND no register (wasm3 doesn't run
-	// regalloc, so f.RegAlloc is nil), v.Reg() panics. Re-emit the
-	// producer inline via ssaGenValueOnStack — pure ops are
-	// idempotent; the risk of double-emit only manifests if a side-
-	// effecting op reaches here, which wasm3PlaceValues should have
-	// placed. Single-consumer values are unaffected (they hit the
-	// OnWasmStack branch above).
+	// (wasm3PlaceValues skipped it, e.g. OpSelectN of a boxed-type
+	// result from a multi-return Call) AND no register (wasm3 doesn't
+	// run regalloc, so f.RegAlloc is nil), v.Reg() panics. For
+	// OpSelectN specifically, emit a clear actionable diagnostic — the
+	// proper fix is in wasm3PlaceValues + the Call's result-placement
+	// loop at the call codegen site (~ssa.go:543), not a re-emit. For
+	// other ops, re-emit the producer inline via ssaGenValueOnStack —
+	// pure ops are idempotent; ssaGenValueOnStack panics with a clean
+	// "unexpected op: X" if X is unhandled, giving a deterministic
+	// next-session lead.
 	if v.Block.Func.RegAlloc == nil {
+		if v.Op == ssa.OpSelectN {
+			v.Fatalf("wasm3: OpSelectN [%d] of %v survived to genssa without a per-value local — wasm3PlaceValues skipped it or the call codegen at wasm3/ssa.go:543 didn't write its result; in: %s", v.AuxInt, v.Args[0].LongString(), v.LongString())
+		}
 		ssaGenValueOnStack(s, v, true)
 		return
 	}

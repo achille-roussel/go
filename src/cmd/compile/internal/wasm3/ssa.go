@@ -656,6 +656,26 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		// rejects the anyref supertype).
 		st := v.Aux.(*types.Type)
 		structIdx := wasm3RegisterStruct(s.FuncInfo(), st)
+		if fwidx, boxIdx, comp, ok := wasm3BoxedComponentAtOffset(s, st, v.AuxInt, 0); ok {
+			// The offset lands inside a boxed slice/string/interface field
+			// (e.g. s.Value.itab/data at off+0/+8 of an iface field):
+			// struct.get the boxed header ref, then struct.set its component
+			// (data/len/cap/itab/...) — mirroring FieldGet's BoxedComponent
+			// branch but with a struct.set at the leaf.
+			getValue64(s, v.Args[0])
+			pCast := s.Prog(wasm.ARefCast)
+			pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
+			pf := s.Prog(wasm.AStructGet)
+			pf.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
+			pf.To = obj.Addr{Type: obj.TYPE_CONST, Offset: fwidx}
+			pbc := s.Prog(wasm.ARefCast)
+			pbc.From = obj.Addr{Type: obj.TYPE_CONST, Offset: boxIdx}
+			getValue64(s, v.Args[1])
+			pset := s.Prog(wasm.AStructSet)
+			pset.From = obj.Addr{Type: obj.TYPE_CONST, Offset: boxIdx}
+			pset.To = obj.Addr{Type: obj.TYPE_CONST, Offset: comp}
+			break
+		}
 		if afw, abIdx, ei, ebIdx, efi, ok := wasm3ArrayComponentAtOffset(s, st, v.AuxInt, 0); ok {
 			// The offset lands inside an inlined array-of-structs field
 			// (e.g. cache.Entries[0].Itab = v): struct.get the boxed array

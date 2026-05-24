@@ -2141,7 +2141,6 @@ func (s *state) stmt(n ir.Node) {
 		} else {
 			t = n.X.Type()
 		}
-
 		var r *ssa.Value
 		deref := !ssa.CanSSA(t)
 		if deref {

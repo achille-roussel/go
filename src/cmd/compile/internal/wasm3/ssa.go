@@ -2082,21 +2082,20 @@ func getValue64(s *ssagen.State, v *ssa.Value) {
 	}
 
 	// Defensive wasm3 fallback: if a value has no per-value local
-	// (wasm3PlaceValues skipped it, e.g. OpSelectN of a boxed-type
-	// result from a multi-return Call) AND no register (wasm3 doesn't
-	// run regalloc, so f.RegAlloc is nil), v.Reg() panics. For
-	// OpSelectN specifically, emit a clear actionable diagnostic — the
-	// proper fix is in wasm3PlaceValues + the Call's result-placement
-	// loop at the call codegen site (~ssa.go:543), not a re-emit. For
-	// other ops, re-emit the producer inline via ssaGenValueOnStack —
-	// pure ops are idempotent; ssaGenValueOnStack panics with a clean
-	// "unexpected op: X" if X is unhandled, giving a deterministic
-	// next-session lead.
+	// (wasm3PlaceValues skipped it, e.g. OpSelectN from a multi-return
+	// Call that survived to genssa) AND no register (wasm3 doesn't run
+	// regalloc, so f.RegAlloc is nil), v.Reg() panics. Re-emit the
+	// producer inline via ssaGenValueOnStack — pure ops are
+	// idempotent; the risk of double-emit only manifests if a side-
+	// effecting op reaches here, which wasm3PlaceValues + the new
+	// wasm3PatchValues post-regalloc pass should have placed. Single-
+	// consumer values are unaffected (they hit the OnWasmStack branch
+	// above).
 	if v.Block.Func.RegAlloc == nil {
 		// Mem tokens are dependence markers, not values — they have no
-		// codegen, no wasm stack representation. Silently swallow: the
-		// consumer ABSTRACTLY needs the mem for ordering but doesn't
-		// emit any code for it. Without this, ssaGenValueOnStack's
+		// codegen and no wasm stack representation. Silently swallow:
+		// the consumer abstractly needs the mem for ordering but
+		// doesn't emit any code for it. Without this, ssaGenValueOnStack's
 		// recursion into a re-emitted op's mem-typed arg trips through
 		// the SelectN<mem> case, which has no placement (expand_calls
 		// keeps it in place for memForCall tracking but wasm3HasOutput

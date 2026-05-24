@@ -463,6 +463,65 @@ func wasm3HasOutput(v *Value) bool {
 	return true
 }
 
+// wasm3PatchValues extends f.Wasm3ValueLocals / f.Wasm3LocalTypes
+// to cover any value-producing SSA values that regalloc inserted
+// (typically OpCopy values for register-reuse / Phi resolution)
+// after wasm3PlaceValues ran. New values get a fresh per-value
+// local appended to the existing assignments — the obj backend
+// already declares len(fn.Wasm3LocalTypes) locals immediately
+// after the wasm parameter locals, so extending the slice
+// extends the local count.
+//
+// Without this pass, regalloc-inserted values would have
+// v.ID >= len(Wasm3ValueLocals) and the codegen helpers would
+// fall back to v.Reg() / register-locals — which keeps the
+// register-local infrastructure live in the obj backend. This
+// pass is what lets Phase 4 eventually skip the regalloc-managed
+// register-locals entirely.
+func wasm3PatchValues(f *Func) {
+	if f.Config.arch != "wasm3" {
+		return
+	}
+	locals := f.Wasm3ValueLocals
+	types := f.Wasm3LocalTypes
+	if locals == nil {
+		return
+	}
+	const noLocal = ^uint32(0)
+	nextLocal := uint32(len(types))
+	if uint32(f.NumValues()) > uint32(len(locals)) {
+		grown := make([]uint32, f.NumValues())
+		copy(grown, locals)
+		for i := len(locals); i < len(grown); i++ {
+			grown[i] = noLocal
+		}
+		locals = grown
+	}
+	for _, b := range f.Blocks {
+		for _, v := range b.Values {
+			if int(v.ID) >= len(locals) {
+				continue
+			}
+			if locals[v.ID] != noLocal {
+				continue
+			}
+			if !wasm3HasOutput(v) {
+				continue
+			}
+			locals[v.ID] = nextLocal
+			types = append(types, wasm3ValueType(v))
+			nextLocal++
+		}
+	}
+	f.Wasm3ValueLocals = locals
+	f.Wasm3LocalTypes = types
+	if ifn := f.Frontend().Func(); ifn != nil && ifn.LSym != nil {
+		fi := ifn.LSym.Func()
+		fi.Wasm3ValueLocals = locals
+		fi.Wasm3LocalTypes = types
+	}
+}
+
 // wasm3ValueType returns the wasm value-type byte for v's Go type.
 //
 // All integer-class values lower to i64. The SSA backend works in

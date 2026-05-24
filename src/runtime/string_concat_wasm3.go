@@ -6,23 +6,26 @@
 
 package runtime
 
-import "unsafe"
-
-// concatstrings on wasm3 bypasses the shared rawstring → []byte →
-// memmove path used by the default implementation. The shared path
-// allocates a linear-memory buffer (mallocgc → i64) but exposes it
-// as a []byte whose .array is anyref per the wasm3 slice ABI;
-// memmove then takes i64 pointers, so the mid-pipeline []byte
-// forces the body to span two memory worlds and fails wasm module
-// validation with "type mismatch: expected i64, found anyref" at
-// the memmove call site.
+// concatstrings on wasm3 folds the source slice through the
+// go_runtime.stringConcat2 wat primitive — a binary concat that
+// allocates a fresh (ref $go.bytes) and array.copies both operands
+// in (see runtime/wasm/go_runtime.wat). The compiler-side `a + b`
+// lowering chains stringConcat2 calls already; runtime.concatstrings
+// is the slice-variadic entry that runtime/string.go's "concat3+"
+// path eventually reaches, so the same fold goes here.
 //
-// String storage on wasm3 is still linear memory (TSTRING lowers to
-// (i64 data, i64 len) — Stage J's wasmgc-strings cutover has not
-// landed), so we allocate the destination directly with mallocgc,
-// memmove each source string's bytes into place using only i64
-// pointers, and wrap the buffer as a string with unsafe.String. No
-// []byte enters the mix.
+// This bypasses the original linear-memory-buffer scheme entirely —
+// no mallocgc, no memmove of i64 pointers, no unsafe.String wrap of
+// linear memory. Every intermediate string is a WasmGC $go.string
+// whose backing is a $go.bytes array on the host GC heap, matching
+// the boxed-string ABI [[wasm3-boxed-bulkops]].
+//
+// The count==0 and count==1 fast paths preserve the original
+// allocation-free semantics: zero operands → "", one non-empty
+// operand → that operand (shared backing, no copy). The tmpBuf
+// argument is ignored on wasm3 — its purpose (avoiding a heap
+// allocation for small results) doesn't apply when the result
+// backing lives on the host GC heap rather than in linear memory.
 func concatstrings(buf *tmpBuf, a []string) string {
 	idx := 0
 	l := 0
@@ -42,22 +45,32 @@ func concatstrings(buf *tmpBuf, a []string) string {
 	if count == 0 {
 		return ""
 	}
-	if count == 1 && (buf != nil || !stringDataOnStack(a[idx])) {
+	if count == 1 {
 		return a[idx]
 	}
-	// Allocate in linear memory so the result and every memmove
-	// source operand stay i64. The tmpBuf fast path is intentionally
-	// skipped: tmpBuf is a *[32]byte whose backing is a wasmgc array
-	// on wasm3, which would re-introduce the anyref/i64 split.
-	p := mallocgc(uintptr(l), nil, false)
-	pos := uintptr(0)
+	// Fold non-empty operands through the binary wat primitive.
+	// stringConcat2's own 0-length fast path returns the other
+	// operand unchanged, so we needn't filter empties first.
+	var r string
+	first := true
 	for _, x := range a {
-		n := uintptr(len(x))
-		if n == 0 {
+		if len(x) == 0 {
 			continue
 		}
-		memmove(unsafe.Add(p, pos), unsafe.Pointer(unsafe.StringData(x)), n)
-		pos += n
+		if first {
+			r = x
+			first = false
+			continue
+		}
+		r = wasm3StringConcat2(r, x)
 	}
-	return unsafe.String((*byte)(p), l)
+	return r
 }
+
+// wasm3StringConcat2 bridges to the go_runtime.stringConcat2 wat
+// primitive — binary string concatenation. The compiler's `a + b`
+// lowering on wasm3 will eventually call this directly; for now
+// concatstrings folds through it.
+//
+//go:wasmimport go_runtime stringConcat2
+func wasm3StringConcat2(a, b string) string

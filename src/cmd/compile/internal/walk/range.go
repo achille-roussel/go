@@ -250,6 +250,66 @@ func walkRange(nrange *ir.RangeStmt) ir.Node {
 		nfor.Post = ir.NewBlockStmt(base.Pos, []ir.Node{nfor.Post, as})
 
 	case k == types.TMAP:
+		if buildcfg.GOARCH == "wasm3" {
+			// M3 per-type maps (wasm3): for k, v := range m. Snapshot
+			// (keys, values, used) at iteration start via the field-
+			// access intrinsics; loop j := 0..used-1; the visited slot
+			// is keys[(start+j) % used] / values[(start+j) % used] where
+			// start is a per-call random seed from wasm3MapRandStart.
+			// Map mutation during iteration is unspecified (Go spec),
+			// and the snapshot makes the wasm3 implementation match
+			// the spirit: cap-growth-driven backing reallocation in
+			// mapAssign will leave the iterator pointing at the old
+			// arrays (still valid memory via the host GC), which is
+			// no worse than what the runtime hiter path documents.
+			ha := a
+			K := t.Key()
+			V := t.Elem()
+			uintptrT := types.Types[types.TUINTPTR]
+
+			mapPtr := typecheck.ConvNop(ha, types.Types[types.TUNSAFEPTR])
+			usedVar := typecheck.TempAt(base.Pos, ir.CurFunc, uintptrT)
+			keysVar := typecheck.TempAt(base.Pos, ir.CurFunc, types.NewSlice(K))
+			valsVar := typecheck.TempAt(base.Pos, ir.CurFunc, types.NewSlice(V))
+			startVar := typecheck.TempAt(base.Pos, ir.CurFunc, uintptrT)
+			jVar := typecheck.TempAt(base.Pos, ir.CurFunc, uintptrT)
+			iVar := typecheck.TempAt(base.Pos, ir.CurFunc, uintptrT)
+
+			usedCall := ir.NewCallExpr(base.Pos, ir.OCALL, typecheck.LookupRuntime("wasm3MapUsed"), []ir.Node{mapPtr})
+			ir.Wasm3MapHelperTypes.Store(usedCall, t)
+			keysCall := ir.NewCallExpr(base.Pos, ir.OCALL, typecheck.LookupRuntime("wasm3MapKeys", K), []ir.Node{mapPtr})
+			ir.Wasm3MapHelperTypes.Store(keysCall, t)
+			valsCall := ir.NewCallExpr(base.Pos, ir.OCALL, typecheck.LookupRuntime("wasm3MapValues", V), []ir.Node{mapPtr})
+			ir.Wasm3MapHelperTypes.Store(valsCall, t)
+			randCall := ir.NewCallExpr(base.Pos, ir.OCALL,
+				typecheck.LookupRuntime("wasm3MapRandStart"), []ir.Node{usedVar})
+
+			init = append(init, ir.NewAssignStmt(base.Pos, usedVar, usedCall))
+			init = append(init, ir.NewAssignStmt(base.Pos, keysVar, keysCall))
+			init = append(init, ir.NewAssignStmt(base.Pos, valsVar, valsCall))
+			init = append(init, ir.NewAssignStmt(base.Pos, startVar, randCall))
+			init = append(init, ir.NewAssignStmt(base.Pos, jVar, ir.NewInt(base.Pos, 0)))
+
+			nfor.Cond = ir.NewBinaryExpr(base.Pos, ir.OLT, jVar, usedVar)
+			nfor.Post = ir.NewAssignStmt(base.Pos, jVar,
+				ir.NewBinaryExpr(base.Pos, ir.OADD, jVar, ir.NewInt(base.Pos, 1)))
+
+			// i = (start + j) % used
+			body = append(body, ir.NewAssignStmt(base.Pos, iVar,
+				ir.NewBinaryExpr(base.Pos, ir.OMOD,
+					ir.NewBinaryExpr(base.Pos, ir.OADD, startVar, jVar),
+					usedVar)))
+			if v1 != nil {
+				if v2 == nil {
+					body = append(body, rangeAssign(nrange, ir.NewIndexExpr(base.Pos, keysVar, iVar)))
+				} else {
+					body = append(body, rangeAssign2(nrange,
+						ir.NewIndexExpr(base.Pos, keysVar, iVar),
+						ir.NewIndexExpr(base.Pos, valsVar, iVar)))
+				}
+			}
+			break
+		}
 		// order.stmt allocated the iterator for us.
 		// we only use a once, so no copy needed.
 		ha := a

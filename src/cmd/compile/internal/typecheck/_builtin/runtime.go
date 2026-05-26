@@ -105,6 +105,7 @@ func wasm3MapUsedSet(m unsafe.Pointer, n uintptr)
 func wasm3MapCapSet(m unsafe.Pointer, n uintptr)
 func wasm3MapKeysSet(m unsafe.Pointer, keys []any)
 func wasm3MapValuesSet(m unsafe.Pointer, values []any)
+func wasm3MapRandStart(used uintptr) uintptr
 
 func intstring(*[4]byte, int64) string
 func slicebytetostring(buf *[32]byte, ptr *byte, n int) string

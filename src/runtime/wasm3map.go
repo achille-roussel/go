@@ -48,3 +48,21 @@ func wasm3MapKeysSet(m unsafe.Pointer, keys []any) { panic("wasm3MapKeysSet: not
 
 //go:noinline
 func wasm3MapValuesSet(m unsafe.Pointer, values []any) { panic("wasm3MapValuesSet: not intrinsified") }
+
+// wasm3MapRandStart returns a randomised iteration start index in
+// [0, used). For used == 0 it returns 0. Used by the wasm3 walkRange
+// rewrite for `for k, v := range m` so iteration order does not match
+// insertion order (Go spec requires unspecified order). The randomness
+// is a per-call linear-congruential bump on a package-local counter —
+// not cryptographic, not cross-goroutine deterministic, but enough to
+// shuffle hot loops the way the standard hiter path does.
+var wasm3MapIterCounter uint64
+
+//go:noinline
+func wasm3MapRandStart(used uintptr) uintptr {
+	if used == 0 {
+		return 0
+	}
+	wasm3MapIterCounter += 0x9e3779b97f4a7c15
+	return uintptr(wasm3MapIterCounter % uint64(used))
+}

@@ -36,6 +36,7 @@ type typeCollector struct {
 	structs        map[*types.Type]int // Go struct type -> table index
 	backing        map[*types.Type]int // slice/array element type -> backing array index
 	slices         map[*types.Type]int // Go slice type -> boxed slice-header struct index (doc/wasm3-slice-boxing.md)
+	maps           map[*types.Type]int // Go map type -> $go.map.<K,V> struct index (per-type map storage)
 	boxed          map[wasmgc.Prim]int // primitive -> boxed-scalar struct index
 	funcs          map[*types.Type]int // Go func type -> func-type table index
 	closureCtxs    map[*types.Type]int // Go func type -> per-signature closure-struct table index
@@ -50,6 +51,7 @@ func newTypeCollector() *typeCollector {
 		structs:        make(map[*types.Type]int),
 		backing:        make(map[*types.Type]int),
 		slices:         make(map[*types.Type]int),
+		maps:           make(map[*types.Type]int),
 		boxed:          make(map[wasmgc.Prim]int),
 		funcs:          make(map[*types.Type]int),
 		closureCtxs:    make(map[*types.Type]int),
@@ -336,6 +338,57 @@ func (c *typeCollector) collectSliceStruct(t *types.Type) int {
 			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},   // off
 			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},   // len
 			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},   // cap
+		},
+	})
+	return idx
+}
+
+// collectMapStruct reserves and returns the table index of the
+// per-type map struct $go.map.<K,V> for a Go map type t. The
+// per-program $go.map.<K,V> approach (one struct per distinct map
+// type) replaces the linear-memory + unsafe.Pointer maps shim for
+// wasm3 — each map's keys and values live in typed WasmGC backing
+// arrays whose element types ARE the map's key/value types, so
+// typed access lowers to native struct.get / array.get on the
+// right WasmGC types (no unsafe casts, no bytewise reinterpretation).
+//
+// Shape:
+//
+//	(type go.map.<K,V> (struct
+//	    (field (mut i64))                ;; cap   (allocated slots)
+//	    (field (mut i64))                ;; used  (live elements)
+//	    (field (mut (ref null (array K))))  ;; keys backing
+//	    (field (mut (ref null (array V)))))) ;; values backing
+//
+// The backings are nullable so an empty map (no insertions yet) can
+// hold (cap=0, used=0, keys=null, values=null) without forcing a
+// preallocation. The first insertion materialises both backings via
+// array.new_default $go.array.<K> / $go.array.<V>.
+//
+// Key/value element types use collectBacking (the same logic as a
+// slice's data backing) so a map's V=string lays out as
+// (array (ref $go.string)) and V=int32 lays out as (array i32) —
+// same per-element rules that slice elements already follow.
+func (c *typeCollector) collectMapStruct(t *types.Type) int {
+	if !t.IsMap() {
+		panic("wasm3: collectMapStruct on non-map type " + t.Kind().String())
+	}
+	if idx, ok := c.maps[t]; ok {
+		return idx
+	}
+	keyArrIdx := c.collectBacking(t.Key())
+	valArrIdx := c.collectBacking(t.Elem())
+	idx := len(c.table)
+	c.maps[t] = idx
+	c.table = append(c.table, wasmgc.Type{
+		Name:  "go.map." + typeName(t.Key()) + "." + typeName(t.Elem()),
+		Kind:  wasmgc.KindStruct,
+		Super: wasmgc.TypeGoObject,
+		Fields: []wasmgc.Field{
+			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},  // cap
+			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},  // used
+			{Storage: wasmgc.RefStorage(keyArrIdx, true), Mutable: true}, // keys
+			{Storage: wasmgc.RefStorage(valArrIdx, true), Mutable: true}, // values
 		},
 	})
 	return idx

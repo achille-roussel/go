@@ -81,7 +81,14 @@ func wasm3MapValueAt(d *wasm3MapData, i, valueSize uintptr) unsafe.Pointer {
 func wasm3MapEnsureCap(m *Map, valueSize uintptr) {
 	d := wasm3MapDataAt(m)
 	if d == nil {
-		d = (*wasm3MapData)(wasm3HeapAlloc(unsafe.Sizeof(wasm3MapData{})))
+		// Bump-heap-free: new(wasm3MapData) intrinsifies on wasm3 to
+		// OpWasm3StructNewDefault, allocating a WasmGC struct via
+		// struct.new_default $go.wasm3MapData — no mallocgc, no
+		// wasm3HeapAlloc, just a typed host-GC allocation. The other
+		// two wasm3HeapAlloc calls below are migrated next; this is
+		// the first step of [[wasm3-no-linear-malloc]]'s plan to
+		// retire wasm3Heap entirely.
+		d = new(wasm3MapData)
 		m.dirPtr = unsafe.Pointer(d)
 	}
 	if uintptr(m.used) < d.cap {

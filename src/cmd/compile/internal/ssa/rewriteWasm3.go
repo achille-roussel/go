@@ -3932,13 +3932,13 @@ func rewriteValueWasm3_OpStore(v *Value) bool {
 		return true
 	}
 	// match: (Store {t} ptr val mem)
-	// cond: config.arch == "wasm3" && ptr.Op != OpOffPtr && (val.Type.IsStruct() || val.Type.IsArray())
+	// cond: config.arch == "wasm3" && ptr.Op != OpOffPtr && (val.Type.IsStruct() || val.Type.IsArray()) && val.Type.Size() > 0
 	// result: mem
 	for {
 		ptr := v_0
 		val := v_1
 		mem := v_2
-		if !(config.arch == "wasm3" && ptr.Op != OpOffPtr && (val.Type.IsStruct() || val.Type.IsArray())) {
+		if !(config.arch == "wasm3" && ptr.Op != OpOffPtr && (val.Type.IsStruct() || val.Type.IsArray()) && val.Type.Size() > 0) {
 			break
 		}
 		v.copyOf(mem)

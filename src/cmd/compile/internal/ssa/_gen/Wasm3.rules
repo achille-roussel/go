@@ -136,7 +136,8 @@
 // by-pointer, which on wasm3 work on the ref directly without needing
 // the actual store. True field-wise copy via struct.set is future work
 // (interior pointers extension per doc/wasm3-fat-pointers-design.md).
-(Store {t} ptr val mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && (val.Type.IsStruct() || val.Type.IsArray()) => mem
+(Store {t} ptr val mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && (val.Type.IsStruct() || val.Type.IsArray()) && val.Type.Size() > 0 => mem
+
 // wasm3: a *string/*slice/*interface that is not a struct-field OffPtr
 // (folds to FieldGet), a global (GlobalGet, matched earlier), or an
 // array/slice element interior pointer (LoadInterior) is a reference to a

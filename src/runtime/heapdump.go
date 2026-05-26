@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build !wasm3
+
 // Implementation of runtime/debug.WriteHeapDump. Writes all
 // objects in the heap plus additional info (roots, threads,
 // finalizers, etc.) to a file.

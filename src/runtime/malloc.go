@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build !wasm3
+
 // Memory allocator.
 //
 // This was originally based on tcmalloc, but has diverged quite a bit.

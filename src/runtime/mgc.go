@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build !wasm3
+
 // Garbage collector (GC).
 //
 // The GC runs concurrently with mutator threads, is type accurate (aka precise), allows multiple

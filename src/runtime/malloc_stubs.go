@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build !wasm3
+
 // This file contains stub functions that are not meant to be called directly,
 // but that will be assembled together using the inlining logic in runtime/_mkmalloc
 // to produce a full mallocgc function that's specialized for a span class

@@ -398,6 +398,13 @@ func init() {
 		// value local holds the actual ref.
 		{name: "MakeMap", argLength: 0, reg: gp01, aux: "Typ", typ: "BytePtr"},
 
+		// M3 per-type maps: `clear(m)` resets a $go.map.<K,V> back to
+		// empty — used=0, cap=0, keys=null, values=null. Nulling the
+		// backings releases all key/value references for host-GC; the
+		// next insert reallocates. arg0=map ref (anyref), arg1=mem.
+		// v.Aux carries the map's *types.Type for wasm3RegisterMapStruct.
+		{name: "MapClear", argLength: 2, reg: regInfo{inputs: []regMask{gp}}, aux: "Typ", typ: "Mem"},
+
 		// M3 Stage E phase 3: sub-slicing `s[lo:hi:cap]` on a wasmgc-
 		// backed slice. The wasm3 backend cannot do pointer arithmetic
 		// on the backing ref, so the standard `rptr = ptr + lo*stride`

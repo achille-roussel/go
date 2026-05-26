@@ -1554,6 +1554,52 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 	case ssa.OpCopy:
 		getValue64(s, v.Args[0])
 
+	case ssa.OpWasm3MapClear:
+		// M3 per-type maps: reset a $go.map.<K,V> back to empty —
+		// used=0, cap=0, keys=null, values=null. Nulling the backings
+		// releases all key/value references for host-GC; the next
+		// insert reallocates. arg0=map ref. v.Aux is the map's
+		// *types.Type.
+		mapType, ok := v.Aux.(*types.Type)
+		if !ok || !mapType.IsMap() {
+			v.Fatalf("OpWasm3MapClear: v.Aux is not a map type: %v", v.Aux)
+		}
+		mapIdx := int64(wasm3RegisterMapStruct(s.FuncInfo(), mapType))
+		// used = 0
+		getValue64(s, v.Args[0])
+		pCast1 := s.Prog(wasm.ARefCast)
+		pCast1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		pZero1 := s.Prog(wasm.AI64Const)
+		pZero1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+		pUsed := s.Prog(wasm.AStructSet)
+		pUsed.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		pUsed.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+		// cap = 0
+		getValue64(s, v.Args[0])
+		pCast2 := s.Prog(wasm.ARefCast)
+		pCast2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		pZero2 := s.Prog(wasm.AI64Const)
+		pZero2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+		pCap := s.Prog(wasm.AStructSet)
+		pCap.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		pCap.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
+		// keys = null
+		getValue64(s, v.Args[0])
+		pCast3 := s.Prog(wasm.ARefCast)
+		pCast3.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		s.Prog(wasm.ARefNull)
+		pKeys := s.Prog(wasm.AStructSet)
+		pKeys.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		pKeys.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 2}
+		// values = null
+		getValue64(s, v.Args[0])
+		pCast4 := s.Prog(wasm.ARefCast)
+		pCast4.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		s.Prog(wasm.ARefNull)
+		pVals := s.Prog(wasm.AStructSet)
+		pVals.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		pVals.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 3}
+
 	case ssa.OpWasm3MakeMap:
 		// M3 per-type maps: allocate a fresh $go.map.<K,V> WasmGC struct
 		// via struct.new_default $go.map.<K,V>. v.Aux is the map's

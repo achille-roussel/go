@@ -5886,6 +5886,7 @@ const (
 	OpWasm3StackStruct
 	OpWasm3MakeSlice
 	OpWasm3MakeMap
+	OpWasm3MapClear
 	OpWasm3SubSlice
 	OpWasm3ArrayCopy
 	OpWasm3FuncValue
@@ -88912,6 +88913,16 @@ var opcodeTable = [...]opInfo{
 		argLen:  0,
 		reg: regInfo{
 			outputs: []outputInfo{
+				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:    "MapClear",
+		auxType: auxTyp,
+		argLen:  2,
+		reg: regInfo{
+			inputs: []inputInfo{
 				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
 			},
 		},

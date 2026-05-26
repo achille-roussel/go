@@ -30,3 +30,8 @@ var Wasm3MakeSliceElemTypes sync.Map
 // map *types.Type (so the intrinsic emits OpWasm3MakeMap with the
 // right $go.map.<K,V> wasm type index).
 var Wasm3MakeMapTypes sync.Map
+
+// Wasm3MapClearTypes carries the map's *types.Type from walkClear /
+// mapClear to the SSA-time intrinsic for runtime.mapclear. Same
+// side-channel pattern as Wasm3MakeMapTypes.
+var Wasm3MapClearTypes sync.Map

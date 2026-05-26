@@ -193,6 +193,23 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	add("runtime", "makemap64", wasm3MakeMapIntrinsic, sys.ArchWasm3)
 	add("runtime", "makemap_small", wasm3MakeMapIntrinsic, sys.ArchWasm3)
 
+	// M3 per-type maps (wasm3): replace runtime.mapclear with
+	// OpWasm3MapClear, which emits struct.set on the $go.map.<K,V>'s
+	// used/cap/keys/values fields directly (no runtime call).
+	wasm3MapClearIntrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		entry, ok := ir.Wasm3MapClearTypes.LoadAndDelete(n)
+		if !ok {
+			s.Fatalf("wasm3 mapclear intrinsic: no recorded map type for call %v", n)
+		}
+		mapType := entry.(*types.Type)
+		// args[0] is the rtype (discard), args[1] is the map pointer.
+		v := s.newValue2(ssa.OpWasm3MapClear, types.TypeMem, args[1], s.mem())
+		v.Aux = mapType
+		s.vars[memVar] = v
+		return nil
+	}
+	add("runtime", "mapclear", wasm3MapClearIntrinsic, sys.ArchWasm3)
+
 	// M3 Stage E phase 4 (wasm3): walkCopy emits this in place of
 	// runtime.memmove for `copy(dst, src)`. The first arg is the
 	// elem rtype; args[1]=dst, args[2]=src, args[3]=n_elements.

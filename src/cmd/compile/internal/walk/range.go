@@ -6,6 +6,7 @@ package walk
 
 import (
 	"go/constant"
+	"internal/buildcfg"
 	"unicode/utf8"
 
 	"cmd/compile/internal/base"
@@ -488,8 +489,22 @@ func mapClear(m, rtyp ir.Node) ir.Node {
 
 	// instantiate mapclear(typ *type, hmap map[any]any)
 	fn := typecheck.LookupRuntime("mapclear", t.Key(), t.Elem())
-	n := mkcallstmt1(fn, rtyp, m)
-	return typecheck.Stmt(n)
+	var init ir.Nodes
+	call := mkcall1(fn, nil, &init, rtyp, m)
+	// Stage-M3 wasm3: pin the map's *types.Type to the CallExpr so
+	// the SSA-time intrinsic for runtime.mapclear can emit
+	// OpWasm3MapClear with the right $go.map.<K,V> wasm type index.
+	// The intrinsic only sees the rtype-arg SSA value (an OpAddr of
+	// the runtime type symbol) which can't yield the map type
+	// without this side channel.
+	if buildcfg.GOARCH == "wasm3" {
+		ir.Wasm3MapClearTypes.Store(call, t)
+	}
+	if len(init) == 0 {
+		return typecheck.Stmt(call)
+	}
+	init.Append(call)
+	return typecheck.Stmt(ir.NewBlockStmt(call.Pos(), init))
 }
 
 // Lower n into runtime·memclr if possible, for

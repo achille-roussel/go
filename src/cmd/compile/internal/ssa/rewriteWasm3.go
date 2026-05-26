@@ -48,6 +48,8 @@ func rewriteValueWasm3(v *Value) bool {
 	case OpAndB:
 		v.Op = OpWasm3I64And
 		return true
+	case OpArrayMake1:
+		return rewriteValueWasm3_OpArrayMake1(v)
 	case OpAvg64u:
 		return rewriteValueWasm3_OpAvg64u(v)
 	case OpBitLen16:
@@ -740,6 +742,24 @@ func rewriteValueWasm3_OpAddr(v *Value) bool {
 		v.AddArg(base)
 		return true
 	}
+}
+func rewriteValueWasm3_OpArrayMake1(v *Value) bool {
+	v_0 := v.Args[0]
+	b := v.Block
+	config := b.Func.Config
+	// match: (ArrayMake1 x)
+	// cond: config.arch == "wasm3"
+	// result: (Copy x)
+	for {
+		x := v_0
+		if !(config.arch == "wasm3") {
+			break
+		}
+		v.reset(OpCopy)
+		v.AddArg(x)
+		return true
+	}
+	return false
 }
 func rewriteValueWasm3_OpAvg64u(v *Value) bool {
 	v_1 := v.Args[1]

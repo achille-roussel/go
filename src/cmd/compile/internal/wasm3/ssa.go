@@ -1483,6 +1483,23 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 			// interface); the array.get result IS the value.
 			break
 		}
+		if outerIdx, innerStructIdx, innerFieldIdx, ok := wasm3EmbeddedPtrFieldAtOffset(s, st, v.AuxInt); ok {
+			// The offset lands inside an embedded *struct field — Go
+			// promotes the pointed-to struct's field via the embedded
+			// pointer (e.g. funcInfo's *_func embedding flattens
+			// `f.nameOff` into a single OffPtr [4] on funcInfo). Emit
+			// the chained access: struct.get the embedded pointer, then
+			// ref.cast + struct.get the inner field.
+			pOuter := s.Prog(wasm.AStructGet)
+			pOuter.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
+			pOuter.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(outerIdx)}
+			pCastInner := s.Prog(wasm.ARefCast)
+			pCastInner.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(innerStructIdx)}
+			pInner := s.Prog(wasm.AStructGet)
+			pInner.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(innerStructIdx)}
+			pInner.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(innerFieldIdx)}
+			break
+		}
 		fieldIdx := wasm3FieldIndexAtOffset(s.FuncInfo(), st, v.AuxInt)
 		p := s.Prog(wasm.AStructGet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
@@ -2492,6 +2509,39 @@ func wasm3FieldIndexAtOffset(fi *obj.FuncInfo, st *types.Type, off int64) int {
 		base.Fatalf("wasm3FieldIndexAtOffset: no field at byte offset %d in %v", off, st)
 	}
 	return idx
+}
+
+// wasm3EmbeddedPtrFieldAtOffset detects the Go embedded-pointer-flatten
+// pattern: when funcInfo embeds *_func and a caller writes f.nameOff,
+// the compiler may collapse the promoted selector into a single
+// OffPtr [4] on funcInfo (treating *_func as if it were value-embedded
+// _func). The wasm3 layout has funcInfo with the *_func as its own
+// ref field (not value-embedded), so the offset doesn't land on any
+// funcInfo field. This helper walks the outer struct's pointer fields
+// and, if the offset falls inside one whose pointee struct has a
+// field at the corresponding interior offset, returns the chain
+// (outerFieldIdx, innerStructTypeIdx, innerFieldIdx) the codegen
+// needs to emit a struct.get-then-deref-then-struct.get pair.
+func wasm3EmbeddedPtrFieldAtOffset(s *ssagen.State, st *types.Type, off int64) (outerIdx, innerStructIdx, innerFieldIdx int, ok bool) {
+	fi := s.FuncInfo()
+	cAny, cOk := wasm3LiveCollector.Load(fi)
+	if !cOk {
+		return 0, 0, 0, false
+	}
+	c := cAny.(*typeCollector)
+	widx := 0
+	for _, f := range st.Fields() {
+		n := len(c.lowerFields(f.Type))
+		if off >= f.Offset && off < f.Offset+f.Type.Size() && f.Type.IsPtr() && f.Type.Elem() != nil && f.Type.Elem().IsStruct() {
+			inner := f.Type.Elem()
+			innerOff := off - f.Offset
+			if iIdx, iok := wasm3FieldIndexRec(c, inner, innerOff, 0); iok {
+				return widx, c.collectStruct(inner), iIdx, true
+			}
+		}
+		widx += n
+	}
+	return 0, 0, 0, false
 }
 
 // wasm3FieldIndexRec walks a Go struct's fields accumulating the WasmGC

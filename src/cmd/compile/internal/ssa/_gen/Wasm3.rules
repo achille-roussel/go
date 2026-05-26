@@ -138,6 +138,15 @@
 // (interior pointers extension per doc/wasm3-fat-pointers-design.md).
 (Store {t} ptr val mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && (val.Type.IsStruct() || val.Type.IsArray()) && val.Type.Size() > 0 => mem
 
+// ArrayMake1 (1-element array build) on wasm3: the generic.rules
+// folds it when consumed by Store (line 983) or ArraySelect (line 978),
+// but when the array value escapes (e.g. itabInit's [1]uintptr build
+// passed to a runtime helper), no fold fires and it survives into
+// lowering. wasm3 represents a 1-element array as just the element
+// ref (no separate array wrapper for size-1), so Copy of the element
+// is the right shape.
+(ArrayMake1 x) && config.arch == "wasm3" => (Copy x)
+
 // wasm3: a *string/*slice/*interface that is not a struct-field OffPtr
 // (folds to FieldGet), a global (GlobalGet, matched earlier), or an
 // array/slice element interior pointer (LoadInterior) is a reference to a

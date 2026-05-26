@@ -806,6 +806,35 @@ func wasm3RegisterSliceStruct(fi *obj.FuncInfo, t *types.Type) uint32 {
 	return uint32(idx)
 }
 
+// wasm3RegisterMapStruct registers the per-type map struct
+// $go.map.<K,V> for a Go map type t, returning its module-internal
+// type index. Counterpart of wasm3RegisterSliceStruct. The wasm3
+// per-type maps approach (one struct per distinct map type in the
+// program) replaces the linear-memory + unsafe.Pointer maps shim;
+// every per-type map op (make, access, assign, delete, iter)
+// allocates and reads through this typed struct, with backings
+// allocated via array.new_default on collected $go.array.<K> /
+// $go.array.<V>. See collectMapStruct for shape.
+func wasm3RegisterMapStruct(fi *obj.FuncInfo, t *types.Type) uint32 {
+	if fi == nil {
+		base.Fatalf("wasm3RegisterMapStruct: fi is nil")
+	}
+	cAny, ok := wasm3LiveCollector.Load(fi)
+	var c *typeCollector
+	if ok {
+		c = cAny.(*typeCollector)
+	} else {
+		c = newTypeCollector()
+		wasm3LiveCollector.Store(fi, c)
+		if fi.WasmType == nil {
+			fi.WasmType = &obj.WasmType{}
+		}
+	}
+	idx := c.collectMapStruct(t)
+	c.writeTable(fi)
+	return uint32(idx)
+}
+
 // wasm3EnsureCollector lazily initialises the function's
 // typeCollector (and the WasmType.Table the linker reads for the
 // per-package -> module-global type-index remap) without registering

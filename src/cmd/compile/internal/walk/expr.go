@@ -918,13 +918,17 @@ func walkIndexMap(n *ir.IndexExpr, init *ir.Nodes) ir.Node {
 	n.Index = walkExpr(n.Index, init)
 	map_ := n.X
 	t := map_.Type()
-	if buildcfg.GOARCH == "wasm3" && !n.Assigned {
-		// M3 per-type maps (wasm3): read path m[k] dispatches to the
-		// per-(K,V) generated access function instead of runtime
-		// mapaccess_*. The function returns *V; the caller dereferences
-		// here to get the value (matching the existing path's *var
-		// pattern). Assign and v,ok paths follow in separate commits.
-		fn := reflectdata.MapAccessFuncWasm3(t)
+	if buildcfg.GOARCH == "wasm3" {
+		// M3 per-type maps (wasm3): m[k] dispatches to the per-(K,V)
+		// generated access or assign function. Both return *V; the
+		// caller dereferences here to get the value (read path) or
+		// stores through it (assign path, via OAS upstream).
+		var fn *ir.Func
+		if n.Assigned {
+			fn = reflectdata.MapAssignFuncWasm3(t)
+		} else {
+			fn = reflectdata.MapAccessFuncWasm3(t)
+		}
 		mapPtr := typecheck.ConvNop(map_, types.Types[types.TUNSAFEPTR])
 		call := mkcall1(fn.Nname, types.NewPtr(t.Elem()), init, mapPtr, n.Index)
 		call.MarkNonNil()

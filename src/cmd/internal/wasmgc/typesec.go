@@ -36,6 +36,7 @@ const (
 	opFunc      = 0x60 // func composite type
 	opRefNull   = 0x63 // (ref null ht)
 	opRef       = 0x64 // (ref ht)
+	opExactHeap = 0x62 // exact heaptype prefix; (exact $T)
 	valI32      = 0x7F
 	valI64      = 0x7E
 	valF32      = 0x7D
@@ -99,6 +100,17 @@ func (table Table) EncodeTypeSection() []byte {
 	}
 
 	heaptype := func(b []byte, tableIdx int) []byte {
+		// All typed-index heap references are emitted as exact
+		// `(exact $T)` heap types. Go has no struct-subtype
+		// inheritance the way Java/C# do; the $go.object root that
+		// the runtime descriptor system uses is a single-level
+		// hierarchy (every concrete type's super == TypeGoObject)
+		// rather than a deep tree. Emitting exact heap types
+		// everywhere matches what struct.new / array.new produce
+		// without leaning on the exact->inexact subtyping rule,
+		// which wasmtime 44 and earlier doesn't accept even with
+		// the custom-descriptors feature enabled.
+		b = append(b, opExactHeap)
 		return AppendSleb(b, int64(wasmIndex[tableIdx]))
 	}
 

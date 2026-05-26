@@ -656,6 +656,28 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		// rejects the anyref supertype).
 		st := v.Aux.(*types.Type)
 		structIdx := wasm3RegisterStruct(s.FuncInfo(), st)
+		// Sub-word integer/bool fields are stored as wasm i32. The
+		// SSA value being set (v.Args[1]) lives in an i64 per-value
+		// local, so a narrowing i32.wrap_i64 must precede struct.set
+		// when the field is sub-word. Symmetric to the i64.extend_i32_u
+		// after FieldGet of the same field width. Use the leaf field
+		// type (resolved via wasm3FieldAtOffset) rather than v.Args[1].
+		// Type — SSA optimisations can leave the value's type as the
+		// wider int64 even though the user wrote a narrowing conversion.
+		var needsNarrow bool
+		var refCastTo int64 = -1 // -1 means no ref-cast needed
+		if leaf := wasm3FieldAtOffset(st, v.AuxInt); leaf != nil {
+			needsNarrow = wasm3FieldGetNeedsI64Extend(leaf.Type)
+			// Ref-typed fields (pointers, interfaces, slices, strings,
+			// unsafe.Pointer) hold exact-typed references in the WasmGC
+			// struct. The SSA value being stored lives in an anyref
+			// local — ref.cast it to the field's exact ref type before
+			// struct.set. Without this, the validator rejects with
+			// `expected (ref null (exact $T)), found anyref`.
+			if wasm3FieldValueNeedsRefCast(leaf.Type) {
+				refCastTo = int64(wasm3RefSlotTypeIdx(s.FuncInfo(), leaf.Type))
+			}
+		}
 		// Restrict to iface components: container/ring's autogen eq stores
 		// the iface field's itab/data halves into a temp via per-field
 		// stores at off+0/+8 (FieldSet path), which previously panicked.
@@ -673,6 +695,12 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			pbc := s.Prog(wasm.ARefCast)
 			pbc.From = obj.Addr{Type: obj.TYPE_CONST, Offset: boxIdx}
 			getValue64(s, v.Args[1])
+			if needsNarrow {
+				s.Prog(wasm.AI32WrapI64)
+			} else if refCastTo >= 0 {
+				pRefCast := s.Prog(wasm.ARefCastNull)
+				pRefCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: refCastTo}
+			}
 			pset := s.Prog(wasm.AStructSet)
 			pset.From = obj.Addr{Type: obj.TYPE_CONST, Offset: boxIdx}
 			pset.To = obj.Addr{Type: obj.TYPE_CONST, Offset: comp}
@@ -700,6 +728,12 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 				pce := s.Prog(wasm.ARefCast)
 				pce.From = obj.Addr{Type: obj.TYPE_CONST, Offset: ebIdx}
 				getValue64(s, v.Args[1])
+				if needsNarrow {
+					s.Prog(wasm.AI32WrapI64)
+				} else if refCastTo >= 0 {
+					pRefCast := s.Prog(wasm.ARefCastNull)
+					pRefCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: refCastTo}
+				}
 				pe := s.Prog(wasm.AStructSet)
 				pe.From = obj.Addr{Type: obj.TYPE_CONST, Offset: ebIdx}
 				pe.To = obj.Addr{Type: obj.TYPE_CONST, Offset: efi}
@@ -717,6 +751,12 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		pCast := s.Prog(wasm.ARefCast)
 		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
 		getValue64(s, v.Args[1])
+		if needsNarrow {
+			s.Prog(wasm.AI32WrapI64)
+		} else if refCastTo >= 0 {
+			pRefCast := s.Prog(wasm.ARefCastNull)
+			pRefCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: refCastTo}
+		}
 		p := s.Prog(wasm.AStructSet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(fieldIdx)}
@@ -1439,6 +1479,13 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// (FieldSet, a memory op, stays in the main dispatch).
 		st := v.Aux.(*types.Type)
 		structIdx := wasm3RegisterStruct(s.FuncInfo(), st)
+		// Sub-word integer/bool fields are stored as wasm i32 (per
+		// wasm3IntField). The per-value local for v is i64 (wasm3
+		// SSA register width), so a widening i64.extend_i32_u must
+		// follow struct.get to match the local's type. Set the flag
+		// now so each branch below can emit it after its terminal
+		// struct.get / array.get.
+		needsExtend := wasm3FieldGetNeedsI64Extend(v.Type)
 		getValue64(s, v.Args[0])
 		// The base (*struct) is an anyref local under the pointer-
 		// representation cutover; ref.cast to (ref $go.struct.T) before
@@ -1457,6 +1504,9 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 			pc := s.Prog(wasm.AStructGet)
 			pc.From = obj.Addr{Type: obj.TYPE_CONST, Offset: boxIdx}
 			pc.To = obj.Addr{Type: obj.TYPE_CONST, Offset: comp}
+			if needsExtend {
+				s.Prog(wasm.AI64ExtendI32U)
+			}
 			break
 		}
 		if afw, abIdx, ei, ebIdx, efi, ok := wasm3ArrayComponentAtOffset(s, st, v.AuxInt, 0); ok {
@@ -1481,6 +1531,9 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 			}
 			// efi < 0: the element is a whole boxed value (string/slice/
 			// interface); the array.get result IS the value.
+			if needsExtend {
+				s.Prog(wasm.AI64ExtendI32U)
+			}
 			break
 		}
 		if outerIdx, innerStructIdx, innerFieldIdx, ok := wasm3EmbeddedPtrFieldAtOffset(s, st, v.AuxInt); ok {
@@ -1498,12 +1551,18 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 			pInner := s.Prog(wasm.AStructGet)
 			pInner.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(innerStructIdx)}
 			pInner.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(innerFieldIdx)}
+			if needsExtend {
+				s.Prog(wasm.AI64ExtendI32U)
+			}
 			break
 		}
 		fieldIdx := wasm3FieldIndexAtOffset(s.FuncInfo(), st, v.AuxInt)
 		p := s.Prog(wasm.AStructGet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(fieldIdx)}
+		if needsExtend {
+			s.Prog(wasm.AI64ExtendI32U)
+		}
 
 	case ssa.OpWasm3BoxNewDefault:
 		// Allocate a zeroed go.box.T cell for an escaping &localBoxed / a
@@ -2722,6 +2781,77 @@ func wasm3ArrayComponentAtOffset(s *ssagen.State, t *types.Type, off, base int64
 		widx += n
 	}
 	return
+}
+
+// wasm3FieldValueNeedsRefCast reports whether a value of Go type t,
+// when stored into a wasm3 struct field of that type, needs a
+// ref.cast from anyref to the field's exact ref type. wasm3 stores
+// pointers / interfaces / slices / strings / unsafe.Pointer as
+// typed WasmGC references; the SSA value lives in an anyref local,
+// so an explicit ref.cast is required before struct.set to match the
+// field's exact-ref slot type.
+func wasm3FieldValueNeedsRefCast(t *types.Type) bool {
+	if t == nil {
+		return false
+	}
+	if t.IsUnsafePtr() {
+		return true
+	}
+	if t.IsPtr() && t.Elem() != nil && (t.Elem().IsStruct() || t.Elem().IsArray()) {
+		return true
+	}
+	// String/slice/interface field-value stores go through different
+	// SSA paths (BoxStore for *string/*slice/*iface cells, the boxed-
+	// component path for slice header fields). The simple FieldSet
+	// path here covers the scalar-ish ref cases above.
+	return false
+}
+
+// wasm3RefSlotTypeIdx returns the wasm type index for the ref-slot
+// type that field-value stores of Go type t require ref-casting to.
+// For unsafe.Pointer that's TypeGoObject (the open base type) — the
+// declared field is `(ref null (exact $go.object))`. For *T (struct
+// or array) it's the WasmGC type index of T's $go.struct.<T> /
+// $go.array.<T> entry.
+func wasm3RefSlotTypeIdx(fi *obj.FuncInfo, t *types.Type) uint32 {
+	if t.IsUnsafePtr() {
+		wasm3EnsureCollector(fi)
+		return uint32(wasmgc.TypeGoObject)
+	}
+	if t.IsPtr() && t.Elem() != nil {
+		elem := t.Elem()
+		if elem.IsStruct() {
+			return wasm3RegisterStruct(fi, elem)
+		}
+		if elem.IsArray() {
+			return wasm3RegisterArrayBacking(fi, elem.Elem())
+		}
+	}
+	return uint32(wasmgc.TypeGoObject)
+}
+
+// wasm3FieldGetNeedsI64Extend reports whether the result of a
+// struct.get (or array.get) of a value of type t needs to be widened
+// from wasm i32 to i64 before storing into the per-value local.
+//
+// wasm3IntField stores sub-word integer / bool fields as wasm i32 in
+// the WasmGC struct (because int32, int16, etc. lower to obj.WasmI32).
+// The per-value local for an SSA value of these Go types is i64 (per
+// wasm3ValueType's default — the wasm3 SSA backend works in i64 GP
+// registers, with narrowing only at the ABI boundary). So a FieldGet
+// of a sub-word integer field needs an i64.extend_i32_u between the
+// struct.get and the local.set, matching the OpArgIntReg prologue
+// pattern. Wider integers (int / int64 / uintptr) are already i64.
+// Floats are f32/f64 with matching local widths. Pointers/anyref
+// don't go through this path.
+func wasm3FieldGetNeedsI64Extend(t *types.Type) bool {
+	if t == nil {
+		return false
+	}
+	if !t.IsInteger() && !t.IsBoolean() {
+		return false
+	}
+	return t.Size() <= 4
 }
 
 // wasm3FieldAtOffset returns the leaf (possibly nested) struct field at

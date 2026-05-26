@@ -301,6 +301,18 @@ func walkDelete(init *ir.Nodes, n *ir.CallExpr) ir.Node {
 	key = walkExpr(key, init)
 
 	t := map_.Type()
+	if buildcfg.GOARCH == "wasm3" {
+		// M3 per-type maps (wasm3): dispatch to the per-(K,V)
+		// generated delete function instead of the runtime swisstable
+		// mapdelete helpers. The map argument is converted to
+		// unsafe.Pointer to match the generated function's signature
+		// (the wasm3 backend treats `unsafe.Pointer` as the open
+		// boxed-ref type and ref.casts to $go.map.<K,V> on entry to
+		// the per-type ops). See reflectdata/wasm3_mapgen.go.
+		fn := reflectdata.MapDeleteFuncWasm3(t)
+		mapPtr := typecheck.ConvNop(map_, types.Types[types.TUNSAFEPTR])
+		return mkcall1(fn.Nname, nil, init, mapPtr, key)
+	}
 	fast := mapfast(t)
 	key = mapKeyArg(fast, n, key, false)
 	return mkcall1(mapfndel(mapdelete[fast], t), nil, init, reflectdata.DeleteMapRType(base.Pos, n), map_, key)

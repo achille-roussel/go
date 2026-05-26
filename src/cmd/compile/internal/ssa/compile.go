@@ -500,6 +500,7 @@ var passes = [...]pass{
 	{name: "elim unread autos", fn: elimUnreadAutos},
 	{name: "tighten tuple selectors", fn: tightenTupleSelectors, required: true},
 	{name: "lowered deadcode", fn: deadcode, required: true},
+	{name: "wasm3 final lower", fn: wasm3FinalLower}, // GOARCH=wasm3: clean up orphan OffPtrs left by the field-access rules; no-op for others
 	{name: "checkLower", fn: checkLower, required: true},
 	{name: "loop invariant", fn: licm},
 	{name: "late phielim and copyelim", fn: copyelim},

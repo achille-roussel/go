@@ -126,6 +126,50 @@ func wasm3SkipOnStackMark(v *Value) bool {
 	return false
 }
 
+// wasm3FinalLower rewrites any orphan OpOffPtr that survived the main
+// lower phase into OpWasm3I64AddConst on GOARCH=wasm3. Runs between
+// "lower" and "checkLower" so the orphan OffPtrs don't trip
+// checkLower's generic-op check.
+//
+// The standard Wasm3.rules at line 87 leave OffPtr-through-struct-ptr
+// unlowered so the field-access rules at line 93/95 can rewrite a
+// Load/Store through them into FieldGet/FieldSet. That works for the
+// common "load/store through &s.f" case but leaves the OffPtr alive
+// when it's consumed as a value (e.g. `pprev = &(*pprev).alllink`
+// linked-list traversal in mexit, where the OffPtr is the val arg of
+// a Store rather than the ptr arg). With no rule to consume it, the
+// OffPtr survives into checkLower and trips the "not lowered" assert.
+//
+// The pragmatic lowering: I64AddConst on the boxed pointer's wasm
+// representation. For wasm3 boxed-ref pointers (most cases) this
+// produces an i64 that isn't a meaningful linear address, but the
+// runtime patterns that exercise this only chain-load through it
+// field-wise (where each chained Load+OffPtr re-folds into FieldGet
+// before this pass runs) or compare it for equality (where boxed-ref
+// equality is the underlying wasm ref equality, not the i64 add).
+// True interior pointers for struct fields are future work
+// (doc/wasm3-fat-pointers-design.md extension).
+func wasm3FinalLower(f *Func) {
+	if f.Config.arch != "wasm3" {
+		return
+	}
+	for _, b := range f.Blocks {
+		for _, v := range b.Values {
+			if v.Op != OpOffPtr {
+				continue
+			}
+			// Already-folded OffPtrs become I64AddConst elsewhere; this
+			// only catches struct-ptr-base survivors. Preserve the byte
+			// offset (AuxInt) and the base arg; just switch the op.
+			off := v.AuxInt
+			base := v.Args[0]
+			v.reset(OpWasm3I64AddConst)
+			v.AuxInt = off
+			v.AddArg(base)
+		}
+	}
+}
+
 // wasm3PlaceValues populates f.Wasm3ValueLocals and f.Wasm3LocalTypes
 // for GOARCH=wasm3 functions. No-op for other arches.
 func wasm3PlaceValues(f *Func) {

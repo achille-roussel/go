@@ -32,7 +32,7 @@
 // a few cache lines in size and whose metadata is stored the same way (at the
 // end of the span).
 
-//go:build goexperiment.greenteagc
+//go:build goexperiment.greenteagc && !wasm3
 
 package runtime
 

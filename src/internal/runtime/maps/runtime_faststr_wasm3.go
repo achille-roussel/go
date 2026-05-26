@@ -50,15 +50,17 @@ import (
 // []string whose backing is a WasmGC (array (ref $go.string))
 // allocated via make() — the compiler intrinsifies the make call to
 // OpWasm3MakeSlice → array.new_default, so no mallocgc/wasm3HeapAlloc.
-// `values` is still a linear-memory bump-allocated region holding
-// `cap * typ.Elem.Size_` bytes; migrating it requires per-value-type
-// allocation (the compiler can't know the value type at the runtime
-// shim's allocation site without a type-keyed intrinsic), which is
-// the next step of [[wasm3-no-linear-malloc]].
+// `values` is a []byte of cap*typ.Elem.Size_ bytes — a WasmGC
+// (array (mut i8)) — that the caller indexes into at typed offsets.
+// The caller's typed access via `*(*T)(p) = v` lowers through
+// wasm3's interior-pointer (iptr) mechanism: &d.values[off] returns
+// a (ref $go.iptr.<T>) fat pointer, and the typed store goes through
+// the array.set $go.bytes accessor pair the compiler emits for that
+// iptr class. No mallocgc, no wasm3HeapAlloc — fully host-GC.
 type wasm3MapData struct {
 	cap    uintptr
-	keys   []string       // WasmGC-backed array of string headers
-	values unsafe.Pointer // *[cap*ValueSize]byte (linear, migration pending)
+	keys   []string // WasmGC-backed array of string headers
+	values []byte   // WasmGC-backed flat byte storage indexed at typed offsets
 }
 
 // wasm3MapDataAt loads m's wasm3 backing struct (allocated lazily on
@@ -76,9 +78,12 @@ func wasm3MapKeyAt(d *wasm3MapData, i uintptr) *string {
 }
 
 // wasm3MapValueAt returns a pointer to the value slot at index i in
-// d.values for elements of size valueSize.
+// d.values for elements of size valueSize. The returned unsafe.Pointer
+// is the address of the byte at offset i*valueSize within the WasmGC
+// (array (mut i8)) backing; the caller's typed access (*(*T)(p)) lowers
+// through wasm3's interior-pointer accessor pair.
 func wasm3MapValueAt(d *wasm3MapData, i, valueSize uintptr) unsafe.Pointer {
-	return unsafe.Add(d.values, i*valueSize)
+	return unsafe.Pointer(&d.values[i*valueSize])
 }
 
 // wasm3MapEnsureCap makes sure m has room for at least one more
@@ -105,25 +110,17 @@ func wasm3MapEnsureCap(m *Map, valueSize uintptr) {
 		newCap = 8
 	}
 	newKeys := make([]string, newCap)
-	newValues := wasm3HeapAlloc(newCap * valueSize)
+	newValues := make([]byte, newCap*valueSize)
 	if d.cap > 0 {
-		// Keys are []string — copy is the WasmGC array.copy intrinsic
-		// at the compiler level. Values are still linear; memmove
-		// takes i64 pointers on wasm3 and works directly.
+		// Both backings are WasmGC arrays — copy intrinsifies to
+		// OpWasm3ArrayCopy / array.copy, no memmove needed.
 		copy(newKeys, d.keys[:uintptr(m.used)])
-		memmoveLinear(newValues, d.values, uintptr(m.used)*valueSize)
+		copy(newValues, d.values[:uintptr(m.used)*valueSize])
 	}
 	d.keys = newKeys
 	d.values = newValues
 	d.cap = newCap
 }
-
-// memmoveLinear is runtime.memmove, but spelled locally so this file
-// doesn't have to take a linkname dependency on the runtime package
-// from inside internal/runtime/maps.
-//
-//go:linkname memmoveLinear runtime.memmove
-func memmoveLinear(to, from unsafe.Pointer, n uintptr)
 
 // wasm3MapFind returns the index of key in m, or -1 if not present.
 func wasm3MapFind(m *Map, key string) int {
@@ -138,13 +135,6 @@ func wasm3MapFind(m *Map, key string) int {
 	}
 	return -1
 }
-
-// wasm3HeapAlloc allocates n zeroed bytes from the wasm3 bump heap.
-// Declared here as a linkname'd cross-package reference to the
-// runtime's heap allocator.
-//
-//go:linkname wasm3HeapAlloc runtime.wasm3HeapAlloc
-func wasm3HeapAlloc(n uintptr) unsafe.Pointer
 
 //go:linkname runtime_mapaccess1_faststr runtime.mapaccess1_faststr
 func runtime_mapaccess1_faststr(typ *abi.MapType, m *Map, key string) unsafe.Pointer {
@@ -211,21 +201,18 @@ func runtime_mapdelete_faststr(typ *abi.MapType, m *Map, key string) {
 		// maps, so this is observationally indistinguishable from
 		// any other removal strategy.
 		d.keys[i] = d.keys[last]
-		memmoveLinear(
-			wasm3MapValueAt(d, uintptr(i), typ.Elem.Size_),
-			wasm3MapValueAt(d, last, typ.Elem.Size_),
-			typ.Elem.Size_,
-		)
+		// Both src and dst are byte slices into the same WasmGC backing.
+		iOff := uintptr(i) * typ.Elem.Size_
+		lastOff := last * typ.Elem.Size_
+		copy(d.values[iOff:iOff+typ.Elem.Size_], d.values[lastOff:lastOff+typ.Elem.Size_])
 	}
 	// Zero the (now unused) tail slot so a future assignment sees
 	// the standard zero value when it lands there.
 	d.keys[last] = ""
-	memzeroLinear(wasm3MapValueAt(d, last, typ.Elem.Size_), typ.Elem.Size_)
+	lastOff := last * typ.Elem.Size_
+	clear(d.values[lastOff : lastOff+typ.Elem.Size_])
 	m.used--
 }
-
-//go:linkname memzeroLinear runtime.memclrNoHeapPointers
-func memzeroLinear(ptr unsafe.Pointer, n uintptr)
 
 // zeroVal and errNilAssign are shared with the !wasm3 implementation —
 // runtime.go defines them unconditionally.

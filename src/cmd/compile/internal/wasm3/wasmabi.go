@@ -1031,9 +1031,18 @@ func wasm3IntField(t *types.Type) (obj.WasmField, bool) {
 		types.TINT8, types.TINT16, types.TINT32,
 		types.TUINT8, types.TUINT16, types.TUINT32:
 		return obj.WasmField{Type: obj.WasmI32}, true
-	case types.TINT, types.TINT64, types.TUINT, types.TUINT64, types.TUINTPTR,
-		types.TPTR:
+	case types.TINT, types.TINT64, types.TUINT, types.TUINT64, types.TUINTPTR:
 		return obj.WasmField{Type: obj.WasmI64}, true
+	case types.TPTR:
+		// Pointer-representation cutover: *T values are WasmGC references
+		// (anyref at the wire level, ref-cast to the precise (ref $T) at
+		// use sites). The body's per-value local for an OpArgIntReg of a
+		// *T param is anyref-typed (wasm3ValueType); declaring the wasm
+		// param as i64 would force a type-mismatch in the function
+		// prologue (local_get param-i64 → local_set body-anyref). Mirror
+		// the cutover here so the wasm signature matches the body's
+		// internal expectations.
+		return obj.WasmField{Type: obj.WasmAnyref}, true
 	case types.TUNSAFEPTR:
 		// Pointer-representation cutover: unsafe.Pointer is a WasmGC
 		// reference to the open base type (go.object), so it lowers to
@@ -1074,11 +1083,36 @@ func (c *typeCollector) collectSignature(ft *types.Type) int {
 	if idx, ok := c.funcs[ft]; ok {
 		return idx
 	}
+	// Mirror attachWasmType's three-tier dispatch so the signature
+	// recorded here for indirect-call lookups (call_ref typeidx,
+	// closureCtx field type) matches the signature the function body
+	// is actually compiled against. The three tiers are:
+	//
+	//   1. tryPrimitiveAttach   — every param/result is a primitive
+	//   2. tryCollectorAttach   — composites lower to ref-typed
+	//                              wasm fields via the typeCollector
+	//   3. tryFlatPrimitiveAttach — fallback that flattens composites
+	//                                to leaf primitives (i64/i32/...)
+	//
+	// Without this, a function whose body is attached via tier 1 or
+	// tier 3 but whose closureCtx field type came from loweredStorages
+	// (which is tier-2-like) would mismatch — the wasm validator rejects
+	// the global initializer's struct.new because (ref (exact $body))
+	// ≠ (ref (exact $field)).
 	var params, results []wasmgc.Storage
 	if sig, ok := tryPrimitiveAttach(ft); ok {
 		params = wasmFuncTypeStorages(sig.Params)
 		results = wasmFuncTypeStorages(sig.Results)
+	} else if collectorAttachable(ft) {
+		params, results = c.loweredStorages(ft)
+	} else if sig, ok := tryFlatPrimitiveAttach(ft); ok {
+		params = wasmFuncTypeStorages(sig.Params)
+		results = wasmFuncTypeStorages(sig.Results)
 	} else {
+		// Shouldn't happen — tryFlatPrimitiveAttach is the final
+		// fallback that handles anything the others reject. If we
+		// land here, the body would have no aux signature too, so
+		// reusing the loweredStorages shape is at least consistent.
 		params, results = c.loweredStorages(ft)
 	}
 	idx := len(c.table)
@@ -1091,6 +1125,25 @@ func (c *typeCollector) collectSignature(ft *types.Type) int {
 	})
 	c.funcs[ft] = idx
 	return idx
+}
+
+// collectorAttachable mirrors tryCollectorAttach's accept/reject
+// decision without actually building the table — used by
+// collectSignature to predict which tier attachWasmType chose, so
+// the call_ref typeidx and closureCtx field type match the body's
+// compiled signature.
+func collectorAttachable(ft *types.Type) bool {
+	for _, p := range ft.RecvParams() {
+		if !collectorMatchesRegabi(p.Type) {
+			return false
+		}
+	}
+	for _, r := range ft.Results() {
+		if !collectorMatchesRegabi(r.Type) {
+			return false
+		}
+	}
+	return true
 }
 
 // wasmFuncTypeStorages converts an obj.WasmField slice (the

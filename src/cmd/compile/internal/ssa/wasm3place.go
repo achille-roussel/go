@@ -704,6 +704,14 @@ func wasm3ValueType(v *Value) byte {
 		// ref — its per-value local is anyref. Element access goes
 		// through array.get/array.set on the ref (interior pointers).
 		return wasm3ValAnyref
+	} else if t.IsString() || t.IsSlice() || t.IsInterface() {
+		// Boxed-string/slice/interface ABI: each is a single WasmGC ref
+		// (see wasmtype.go and doc/wasm3-slice-boxing.md). A value of
+		// these types — whether loaded from a struct field, returned
+		// from a call, or read from an array — lives in an anyref
+		// per-value local, downcast to the typed ref at struct.get /
+		// array.get use sites.
+		return wasm3ValAnyref
 	}
 	return wasm3ValI64
 }

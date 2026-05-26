@@ -760,7 +760,11 @@ func wasm3RegisterArrayBacking(fi *obj.FuncInfo, elem *types.Type) uint32 {
 // Keep in sync with the gate in ssagen (wasm3SliceElemInteriorOK) and the
 // LoadInterior rule predicate in Wasm3.rules.
 func wasm3IsRefSliceElem(elem *types.Type) bool {
-	return elem.IsPtr() || elem.IsUnsafePtr()
+	// Pointers + the other boxed-ref kinds: string, slice, interface
+	// all lower to (ref null exact $T) array elements per the wasm3
+	// type-collector rules. An array.set of these requires the value
+	// to be ref.cast to that exact ref type before storage.
+	return elem.IsPtr() || elem.IsUnsafePtr() || elem.IsString() || elem.IsSlice() || elem.IsInterface()
 }
 
 func wasm3RegisterSliceElemRef(fi *obj.FuncInfo, elem *types.Type) uint32 {

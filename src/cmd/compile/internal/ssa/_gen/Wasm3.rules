@@ -95,6 +95,19 @@
 (Store {t} (OffPtr [off] base) val mem) && base.Type.IsPtr() && base.Type.Elem() != nil && base.Type.Elem().IsStruct() =>
 	(FieldSet {base.Type.Elem()} [off] base val mem)
 
+// len(m) / cap(m) on a wasm3 map: the SSA represents `len(map)` as a
+// Load(OffPtr[0] mapPtr, mem) — load the first int from the map header
+// — which on standard wasm goes through linear memory. On wasm3 the
+// map is a $go.map.<K,V> ref whose field 0 is `used`, so rewrite the
+// load to OpWasm3MapUsed which emits struct.get $go.map.<K,V> 0.
+// AuxInt 0 selects len semantics (used field), 8 selects cap (we put
+// used at offset 0 specifically so len() lowers here without aux).
+// Also handle the unfolded I64AddConst form that line 87 produced
+// before we tightened the field-access path.
+(Load <t> (OffPtr [0] base) mem) && config.arch == "wasm3" && base.Type.IsMap() => (MapUsed {base.Type} base)
+// SSA can drop the [0] OffPtr — match the bare Load(map, mem) form too.
+(Load <t> base mem) && config.arch == "wasm3" && base.Type.IsMap() => (MapUsed {base.Type} base)
+
 // Boxed package-level variables (pointer-representation cutover): a
 // global of a boxed (WasmGC-reference) type lives in a wasm ref-global,
 // so a load/store of it through its symbol address becomes global.get /

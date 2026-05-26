@@ -416,14 +416,33 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 				a := v.Args[argIdx]
 				argIdx++
 				narrow := wasm3NarrowABI(regTypes[ri])
+				var wfType obj.WasmFieldType
+				var wfTypeIdx int64
 				if calleeWasmImport != nil && wasmFieldIdx < len(calleeWasmImport.Params) {
-					narrow = isNarrowWasmField(calleeWasmImport.Params[wasmFieldIdx])
+					wf := calleeWasmImport.Params[wasmFieldIdx]
+					narrow = isNarrowWasmField(wf)
+					wfType = wf.Type
+					wfTypeIdx = wf.Offset
 				}
 				wasmFieldIdx++
 				if narrow {
 					getValue32(s, a)
 				} else {
 					getValue64(s, a)
+				}
+				// //go:wasmimport with WasmRef param: the import
+				// signature declares the param as (ref null (exact $T))
+				// per the boxed-ref ABI (paramsToWasmFields →
+				// wasm3RefField for strings, etc.). The body's
+				// per-value local for the arg is anyref; widen to the
+				// exact ref via ref.cast before the call so the
+				// validator accepts the arg type. Prime the per-
+				// function collector with the prelude type so the
+				// R_WASMTYPE remap finds it.
+				if wfType == obj.WasmRef {
+					wasm3EnsureCollector(s.FuncInfo())
+					pCast := s.Prog(wasm.ARefCastNull)
+					pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: wfTypeIdx}
 				}
 			}
 		}
@@ -854,7 +873,14 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		getValue64(s, v.Args[1])
 		s.Prog(wasm.AI32WrapI64)
 		getValue64(s, v.Args[2])
-		if elemSize < 8 {
+		if wasm3IsRefSliceElem(auxSliceTypeSet.Elem()) {
+			// Ref-typed element (string/slice/interface/etc.): the
+			// value lives in an anyref local; cast to the array's
+			// element ref type before array.set.
+			elemRef := int64(wasm3RegisterSliceElemRef(s.FuncInfo(), auxSliceTypeSet.Elem()))
+			pCastV := s.Prog(wasm.ARefCastNull)
+			pCastV.From = obj.Addr{Type: obj.TYPE_CONST, Offset: elemRef}
+		} else if !auxSliceTypeSet.Elem().IsFloat() && elemSize < 8 {
 			s.Prog(wasm.AI32WrapI64)
 		}
 		p := s.Prog(wasm.AArraySet)
@@ -944,6 +970,32 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		pCast := s.Prog(wasm.ARefCast)
 		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
 		getValue64(s, v.Args[1])
+		// MapKeysSet / MapValuesSet receive a slice ([]K / []V) from
+		// the per-type mapassign generator. The map field stores the
+		// backing array directly (ref null exact $array). Extract the
+		// backing via struct.get $go.slice.<elem> field 0, then cast
+		// to the exact array type before struct.set.
+		if v.Op == ssa.OpWasm3MapKeysSet || v.Op == ssa.OpWasm3MapValuesSet {
+			var elemT *types.Type
+			if v.Op == ssa.OpWasm3MapKeysSet {
+				elemT = mapType.Key()
+			} else {
+				elemT = mapType.Elem()
+			}
+			sliceT := types.NewSlice(elemT)
+			sliceStructIdx := int64(wasm3RegisterSliceStruct(s.FuncInfo(), sliceT))
+			arrIdx := int64(wasm3RegisterArrayBacking(s.FuncInfo(), elemT))
+			// ref.cast slice value to typed slice struct
+			pSCast := s.Prog(wasm.ARefCastNull)
+			pSCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceStructIdx}
+			// struct.get $go.slice.<T> field 0 — backing array ref
+			pBacking := s.Prog(wasm.AStructGet)
+			pBacking.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceStructIdx}
+			pBacking.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+			// ref.cast backing to exact array type for the field slot
+			pVCast := s.Prog(wasm.ARefCastNull)
+			pVCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdx}
+		}
 		p := s.Prog(wasm.AStructSet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
@@ -1344,7 +1396,8 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// Boxed slice header field reads (doc/wasm3-slice-boxing.md):
 		// struct.get $go.slice.<T> at the field's fixed index. data=0
 		// (backing array ref, left as anyref in the per-value local),
-		// len=2, cap=3 (i64).
+		// len=2, cap=3 (i64). ref.cast the anyref base to
+		// (ref null exact $go.slice.<T>) before struct.get.
 		field := int64(0)
 		switch v.Op {
 		case ssa.OpWasm3SliceLength:
@@ -1352,9 +1405,12 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		case ssa.OpWasm3SliceCapacity:
 			field = 3
 		}
+		sliceTypeIdx := int64(wasm3RegisterSliceStruct(s.FuncInfo(), v.Aux.(*types.Type)))
 		getValue64(s, v.Args[0])
+		pCast := s.Prog(wasm.ARefCastNull)
+		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceTypeIdx}
 		p := s.Prog(wasm.AStructGet)
-		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterSliceStruct(s.FuncInfo(), v.Aux.(*types.Type)))}
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceTypeIdx}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
 
 	case ssa.OpWasm3StringData, ssa.OpWasm3StringLength:
@@ -1740,16 +1796,69 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 			v.Fatalf("OpWasm3Map*: v.Aux is not a map type: %v", v.Aux)
 		}
 		mapIdx := int64(wasm3RegisterMapStruct(s.FuncInfo(), mapType))
+		// MapKeys/MapValues' SSA result type is []K / []V (per the
+		// callMapHelper's `any → K/V` substitution). The map field
+		// holds a bare array ref though. Wrap the array in a real
+		// $go.slice.<elem> struct so SliceLen / IndexExpr / etc.
+		// further down can use the standard wasm3 slice ops.
+		if v.Op == ssa.OpWasm3MapKeys || v.Op == ssa.OpWasm3MapValues {
+			var elemT *types.Type
+			var field int64
+			if v.Op == ssa.OpWasm3MapKeys {
+				elemT = mapType.Key()
+				field = 2
+			} else {
+				elemT = mapType.Elem()
+				field = 3
+			}
+			sliceT := types.NewSlice(elemT)
+			sliceStructIdx := int64(wasm3RegisterSliceStruct(s.FuncInfo(), sliceT))
+			arrIdx := int64(wasm3RegisterArrayBacking(s.FuncInfo(), elemT))
+			// First, get the backing array ref: ref.cast map; struct.get $map field
+			getValue64(s, v.Args[0])
+			pCast := s.Prog(wasm.ARefCast)
+			pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+			pBacking := s.Prog(wasm.AStructGet)
+			pBacking.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+			pBacking.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
+			// Map's keys/values field is (ref null exact $array). Slice
+			// struct's data field is (ref exact $array) — non-null.
+			// Coerce via ref.cast non-null. If the map's field is null
+			// (empty map), this traps — callers must check used > 0
+			// before invoking the slice indexing path.
+			pCast.As = wasm.ARefCast // ensure non-null cast
+			pNN := s.Prog(wasm.ARefCast)
+			pNN.From = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdx}
+			// Then the offset (i64 0)
+			i64Const(s, 0)
+			// Then len = cap (the slice exposes the full backing
+			// length so insert/refresh-in-place loops in mapassign
+			// can index [0, cap)). The map's `used` is tracked
+			// separately and used to bound the loop count.
+			getValue64(s, v.Args[0])
+			pCast2 := s.Prog(wasm.ARefCast)
+			pCast2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+			pLen := s.Prog(wasm.AStructGet)
+			pLen.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+			pLen.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1} // cap field
+			// Then cap = struct.get $map field 1 (cap)
+			getValue64(s, v.Args[0])
+			pCast3 := s.Prog(wasm.ARefCast)
+			pCast3.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+			pCap := s.Prog(wasm.AStructGet)
+			pCap.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+			pCap.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
+			// struct.new $go.slice.<elem> {backing, off, len, cap}
+			pNew := s.Prog(wasm.AStructNew)
+			pNew.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceStructIdx}
+			break
+		}
 		var field int64
 		switch v.Op {
 		case ssa.OpWasm3MapUsed:
 			field = 0
 		case ssa.OpWasm3MapCap:
 			field = 1
-		case ssa.OpWasm3MapKeys:
-			field = 2
-		case ssa.OpWasm3MapValues:
-			field = 3
 		}
 		getValue64(s, v.Args[0])
 		pCast := s.Prog(wasm.ARefCast)

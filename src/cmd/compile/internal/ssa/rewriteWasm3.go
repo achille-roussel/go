@@ -1700,6 +1700,35 @@ func rewriteValueWasm3_OpLoad(v *Value) bool {
 		v.AddArg2(base, mem)
 		return true
 	}
+	// match: (Load <t> (OffPtr [0] base) mem)
+	// cond: config.arch == "wasm3" && base.Type.IsMap()
+	// result: (MapUsed {base.Type} base)
+	for {
+		if v_0.Op != OpOffPtr || auxIntToInt64(v_0.AuxInt) != 0 {
+			break
+		}
+		base := v_0.Args[0]
+		if !(config.arch == "wasm3" && base.Type.IsMap()) {
+			break
+		}
+		v.reset(OpWasm3MapUsed)
+		v.Aux = typeToAux(base.Type)
+		v.AddArg(base)
+		return true
+	}
+	// match: (Load <t> base mem)
+	// cond: config.arch == "wasm3" && base.Type.IsMap()
+	// result: (MapUsed {base.Type} base)
+	for {
+		base := v_0
+		if !(config.arch == "wasm3" && base.Type.IsMap()) {
+			break
+		}
+		v.reset(OpWasm3MapUsed)
+		v.Aux = typeToAux(base.Type)
+		v.AddArg(base)
+		return true
+	}
 	// match: (Load <t> (LoweredAddr {sym} [0] (SB)) _)
 	// cond: config.arch == "wasm3" && wasm3IsBoxedType(t)
 	// result: (GlobalGet <t> {sym})

@@ -6565,10 +6565,22 @@ func (s *state) referenceTypeBuiltin(n *ir.UnaryExpr, x *ssa.Value) *ssa.Value {
 	switch n.Op() {
 	case ir.OLEN:
 		if n.X.Type().IsMap() {
-			// length is stored in the first word, but needs conversion to int.
-			loadType := reflectdata.MapType().Field(0).Type // uint64
-			load := s.load(loadType, x)
-			s.vars[n] = s.conv(nil, load, loadType, lenType) // integer conversion doesn't need Node
+			if buildcfg.GOARCH == "wasm3" {
+				// wasm3 maps are $go.map.<K,V> WasmGC structs whose
+				// field 0 is `used` (i64). Emit OpWasm3MapUsed
+				// directly with the map's *types.Type as v.Aux —
+				// the wasm3 backend lowers it to ref.cast + struct.
+				// get $go.map.<K,V> 0. Skip the generic load+conv
+				// path, which assumes a linear-memory map header.
+				v := s.newValueOrSfCall1(ssa.OpWasm3MapUsed, types.Types[types.TUINTPTR], x)
+				v.Aux = n.X.Type()
+				s.vars[n] = s.conv(nil, v, types.Types[types.TUINTPTR], lenType)
+			} else {
+				// length is stored in the first word, but needs conversion to int.
+				loadType := reflectdata.MapType().Field(0).Type // uint64
+				load := s.load(loadType, x)
+				s.vars[n] = s.conv(nil, load, loadType, lenType) // integer conversion doesn't need Node
+			}
 		} else {
 			// length is stored in the first word for chan, no conversion needed.
 			s.vars[n] = s.load(lenType, x)

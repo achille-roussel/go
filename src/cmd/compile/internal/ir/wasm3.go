@@ -35,3 +35,11 @@ var Wasm3MakeMapTypes sync.Map
 // mapClear to the SSA-time intrinsic for runtime.mapclear. Same
 // side-channel pattern as Wasm3MakeMapTypes.
 var Wasm3MapClearTypes sync.Map
+
+// Wasm3MapHelperTypes carries the map's *types.Type from the per-(K,V)
+// map operation generators (reflectdata/wasm3_mapgen.go) to the SSA-
+// time intrinsics for the runtime stubs wasm3MapUsed / wasm3MapCap /
+// wasm3MapKeys / wasm3MapValues (+ Set counterparts). Same side-channel
+// pattern as Wasm3MapClearTypes — keyed on the *ir.CallExpr the
+// generator builds when emitting a stub call, value is the map type.
+var Wasm3MapHelperTypes sync.Map

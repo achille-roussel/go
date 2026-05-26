@@ -91,6 +91,21 @@ func wasm3Uint64Hash(uint64, uintptr) uintptr
 func wasm3BoolHash(bool, uintptr) uintptr
 func wasm3Float64Hash(float64, uintptr) uintptr
 
+// GOARCH=wasm3 per-type map field accessors. The `any` placeholders in
+// the Keys/Values stubs are substituted with concrete K and V via
+// typecheck.LookupRuntime at the per-(K,V) generator's IR-construction
+// time. Each call is intrinsified to the corresponding OpWasm3Map*
+// SSA op carrying the map's *types.Type as v.Aux. See
+// cmd/compile/internal/ssagen/intrinsics.go.
+func wasm3MapUsed(m unsafe.Pointer) uintptr
+func wasm3MapCap(m unsafe.Pointer) uintptr
+func wasm3MapKeys(m unsafe.Pointer) []any
+func wasm3MapValues(m unsafe.Pointer) []any
+func wasm3MapUsedSet(m unsafe.Pointer, n uintptr)
+func wasm3MapCapSet(m unsafe.Pointer, n uintptr)
+func wasm3MapKeysSet(m unsafe.Pointer, keys []any)
+func wasm3MapValuesSet(m unsafe.Pointer, values []any)
+
 func intstring(*[4]byte, int64) string
 func slicebytetostring(buf *[32]byte, ptr *byte, n int) string
 func slicebytetostringtmp(ptr *byte, n int) string

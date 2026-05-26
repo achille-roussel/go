@@ -210,6 +210,60 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	}
 	add("runtime", "mapclear", wasm3MapClearIntrinsic, sys.ArchWasm3)
 
+	// M3 per-type maps (wasm3): field-access intrinsics for the
+	// runtime stubs that the per-(K,V) map operation generators
+	// (reflectdata/wasm3_mapgen.go) emit calls to. Each intrinsic
+	// recovers the map's *types.Type from a side channel keyed on
+	// the *ir.CallExpr (populated at IR-construction time by the
+	// generator) and emits the corresponding OpWasm3Map* SSA op.
+	wasm3MapFieldGetter := func(op ssa.Op, resultType *types.Type) func(*state, *ir.CallExpr, []*ssa.Value) *ssa.Value {
+		return func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			entry, ok := ir.Wasm3MapHelperTypes.LoadAndDelete(n)
+			if !ok {
+				s.Fatalf("wasm3 map field intrinsic: no recorded map type for call %v", n)
+			}
+			mapType := entry.(*types.Type)
+			t := resultType
+			if t == nil {
+				// Keys/Values return type is []K or []V — substitute
+				// based on the map's K or V respectively. The op tag
+				// picks which.
+				switch op {
+				case ssa.OpWasm3MapKeys:
+					t = types.NewSlice(mapType.Key())
+				case ssa.OpWasm3MapValues:
+					t = types.NewSlice(mapType.Elem())
+				default:
+					s.Fatalf("wasm3 map field intrinsic: missing result type for op %v", op)
+				}
+			}
+			v := s.newValue1(op, t, args[0])
+			v.Aux = mapType
+			return v
+		}
+	}
+	wasm3MapFieldSetter := func(op ssa.Op) func(*state, *ir.CallExpr, []*ssa.Value) *ssa.Value {
+		return func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			entry, ok := ir.Wasm3MapHelperTypes.LoadAndDelete(n)
+			if !ok {
+				s.Fatalf("wasm3 map field intrinsic: no recorded map type for call %v", n)
+			}
+			mapType := entry.(*types.Type)
+			v := s.newValue3(op, types.TypeMem, args[0], args[1], s.mem())
+			v.Aux = mapType
+			s.vars[memVar] = v
+			return nil
+		}
+	}
+	add("runtime", "wasm3MapUsed", wasm3MapFieldGetter(ssa.OpWasm3MapUsed, types.Types[types.TUINTPTR]), sys.ArchWasm3)
+	add("runtime", "wasm3MapCap", wasm3MapFieldGetter(ssa.OpWasm3MapCap, types.Types[types.TUINTPTR]), sys.ArchWasm3)
+	add("runtime", "wasm3MapKeys", wasm3MapFieldGetter(ssa.OpWasm3MapKeys, nil), sys.ArchWasm3)
+	add("runtime", "wasm3MapValues", wasm3MapFieldGetter(ssa.OpWasm3MapValues, nil), sys.ArchWasm3)
+	add("runtime", "wasm3MapUsedSet", wasm3MapFieldSetter(ssa.OpWasm3MapUsedSet), sys.ArchWasm3)
+	add("runtime", "wasm3MapCapSet", wasm3MapFieldSetter(ssa.OpWasm3MapCapSet), sys.ArchWasm3)
+	add("runtime", "wasm3MapKeysSet", wasm3MapFieldSetter(ssa.OpWasm3MapKeysSet), sys.ArchWasm3)
+	add("runtime", "wasm3MapValuesSet", wasm3MapFieldSetter(ssa.OpWasm3MapValuesSet), sys.ArchWasm3)
+
 	// M3 Stage E phase 4 (wasm3): walkCopy emits this in place of
 	// runtime.memmove for `copy(dst, src)`. The first arg is the
 	// elem rtype; args[1]=dst, args[2]=src, args[3]=n_elements.

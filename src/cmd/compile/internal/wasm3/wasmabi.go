@@ -245,10 +245,13 @@ func flatPrimitiveFields(t *types.Type) ([]obj.WasmField, bool) {
 	}
 	switch t.Kind() {
 	case types.TSTRING:
-		// (data *byte, len int) — both pass as i64 registers.
+		// Boxed-string ABI: a Go string is a single $go.string ref
+		// (per doc/wasm3-slice-boxing.md). The body's per-value
+		// local for a string param/result is anyref (wasm3ValueType);
+		// the older (data, len) 2-i64 lowering predates the boxing
+		// cutover and now mismatches at every call site.
 		return []obj.WasmField{
-			{Type: obj.WasmI64},
-			{Type: obj.WasmI64},
+			{Type: obj.WasmAnyref},
 		}, true
 	case types.TSLICE:
 		// Stage E phase 2: the slice's data pointer is a wasmgc
@@ -276,10 +279,13 @@ func flatPrimitiveFields(t *types.Type) ([]obj.WasmField, bool) {
 			{Type: obj.WasmI64},
 		}, true
 	case types.TINTER:
-		// (type *_type, data unsafe.Pointer) — two i64 registers.
+		// Boxed-interface ABI: a Go interface is a single $go.iface
+		// ref (per wasmtype.go's TINTER lowering at line 197). The
+		// older (itab, data) 2-i64 flattening predates the boxing
+		// cutover and mismatched the body's anyref-typed per-value
+		// local for interface params/results.
 		return []obj.WasmField{
-			{Type: obj.WasmI64},
-			{Type: obj.WasmI64},
+			{Type: obj.WasmAnyref},
 		}, true
 	case types.TCOMPLEX64:
 		return []obj.WasmField{
@@ -1001,13 +1007,14 @@ func signatureHasRef(sig obj.WasmFuncType) bool {
 // same splitting on its side.
 func wasm3Fields(t *types.Type) ([]obj.WasmField, bool) {
 	if t.Kind() == types.TSTRING {
-		// (ptr, len) — both i64 to match the wasm3 internal register
-		// width. The wasmexport wrapper splits a string into 2
-		// WasmPtr (i32) fields and widens each across the boundary,
-		// the same dance pointer params do.
+		// Boxed-string ABI: a Go string is a single $go.string ref
+		// (per doc/wasm3-slice-boxing.md). The previous (ptr, len)
+		// 2-i64 lowering predates the boxing cutover and now
+		// mismatches the body's anyref-typed per-value local for a
+		// string parameter — emit one WasmAnyref so the signature
+		// matches.
 		return []obj.WasmField{
-			{Type: obj.WasmI64},
-			{Type: obj.WasmI64},
+			{Type: obj.WasmAnyref},
 		}, true
 	}
 	f, ok := wasm3IntField(t)

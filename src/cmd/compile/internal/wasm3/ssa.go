@@ -1362,12 +1362,16 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// field index (0=backing $go.bytes ref, 2=length i64). $go.string
 		// is the prelude type TypeGoString; wasm3EnsureCollector primes the
 		// per-function table so the R_WASMTYPE reloc remaps the index.
+		// ref.cast the anyref base to (ref null exact $go.string) first —
+		// struct.get rejects anyref bases.
 		wasm3EnsureCollector(s.FuncInfo())
 		field := int64(0)
 		if v.Op == ssa.OpWasm3StringLength {
 			field = 2
 		}
 		getValue64(s, v.Args[0])
+		pCast := s.Prog(wasm.ARefCastNull)
+		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoString)}
 		p := s.Prog(wasm.AStructGet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoString)}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
@@ -1375,13 +1379,16 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 	case ssa.OpWasm3IfaceItab, ssa.OpWasm3IfaceData:
 		// Boxed interface component reads: struct.get $go.iface at the
 		// fixed field index (0=itab ref, 1=data ref). $go.iface is the
-		// prelude type TypeGoIface; both fields are anyref.
+		// prelude type TypeGoIface; both fields are anyref. ref.cast the
+		// anyref base to (ref null exact $go.iface) first.
 		wasm3EnsureCollector(s.FuncInfo())
 		field := int64(0)
 		if v.Op == ssa.OpWasm3IfaceData {
 			field = 1
 		}
 		getValue64(s, v.Args[0])
+		pCast := s.Prog(wasm.ARefCastNull)
+		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoIface)}
 		p := s.Prog(wasm.AStructGet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoIface)}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}

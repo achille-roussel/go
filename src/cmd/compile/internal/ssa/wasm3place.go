@@ -605,6 +605,18 @@ func wasm3ValueType(v *Value) byte {
 		OpWasm3LoweredGetClosureRef, OpWasm3LoweredCastClosureRef,
 		OpWasm3InteriorPtr, OpWasm3GlobalGet:
 		return wasm3ValAnyref
+	case OpWasm3LoweredAddr:
+		// Symbol/stack addresses materialise as i64 linear addresses,
+		// not WasmGC refs — even when v.Type is *T for a heap-managed
+		// T (the generic default would classify these as anyref via
+		// wasm3PointerIsRef). Keep them i64 so the codegen's wasm.AGet
+		// /AddAux path (which emits an i64-typed wasm get) matches
+		// the per-value local type. Call sites that need a ref of the
+		// addressed object (e.g. interface itab/data construction
+		// from a static symbol) go through OpWasm3GlobalGet or the
+		// OpWasm3IfaceMake / OpWasm3LoweredAddr-special-case path in
+		// wasm3 codegen instead.
+		return wasm3ValI64
 	case OpWasm3GetClosureField:
 		// Whether a GetClosureField produces an anyref or an i64
 		// local depends on the closureCtx field type at AuxInt, not

@@ -38,7 +38,17 @@ type limiterEvent struct{}
 // gcWork is referenced as struct field type in p (runtime2.go) and as
 // parameter type in mcheckmark.go and preempt_noxreg.go. The mark
 // queue itself lives in mgcwork.go, which is excluded.
-type gcWork struct{}
+type gcWork struct {
+	id    int32
+	spanq gcSpanQueueStub
+}
+
+// gcSpanQueueStub is the per-P mark-span queue. proc.go calls
+// pp.gcw.spanq.empty() etc. wasm3 has no spans — always empty.
+type gcSpanQueueStub struct{}
+
+func (q *gcSpanQueueStub) empty() bool { return true }
+func (q *gcSpanQueueStub) destroy()    {}
 
 // stackScanState is referenced as parameter type in preempt_noxreg.go.
 // The stack-scan state lives in mgcmark.go, which is excluded.
@@ -98,6 +108,9 @@ func (b *wbBuf) get2() *[2]uintptr {
 	return &wasm3WBDummy
 }
 
+// reset clears the write-barrier buffer. wasm3 has no WB — no-op.
+func (b *wbBuf) reset() { _ = b }
+
 var wasm3WBDummy [2]uintptr
 
 // gcBits is referenced as struct field type in the pinner allocator
@@ -139,6 +152,20 @@ type synctestBubble struct {
 func (b *synctestBubble) incActive() { _ = b }
 func (b *synctestBubble) decActive() { _ = b }
 
+// changegstatus is proc.go's bubble hook called on goroutine status
+// transitions. wasm3 has no synctest scheduler — no-op.
+func (b *synctestBubble) changegstatus(gp *g, oldval, newval uint32) {
+	_ = b
+	_ = gp
+	_ = oldval
+	_ = newval
+}
+
+// raceaddr returns a synthetic address representing the bubble for
+// race-detector synchronisation. wasm3 doesn't run the race detector;
+// return nil.
+func (b *synctestBubble) raceaddr() unsafe.Pointer { _ = b; return nil }
+
 // mSpanList is referenced from stack.go's pool of free stack spans.
 // stack.go's growth machinery is part of the M2 exclusion set per
 // doc/wasm3-design.md, but the surviving stack.go bits (signature
@@ -156,8 +183,11 @@ type gcMarkWorkerMode int
 
 // gcBgMarkWorkerNode is the background-mark-worker queue link.
 // wasm3 has no background mark workers; runtime2.go has a *node
-// pointer that stays nil. Empty stub.
-type gcBgMarkWorkerNode struct{}
+// pointer that stays nil. Empty stub with the gp field proc.go
+// uses to reach back to the worker goroutine.
+type gcBgMarkWorkerNode struct {
+	gp guintptr
+}
 
 // persistentAlloc is the per-P off-heap allocator's local cache.
 // runtime2.go has a per-p field of this type. wasm3 routes all
@@ -217,6 +247,14 @@ const heapAddrBits = 48
 // of this type. wasm3 has no page allocator (host WasmGC owns the
 // address space) so the cache is never populated. Empty stub.
 type pageCache struct{}
+
+// flush drops cached pages back to the page allocator. wasm3 has no
+// pages — no-op.
+func (c *pageCache) flush(p *pageAllocStub) { _ = c; _ = p }
+
+// freemcache releases a per-P size-class cache back to mheap.
+// proc.go's p-tear-down path calls it. wasm3 has no caches — no-op.
+func freemcache(c *mcache) { _ = c }
 
 // inheap reports whether p points into a heap-managed allocation.
 // cgocall.go's runtime.cgoCheckPointer guards check this before
@@ -309,13 +347,53 @@ func persistentalloc(size, align uintptr, sysStat *sysMemStat) unsafe.Pointer {
 // mem.go still compiles, so expose just the mappedReady counter.
 // The Add calls are harmless no-state-side-effects (the value is
 // never read by surviving code).
-var gcController struct {
-	mappedReady atomic.Uint64
-	memoryLimit atomic.Int64
-	gcPercent   atomic.Int32
-	heapMarked  uint64
-	heapGoal    atomic.Uint64
+// gcControllerStub is a stand-in for mgcpacer's gcControllerState that
+// exposes only the fields surviving callers read.
+type gcControllerStub struct {
+	mappedReady       atomic.Uint64
+	memoryLimit       atomic.Int64
+	gcPercent         atomic.Int32
+	heapMarked        uint64
+	heapGoal          atomic.Uint64
+	bgScanCredit      atomic.Int64
+	assistWorkPerByte atomicFloat64Stub
 }
+
+// atomicFloat64Stub is a stand-in for atomic.Float64 used by the GC
+// pacer for sub-cycle work bookkeeping. wasm3 never updates it; the
+// Load method returns 0 so callers see "no per-byte assist needed".
+type atomicFloat64Stub struct{}
+
+func (a *atomicFloat64Stub) Load() float64 { return 0 }
+
+// findRunnableGCWorker is the scheduler's hand-off path for getting
+// a P into background-mark mode. wasm3 has no mark workers — return
+// nil + 0 so the caller falls through.
+func (c *gcControllerStub) findRunnableGCWorker(pp *p, now int64) (*g, int64) {
+	_ = pp
+	_ = now
+	return nil, now
+}
+
+// addIdleMarkWorker / removeIdleMarkWorker manage the count of
+// idle-mode mark workers the scheduler may run. wasm3 has no mark
+// workers — both are no-ops; addIdleMarkWorker returns false so
+// the scheduler skips the idle-worker branch.
+func (c *gcControllerStub) addIdleMarkWorker() bool             { return false }
+func (c *gcControllerStub) removeIdleMarkWorker()               {}
+func (c *gcControllerStub) needIdleMarkWorker() bool            { return false }
+func (c *gcControllerStub) releaseNextGCMarkWorker(pp *p) *g    { _ = pp; return nil }
+func (c *gcControllerStub) addScannableStack(pp *p, n int64) {
+	_ = pp
+	_ = n
+}
+
+
+// gcMarkWorkerIdleMode is the gcMarkWorkerMode constant for idle-time
+// mark work. wasm3 never uses it but proc.go references it.
+const gcMarkWorkerIdleMode = 2
+
+var gcController gcControllerStub
 
 // cleanupBlock is a freelist node for runtime.AddCleanup queued work.
 // runtime2.go's p has a *cleanupBlock field. Cleanups are unsupported
@@ -342,6 +420,10 @@ var gcCPULimiter struct {
 // mgcsweep.go etc. update. runtime2.go's schedstat aggregation has
 // timeHistogram-typed fields. wasm3 has no histograms to update.
 type timeHistogram struct{}
+
+// record adds a duration to the histogram. wasm3 doesn't record —
+// no-op.
+func (h *timeHistogram) record(duration int64) { _ = duration }
 
 // KeepAlive is the public runtime.KeepAlive that defeats dead-store
 // elimination on the argument. The standard definition lives in
@@ -385,11 +467,24 @@ func (s *sysMemStat) load() uint64 { return (*atomic.Uint64)(s).Load() }
 // wasm3 never samples goroutines. Stub.
 type goroutineProfileStateHolder atomic.Uint32
 
+// Store records a profile-state transition. wasm3 never samples;
+// the underlying Uint32 is unused but the method must exist for
+// proc.go to compile.
+func (h *goroutineProfileStateHolder) Store(v uint32) {
+	(*atomic.Uint32)(h).Store(v)
+}
+
+// Load returns the recorded profile state.
+func (h *goroutineProfileStateHolder) Load() uint32 {
+	return (*atomic.Uint32)(h).Load()
+}
+
 // mLockProfile is the per-m mutex-contention profile state. With
 // mprof.go excluded runtime2.go's m needs a stub type for the field.
 // wasm3 never samples contention.
 type mLockProfile struct {
 	waitTime atomic.Int64
+	stack    []uintptr
 }
 
 // blockprofilerate is the public runtime.SetBlockProfileRate setting
@@ -419,12 +514,28 @@ func tryRecordGoroutineProfile(gp *g, pcbuf []uintptr, yield func()) {
 	_ = yield
 }
 
+// tryRecordGoroutineProfileWB is the write-barrier-safe variant the
+// scheduler reaches when racing GC. wasm3 has no profiler — no-op.
+func tryRecordGoroutineProfileWB(gp *g) { _ = gp }
+
+// goroutineProfileSatisfied is the sentinel value stored into a new
+// goroutine's profile-state to mark it as "no sampling needed". wasm3
+// never samples; treat every fresh g as already covered.
+const goroutineProfileSatisfied uint32 = 0
+
 // memstats is the global runtime-stats aggregator that iface.go,
 // netpoll.go, and many other files Add into. The standard struct
 // lives in mstats.go (excluded). Empty stub with the few fields
 // that surviving call sites read or update.
 var memstats struct {
 	other_sys sysMemStat
+	heapStats consistentHeapStats
+}
+
+// consistentHeapStats is the per-P-sharded heap-stats accumulator
+// proc.go's stats merge reaches. wasm3 doesn't accumulate — stub.
+type consistentHeapStats struct {
+	noPLock mutex
 }
 
 // zerobase is the standard runtime's address of the zero-byte
@@ -439,18 +550,157 @@ var zerobase uintptr
 // references it. With synctest.go excluded the type still needs to
 // exist for the type-assertion not to be a compile error; the value
 // is unreachable on wasm3 (no synctest scheduler hooks).
-type synctestDeadlockError struct{}
+type synctestDeadlockError struct {
+	bubble *synctestBubble
+}
 
 func (e *synctestDeadlockError) Error() string { return "synctest deadlock" }
 
 // mheap_ is the global mheap singleton. Most readers are inside
-// excluded files; surviving touchpoints (panic.go) only test it for
-// nil-ish behavior. Zero-value struct{} suffices.
-var mheap_ struct{}
+// excluded files; surviving touchpoints (panic.go, proc.go) reach
+// for a handful of fields/locks. Empty mutex / fixalloc stubs are
+// enough for the surviving paths (which are dead-code at runtime on
+// wasm3 — proc.go's p-flush only fires when there's actual heap
+// state).
+var mheap_ struct {
+	cachealloc fixalloc
+	spanalloc  fixalloc
+	pages      pageAllocStub
+	lock       mutex
+}
+
+// pageAllocStub stands in for mheap.pages (pageAlloc). proc.go's
+// p-flush path calls mheap_.pages.scav etc. wasm3 doesn't manage
+// pages — the few touched methods are no-ops.
+type pageAllocStub struct{}
+
+// fixalloc is mheap's per-class allocator. panic.go has a code path
+// that frees an mcache through mheap_.cachealloc.free; with mheap.go
+// excluded the type is gone, but a stub with a no-op free keeps the
+// call site compilable.
+type fixalloc struct {
+	size uintptr
+}
+
+func (f *fixalloc) free(p unsafe.Pointer) { _ = p }
 
 // gcenable is the GC startup hook proc.go calls during boot. wasm3
 // has no concurrent GC — no-op.
 func gcenable() {}
+
+// gcphase is the global GC-state machine word. _GCoff (0) means
+// "not in GC". wasm3 stays in this state forever.
+var gcphase uint32
+
+const (
+	_GCoff             uint32 = 0
+	_GCmark            uint32 = 1
+	_GCmarktermination uint32 = 2
+)
+
+// work is mgc.go's global GC bookkeeping aggregate. Surviving proc.go
+// references just check work.full / etc. wasm3 keeps it all-zero.
+var work struct {
+	full          atomic.Uint64
+	startSema     uint32
+	markDoneSema  uint32
+	goroutineLeak struct{ enabled atomic.Bool }
+	spanqMask     spanqMaskStub
+}
+
+type spanqMaskStub struct{}
+
+func (s *spanqMaskStub) any() bool { return false }
+
+// allocmcache returns a fresh per-P size-class cache. mcache.go owns
+// the real implementation. wasm3 has no caches (no mallocgc) so
+// return nil — proc.go's only use is to assign to p.mcache, and
+// nothing on wasm3 reads back.
+func allocmcache() *mcache { return nil }
+
+// gcStart starts a new GC cycle. proc.go's sysmon background trigger
+// invokes it. wasm3 has no concurrent GC — no-op.
+func gcStart(trigger gcTrigger) { _ = trigger }
+
+// gcTrigger / gcTriggerTime are the GC pacer's trigger-reason enum
+// and time-trigger constant. proc.go constructs gcTrigger{kind:
+// gcTriggerTime, now: ...} when forcing GC.
+type gcTrigger struct {
+	kind int
+	now  int64
+	n    uint32
+}
+
+const gcTriggerTime = 0
+
+// finlock is the global finalizer-queue lock. proc.go acquires it
+// during shutdown / drain. wasm3 has no finalizers; using a stub
+// mutex keeps the lock/unlock pairs compilable.
+var finlock mutex
+
+// mallocinit is the allocator's bootstrap entry called from proc.go
+// during runtime startup. wasm3's allocation is intrinsified at the
+// SSA layer (struct.new) and falls back to the wasm3Heap bump arena;
+// no initialization needed.
+func mallocinit() {}
+
+// gcinit is the GC bootstrap. wasm3 has no GC — no-op.
+func gcinit() {}
+
+// gcBlackenEnabled is the global flag set by mgc.go to indicate the
+// concurrent mark phase is running. wasm3 has no concurrent GC; the
+// flag stays zero and the readers (proc.go scheduling decisions)
+// take the GC-disabled branch.
+var gcBlackenEnabled uint32
+
+// gcShouldScheduleWorker reports whether the scheduler should hand
+// the next P to a background mark worker. wasm3 has no mark workers
+// — always false.
+func gcShouldScheduleWorker(pp *p) bool { _ = pp; return false }
+
+// fingStatus is the finalizer-goroutine state word. proc.go's
+// scheduler tickles it during runqueue draining. wasm3 has no
+// finalizers — value never changes.
+var fingStatus atomic.Uint32
+
+// fingWait / fingWake are the finalizer-goroutine status flag bits
+// proc.go tests when deciding whether to wake the finalizer
+// goroutine. wasm3's stubs are zero — the flags never fire.
+const (
+	fingWait = 1 << 0
+	fingWake = 1 << 1
+)
+
+// wakefing returns the finalizer goroutine to schedule (or nil if
+// none). wasm3 has no finalizer queue — always nil.
+func wakefing() *g { return nil }
+
+// gcCleanups is the per-runtime cleanup queue maintained by mcleanup.go.
+// proc.go's sysmon checks it for pending cleanups. wasm3 has none.
+type gcCleanupsStub struct {
+	asleep atomic.Bool
+	full   atomic.Bool
+	queued atomic.Uint64
+}
+
+func (c *gcCleanupsStub) needsWake() bool { return false }
+func (c *gcCleanupsStub) wake()           {}
+
+var gcCleanups gcCleanupsStub
+
+// disableMemoryProfiling is a bool variable set by the linker via
+// runtime.disableMemoryProfiling; proc.go consults it to suppress the
+// heap profiler. wasm3 never samples — stays false.
+var disableMemoryProfiling bool
+
+// MemProfileRate is the public sampling-rate knob. wasm3 stays at
+// the upstream default (528 KiB) so user code that reads it sees a
+// plausible value; the actual sampling path is excluded.
+var MemProfileRate int = 512 * 1024
+
+// maxSkip is the lock-profile stack-skip cap from mprof.go. wasm3
+// never samples — value is irrelevant but the constant must exist.
+const maxSkip = 0
 
 // itoaDiv writes val as a decimal into buf with dec fractional digits.
 // debuglog.go uses it for floating-point-free dec emission. The

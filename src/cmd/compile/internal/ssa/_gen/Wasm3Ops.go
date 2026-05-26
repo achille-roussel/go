@@ -405,6 +405,26 @@ func init() {
 		// v.Aux carries the map's *types.Type for wasm3RegisterMapStruct.
 		{name: "MapClear", argLength: 2, reg: regInfo{inputs: []regMask{gp}}, aux: "Typ", typ: "Mem"},
 
+		// M3 per-type maps: struct.get on $go.map.<K,V> field 2 — keys
+		// backing, returns a (ref null (array K)) wasm-typed as anyref
+		// in the per-value local. arg0=map ref. v.Aux=map's *types.Type.
+		// MapKeysSet is the matching struct.set: arg0=map ref,
+		// arg1=new (ref null (array K)), arg2=mem; returns mem.
+		{name: "MapKeys", argLength: 1, reg: gp11, aux: "Typ", typ: "BytePtr"},
+		{name: "MapKeysSet", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "Typ", typ: "Mem"},
+		// Same shape for the values backing (field 3).
+		{name: "MapValues", argLength: 1, reg: gp11, aux: "Typ", typ: "BytePtr"},
+		{name: "MapValuesSet", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "Typ", typ: "Mem"},
+		// And for the used field (i64) (field 0). MapUsed could also be
+		// reached via the offset-0 load that len() emits, but having a
+		// direct op is cleaner for the per-type op generators.
+		// MapUsedSet: arg0=map ref, arg1=new used (i64), arg2=mem.
+		{name: "MapUsed", argLength: 1, reg: gp11, aux: "Typ", typ: "Int64"},
+		{name: "MapUsedSet", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "Typ", typ: "Mem"},
+		// And cap field (i64) (field 1).
+		{name: "MapCap", argLength: 1, reg: gp11, aux: "Typ", typ: "Int64"},
+		{name: "MapCapSet", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "Typ", typ: "Mem"},
+
 		// M3 Stage E phase 3: sub-slicing `s[lo:hi:cap]` on a wasmgc-
 		// backed slice. The wasm3 backend cannot do pointer arithmetic
 		// on the backing ref, so the standard `rptr = ptr + lo*stride`

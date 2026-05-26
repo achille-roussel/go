@@ -1554,6 +1554,58 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 	case ssa.OpCopy:
 		getValue64(s, v.Args[0])
 
+	case ssa.OpWasm3MapKeys, ssa.OpWasm3MapValues, ssa.OpWasm3MapUsed, ssa.OpWasm3MapCap:
+		// M3 per-type maps: struct.get on a $go.map.<K,V> field.
+		//   MapUsed=0, MapCap=1, MapKeys=2, MapValues=3.
+		mapType, ok := v.Aux.(*types.Type)
+		if !ok || !mapType.IsMap() {
+			v.Fatalf("OpWasm3Map*: v.Aux is not a map type: %v", v.Aux)
+		}
+		mapIdx := int64(wasm3RegisterMapStruct(s.FuncInfo(), mapType))
+		var field int64
+		switch v.Op {
+		case ssa.OpWasm3MapUsed:
+			field = 0
+		case ssa.OpWasm3MapCap:
+			field = 1
+		case ssa.OpWasm3MapKeys:
+			field = 2
+		case ssa.OpWasm3MapValues:
+			field = 3
+		}
+		getValue64(s, v.Args[0])
+		pCast := s.Prog(wasm.ARefCast)
+		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		p := s.Prog(wasm.AStructGet)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
+
+	case ssa.OpWasm3MapKeysSet, ssa.OpWasm3MapValuesSet, ssa.OpWasm3MapUsedSet, ssa.OpWasm3MapCapSet:
+		// M3 per-type maps: struct.set on a $go.map.<K,V> field.
+		mapType, ok := v.Aux.(*types.Type)
+		if !ok || !mapType.IsMap() {
+			v.Fatalf("OpWasm3Map*Set: v.Aux is not a map type: %v", v.Aux)
+		}
+		mapIdx := int64(wasm3RegisterMapStruct(s.FuncInfo(), mapType))
+		var field int64
+		switch v.Op {
+		case ssa.OpWasm3MapUsedSet:
+			field = 0
+		case ssa.OpWasm3MapCapSet:
+			field = 1
+		case ssa.OpWasm3MapKeysSet:
+			field = 2
+		case ssa.OpWasm3MapValuesSet:
+			field = 3
+		}
+		getValue64(s, v.Args[0])
+		pCast := s.Prog(wasm.ARefCast)
+		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		getValue64(s, v.Args[1])
+		p := s.Prog(wasm.AStructSet)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
+
 	case ssa.OpWasm3MapClear:
 		// M3 per-type maps: reset a $go.map.<K,V> back to empty —
 		// used=0, cap=0, keys=null, values=null. Nulling the backings

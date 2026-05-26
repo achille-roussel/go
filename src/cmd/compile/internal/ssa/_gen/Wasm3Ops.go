@@ -386,6 +386,17 @@ func init() {
 		// Wasm3.rules to ArrayGet / ArraySet on the ref.
 		{name: "MakeSlice", argLength: 3, reg: gp21, aux: "Typ", typ: "BytePtr"},
 
+		// M3 per-type maps: `make(map[K]V, hint)` allocates a fresh
+		// $go.map.<K,V> WasmGC struct with cap=0, used=0, keys=null,
+		// values=null — lazy backing materialisation on first insert.
+		// v.Aux carries the *types.Type of the map (so the obj backend
+		// resolves it to a wasm $go.map.<K,V> type index via
+		// wasm3RegisterMapStruct). arg0=hint (currently ignored — the
+		// linear-seek impl grows on demand), arg1=mem. Result is the
+		// freshly-allocated map ref, wasm-typed as anyref so the per-
+		// value local holds the actual ref.
+		{name: "MakeMap", argLength: 2, reg: gp11, aux: "Typ", typ: "BytePtr"},
+
 		// M3 Stage E phase 3: sub-slicing `s[lo:hi:cap]` on a wasmgc-
 		// backed slice. The wasm3 backend cannot do pointer arithmetic
 		// on the backing ref, so the standard `rptr = ptr + lo*stride`

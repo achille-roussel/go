@@ -1554,6 +1554,23 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 	case ssa.OpCopy:
 		getValue64(s, v.Args[0])
 
+	case ssa.OpWasm3MakeMap:
+		// M3 per-type maps: allocate a fresh $go.map.<K,V> WasmGC struct
+		// via struct.new_default $go.map.<K,V>. v.Aux is the map's
+		// *types.Type; wasm3RegisterMapStruct resolves it to the wasm
+		// type index. arg0 is the size hint (currently ignored — the
+		// linear-seek implementation grows on demand). The resulting
+		// (ref $go.map.<K,V>) is zero-init: cap=0, used=0, keys=null,
+		// values=null. The default case's localSetIdx fall-through
+		// stores the ref in v's per-value local, typed anyref by
+		// wasm3ValueType's OpWasm3MakeMap case.
+		mapType, ok := v.Aux.(*types.Type)
+		if !ok || !mapType.IsMap() {
+			v.Fatalf("OpWasm3MakeMap: v.Aux is not a map type: %v", v.Aux)
+		}
+		p := s.Prog(wasm.AStructNewDefault)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterMapStruct(s.FuncInfo(), mapType))}
+
 	case ssa.OpWasm3MakeSlice:
 		// M3 Stage E phase 2: replacement for the bump-heap
 		// runtime.makeslice. v.Aux is the slice's *types.Type

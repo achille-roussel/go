@@ -461,7 +461,14 @@ func walkMakeMap(n *ir.MakeExpr, init *ir.Nodes) ir.Node {
 		// Call runtime.makemap_small to allocate a
 		// map on the heap and initialize the map's seed field.
 		fn := typecheck.LookupRuntime("makemap_small", t.Key(), t.Elem())
-		return mkcall1(fn, n.Type(), init)
+		call := mkcall1(fn, n.Type(), init)
+		// Stage-M3 wasm3: same side-channel as the makemap path
+		// below — makemap_small intrinsifies on wasm3 to
+		// OpWasm3MakeMap with a zero hint.
+		if buildcfg.GOARCH == "wasm3" {
+			ir.Wasm3MakeMapTypes.Store(call, t)
+		}
+		return call
 	}
 
 	if !noEsc {
@@ -488,7 +495,16 @@ func walkMakeMap(n *ir.MakeExpr, init *ir.Nodes) ir.Node {
 	}
 
 	fn := typecheck.LookupRuntime(fnname, mapType, t.Key(), t.Elem())
-	return mkcall1(fn, n.Type(), init, reflectdata.MakeMapRType(base.Pos, n), typecheck.Conv(hint, argtype), m)
+	call := mkcall1(fn, n.Type(), init, reflectdata.MakeMapRType(base.Pos, n), typecheck.Conv(hint, argtype), m)
+	// Stage-M3 wasm3: pin the map's *types.Type to the CallExpr so
+	// the SSA-time intrinsic for runtime.makemap can emit
+	// OpWasm3MakeMap with the right $go.map.<K,V> wasm type index.
+	// The SSA layer has no other way to recover the map type from
+	// the rtype arg (an OpAddr of the runtime type symbol).
+	if buildcfg.GOARCH == "wasm3" {
+		ir.Wasm3MakeMapTypes.Store(call, t)
+	}
+	return call
 }
 
 // walkMakeSlice walks an OMAKESLICE node.

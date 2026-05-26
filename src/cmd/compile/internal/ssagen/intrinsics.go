@@ -170,6 +170,29 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	add("runtime", "makeslice", wasm3MakeSliceIntrinsic, sys.ArchWasm3)
 	add("runtime", "makeslice64", wasm3MakeSliceIntrinsic, sys.ArchWasm3)
 
+	// M3 per-type maps (wasm3): replace runtime.makemap /
+	// runtime.makemap64 / runtime.makemap_small with OpWasm3MakeMap,
+	// which emits struct.new_default $go.map.<K,V>. The map *types.Type
+	// comes from a side channel (ir.Wasm3MakeMapTypes) populated by
+	// walkMakeMap — the SSA layer can't recover the map type from the
+	// rtype-arg SSA value (an OpAddr of a runtime type symbol).
+	wasm3MakeMapIntrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		entry, ok := ir.Wasm3MakeMapTypes.LoadAndDelete(n)
+		if !ok {
+			s.Fatalf("wasm3 makemap intrinsic: no recorded map type for call %v", n)
+		}
+		mapType := entry.(*types.Type)
+		// OpWasm3MakeMap is shaped like OpWasm3StructNewDefault: pure
+		// argument-less struct.new_default with the map type as aux.
+		// The size hint (args[1] for makemap*, none for makemap_small)
+		// is currently ignored — the linear-seek impl grows on demand.
+		v := s.newValue0A(ssa.OpWasm3MakeMap, types.Types[types.TUNSAFEPTR], mapType)
+		return v
+	}
+	add("runtime", "makemap", wasm3MakeMapIntrinsic, sys.ArchWasm3)
+	add("runtime", "makemap64", wasm3MakeMapIntrinsic, sys.ArchWasm3)
+	add("runtime", "makemap_small", wasm3MakeMapIntrinsic, sys.ArchWasm3)
+
 	// M3 Stage E phase 4 (wasm3): walkCopy emits this in place of
 	// runtime.memmove for `copy(dst, src)`. The first arg is the
 	// elem rtype; args[1]=dst, args[2]=src, args[3]=n_elements.

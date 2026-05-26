@@ -22,3 +22,11 @@ import "sync"
 // types package itself is a separate import, kept out of this file
 // to avoid widening the ir package's import surface.
 var Wasm3MakeSliceElemTypes sync.Map
+
+// Wasm3MakeMapTypes carries the map's *types.Type from walkMakeMap
+// to the SSA-time intrinsic for runtime.makemap / runtime.makemap64
+// / runtime.makemap_small. Same producer-to-consumer pattern as
+// Wasm3MakeSliceElemTypes — keyed on the *ir.CallExpr, value is the
+// map *types.Type (so the intrinsic emits OpWasm3MakeMap with the
+// right $go.map.<K,V> wasm type index).
+var Wasm3MakeMapTypes sync.Map

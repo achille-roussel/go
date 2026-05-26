@@ -7,6 +7,7 @@ package walk
 import (
 	"go/constant"
 	"internal/abi"
+	"internal/buildcfg"
 
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/ir"
@@ -169,24 +170,37 @@ func walkAssignMapRead(init *ir.Nodes, n *ir.AssignListStmt) ir.Node {
 	r.Index = walkExpr(r.Index, init)
 	map_ := r.X
 	t := r.X.Type()
-	fast := mapfast(t)
-	key := mapKeyArg(fast, r, r.Index, false)
-	args := []ir.Node{reflectdata.IndexMapRType(base.Pos, r), map_, key}
+	a := n.Lhs[0]
+	var args []ir.Node
+	var mapFn ir.Node
+	if buildcfg.GOARCH == "wasm3" {
+		// M3 per-type maps (wasm3): v,ok := m[k] dispatches to the
+		// per-(K,V) generated access2 function instead of runtime
+		// mapaccess2_*. The function signature is
+		// (m unsafe.Pointer, key K) (*V, bool); compiler downstream
+		// dereferences the *V and stores via the OAS2FUNC pattern.
+		fn := reflectdata.MapAccess2FuncWasm3(t)
+		mapFn = fn.Nname
+		mapPtr := typecheck.ConvNop(map_, types.Types[types.TUNSAFEPTR])
+		args = []ir.Node{mapPtr, r.Index}
+	} else {
+		fast := mapfast(t)
+		key := mapKeyArg(fast, r, r.Index, false)
+		args = []ir.Node{reflectdata.IndexMapRType(base.Pos, r), map_, key}
+		if t.Elem().Size() > abi.ZeroValSize {
+			args = append(args, reflectdata.ZeroAddr(t.Elem().Size()))
+			mapFn = mapfn("mapaccess2_fat", t, true)
+		} else {
+			mapFn = mapfn(mapaccess[fast], t, false)
+		}
+	}
 
 	// from:
 	//   a,b = m[i]
 	// to:
 	//   var,b = mapaccess2*(t, m, i)
 	//   a = *var
-	a := n.Lhs[0]
 
-	var mapFn ir.Node
-	if t.Elem().Size() > abi.ZeroValSize {
-		args = append(args, reflectdata.ZeroAddr(t.Elem().Size()))
-		mapFn = mapfn("mapaccess2_fat", t, true)
-	} else {
-		mapFn = mapfn(mapaccess[fast], t, false)
-	}
 	call := mkcall1(mapFn, mapFn.Type().ResultsTuple(), init, args...)
 
 	// mapaccess2* returns a typed bool, but due to spec changes,

@@ -355,13 +355,19 @@ func (c *typeCollector) collectSliceStruct(t *types.Type) int {
 // Shape:
 //
 //	(type go.map.<K,V> (struct
+//	    (field (mut i64))                ;; used  (live elements; field 0 by len()-builtin convention)
 //	    (field (mut i64))                ;; cap   (allocated slots)
-//	    (field (mut i64))                ;; used  (live elements)
 //	    (field (mut (ref null (array K))))  ;; keys backing
 //	    (field (mut (ref null (array V)))))) ;; values backing
 //
+// `used` is intentionally field 0 so the compiler's len()-builtin
+// lowering (referenceTypeBuiltin in ssagen/ssa.go, which emits a
+// load at byte offset 0 of the map pointer) reads it directly via
+// struct.get $go.map.<K,V> 0. The Go-level runtime/maps.Map type
+// also has used at field 0 for the same reason.
+//
 // The backings are nullable so an empty map (no insertions yet) can
-// hold (cap=0, used=0, keys=null, values=null) without forcing a
+// hold (used=0, cap=0, keys=null, values=null) without forcing a
 // preallocation. The first insertion materialises both backings via
 // array.new_default $go.array.<K> / $go.array.<V>.
 //
@@ -385,8 +391,8 @@ func (c *typeCollector) collectMapStruct(t *types.Type) int {
 		Kind:  wasmgc.KindStruct,
 		Super: wasmgc.TypeGoObject,
 		Fields: []wasmgc.Field{
-			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},  // cap
-			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},  // used
+			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // used (field 0 — len() convention)
+			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // cap
 			{Storage: wasmgc.RefStorage(keyArrIdx, true), Mutable: true}, // keys
 			{Storage: wasmgc.RefStorage(valArrIdx, true), Mutable: true}, // values
 		},

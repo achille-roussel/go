@@ -2532,11 +2532,23 @@ func wasm3EmbeddedPtrFieldAtOffset(s *ssagen.State, st *types.Type, off int64) (
 	widx := 0
 	for _, f := range st.Fields() {
 		n := len(c.lowerFields(f.Type))
-		if off >= f.Offset && off < f.Offset+f.Type.Size() && f.Type.IsPtr() && f.Type.Elem() != nil && f.Type.Elem().IsStruct() {
+		// Two cases for embedded pointer flattening:
+		//  - off lands inside the pointer field's own byte range
+		//    [f.Offset, f.Offset+PtrSize): the compiler treats this
+		//    as if the pointed-to struct were value-embedded.
+		//  - off lands at or after f.Offset and the corresponding
+		//    interior offset is a valid field of the pointed-to
+		//    struct: same compiler flattening, with the offset
+		//    measured against the pointed-to struct's layout
+		//    (e.g. funcInfo.pcfile = embedded *_func + offset 20
+		//    where 20 is _func.pcfile).
+		if f.Type.IsPtr() && f.Type.Elem() != nil && f.Type.Elem().IsStruct() && f.Embedded != 0 {
 			inner := f.Type.Elem()
 			innerOff := off - f.Offset
-			if iIdx, iok := wasm3FieldIndexRec(c, inner, innerOff, 0); iok {
-				return widx, c.collectStruct(inner), iIdx, true
+			if innerOff >= 0 && innerOff < inner.Size() {
+				if iIdx, iok := wasm3FieldIndexRec(c, inner, innerOff, 0); iok {
+					return widx, c.collectStruct(inner), iIdx, true
+				}
 			}
 		}
 		widx += n
@@ -2662,7 +2674,7 @@ func wasm3ArrayComponentAtOffset(s *ssagen.State, t *types.Type, off, base int64
 	widx := base
 	for _, f := range t.Fields() {
 		n := int64(len(c.lowerFields(f.Type)))
-		if off > f.Offset && off < f.Offset+f.Type.Size() {
+		if off >= f.Offset && off < f.Offset+f.Type.Size() {
 			sub := off - f.Offset
 			switch {
 			case f.Type.IsArray() && f.Type.Elem().IsStruct():
@@ -2684,6 +2696,18 @@ func wasm3ArrayComponentAtOffset(s *ssagen.State, t *types.Type, off, base int64
 				// boxed element would need a further struct.get); the boxed
 				// element ref IS the value, so elemFieldIdx = -1 signals "no
 				// trailing struct.get — the array.get result is the result".
+				elemT := f.Type.Elem()
+				esz := elemT.Size()
+				if esz == 0 || sub%esz != 0 {
+					return
+				}
+				return widx, int64(wasm3RegisterArrayBacking(s.FuncInfo(), elemT)), sub / esz, 0, -1, true
+			case f.Type.IsArray() && f.Type.Elem().IsArray():
+				// Array-of-array (e.g. pcvalueCache.entries
+				// [2][8]pcvalueCacheEnt): outer element is itself an
+				// array. Resolve to whole-inner-array access. The
+				// elemBoxIdx is the inner array's backing type and
+				// elemFieldIdx = -1 signals "no trailing struct.get".
 				elemT := f.Type.Elem()
 				esz := elemT.Size()
 				if esz == 0 || sub%esz != 0 {

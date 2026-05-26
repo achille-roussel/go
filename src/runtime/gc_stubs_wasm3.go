@@ -80,6 +80,50 @@ var mutexprofilerate int64
 // chunks.
 const pageSize = 65536
 
+// loadFactorNum / loadFactorDen are the standard map's load-factor
+// numerator and denominator (from map.go which is excluded on wasm3).
+// Used by stubs.go's bucket-counter heuristic. wasm3's per-(K,V) map
+// path doesn't consult these but the surviving call sites need the
+// constants for compile.
+const (
+	loadFactorNum = 13
+	loadFactorDen = 2
+)
+
+// SetFinalizer / AddCleanup / Cleanup are public runtime API for
+// finalizer / cleanup registration. The standard implementations are
+// in mfinal.go / mcleanup.go (excluded on wasm3). wasm3 does not run
+// finalizers or cleanups (host WasmGC has no Go-side finalization
+// callback support yet — see doc/wasm3-design.md §12.4) so the
+// public functions are exported no-ops. User code calling them
+// continues to compile and run; the registered callback simply
+// never fires.
+
+// SetFinalizer associates fn with obj. wasm3: no-op. The fn argument
+// is intentionally untyped (any) so the call site type-check
+// matches the standard signature, which uses reflect-style fn type
+// checks at runtime.
+func SetFinalizer(obj any, finalizer any) {
+	_ = obj
+	_ = finalizer
+}
+
+// AddCleanup registers cleanup as a cleanup callback for ptr. On
+// wasm3 this is a no-op — the cleanup never fires. Returns a zero
+// Cleanup handle; the returned Stop method is a no-op too.
+func AddCleanup[T, S any](ptr *T, cleanup func(S), arg S) Cleanup {
+	_ = ptr
+	_ = cleanup
+	_ = arg
+	return Cleanup{}
+}
+
+// Cleanup is the public handle returned by AddCleanup. wasm3's no-op
+// version has a no-op Stop().
+type Cleanup struct{}
+
+func (c Cleanup) Stop() {}
+
 // Tracer-subsystem stubs. With trace*.go, profbuf.go, cpuprof.go all
 // excluded on wasm3, the per-g / per-m / per-p tracer-state fields in
 // runtime2.go still need stub types. None of these are reachable on
@@ -302,8 +346,14 @@ func (tp typePointers) next(limit uintptr) (typePointers, uintptr) {
 }
 
 // wbBuf is referenced as struct field type in p (runtime2.go). The
-// write-barrier buffer lives in mwbbuf.go, which is excluded.
-type wbBuf struct{}
+// write-barrier buffer lives in mwbbuf.go, which is excluded. The
+// next/end fields are kept so the asm-side accessor offsets
+// (wbBuf_next, wbBuf_end in asm_wasm3.s's write-barrier hot path)
+// resolve to valid offsets when the assembler reads go_asm.h.
+type wbBuf struct {
+	next uintptr
+	end  uintptr
+}
 
 // get2 returns a pointer to a two-slot region in the write-barrier
 // buffer. atomic_pointer.go calls it before storing a pointer pair

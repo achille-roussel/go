@@ -63,6 +63,10 @@ type sizeClassScanStats struct{}
 // per-P size-class cache lives in mcache.go, which is excluded.
 type mcache struct{}
 
+// prepareForSweep is the per-P sweep-prep hook proc.go's GC-cycle
+// boundary calls. wasm3 has no sweeper — no-op.
+func (c *mcache) prepareForSweep() { _ = c }
+
 // mspan is referenced as struct field type in mlink (runtime2.go) and
 // as parameter type in arena.go (the latter being itself excluded in
 // a later island). The span metadata struct lives in mheap.go, which
@@ -375,6 +379,10 @@ func (c *gcControllerStub) findRunnableGCWorker(pp *p, now int64) (*g, int64) {
 	return nil, now
 }
 
+// assignWaitingGCWorker is the scheduler hook for grabbing a queued
+// mark worker. wasm3 has no workers — return nil.
+func (c *gcControllerStub) assignWaitingGCWorker(pp *p) *g { _ = pp; return nil }
+
 // addIdleMarkWorker / removeIdleMarkWorker manage the count of
 // idle-mode mark workers the scheduler may run. wasm3 has no mark
 // workers — both are no-ops; addIdleMarkWorker returns false so
@@ -412,9 +420,27 @@ var physPageSize uintptr = 65536
 // reads gcCPULimiter.lastEnabledCycle to expose a Prometheus-style
 // counter. wasm3 has no concurrent GC so no limiter; the counter
 // stays zero. Just need a struct with that field.
-var gcCPULimiter struct {
+type gcCPULimiterStub struct {
 	lastEnabledCycle atomic.Uint64
 }
+
+// resetCapacity is the GOMAXPROCS-change hook. wasm3 has no limiter
+// — no-op.
+func (l *gcCPULimiterStub) resetCapacity(now int64, capacity int32) {
+	_ = now
+	_ = capacity
+}
+
+var gcCPULimiter gcCPULimiterStub
+
+// scavenger is the page-scavenger goroutine state machine. proc.go's
+// sysmon wakes it. wasm3 has no pages to scavenge — stub.
+type scavengerStub struct{}
+
+func (s *scavengerStub) wake()  {}
+func (s *scavengerStub) ready() {}
+
+var scavenger scavengerStub
 
 // timeHistogram is the bucketed time-distribution counter mfinal.go /
 // mgcsweep.go etc. update. runtime2.go's schedstat aggregation has
@@ -604,13 +630,19 @@ var work struct {
 	full          atomic.Uint64
 	startSema     uint32
 	markDoneSema  uint32
-	goroutineLeak struct{ enabled atomic.Bool }
+	goroutineLeak goroutineLeakStub
 	spanqMask     spanqMaskStub
+}
+
+type goroutineLeakStub struct {
+	enabled atomic.Bool
+	count   atomic.Uint64
 }
 
 type spanqMaskStub struct{}
 
-func (s *spanqMaskStub) any() bool { return false }
+func (s *spanqMaskStub) any() bool          { return false }
+func (s *spanqMaskStub) resize(n uintptr)   { _ = n }
 
 // allocmcache returns a fresh per-P size-class cache. mcache.go owns
 // the real implementation. wasm3 has no caches (no mallocgc) so
@@ -680,7 +712,7 @@ func wakefing() *g { return nil }
 type gcCleanupsStub struct {
 	asleep atomic.Bool
 	full   atomic.Bool
-	queued atomic.Uint64
+	queued uint64
 }
 
 func (c *gcCleanupsStub) needsWake() bool { return false }

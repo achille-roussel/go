@@ -296,6 +296,14 @@ func (o *orderState) mapKeyTemp(outerPos src.XPos, t *types.Type, n ir.Node) ir.
 	if ir.HasUniquePos(n) {
 		pos = n.Pos()
 	}
+	// On wasm3 the per-(K,V) generated map functions take key by value
+	// at its declared Go type — no fast-helper key-coercion to UINT32/
+	// UINT64/UNSAFEPTR, no addr-of for the slow path. Skip the
+	// conversion entirely so the walk-side dispatch can hand the key
+	// to the typed call site unchanged.
+	if buildcfg.GOARCH == "wasm3" {
+		return n
+	}
 	// Most map calls need to take the address of the key.
 	// Exception: map*_fast* calls. See golang.org/issue/19015.
 	alg := mapfast(t)

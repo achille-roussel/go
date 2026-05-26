@@ -878,6 +878,80 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		pSet := s.Prog(wasm.AArraySet)
 		pSet.From = obj.Addr{Type: obj.TYPE_CONST, Offset: containerIdx}
 
+	case ssa.OpWasm3MapKeysSet, ssa.OpWasm3MapValuesSet, ssa.OpWasm3MapUsedSet, ssa.OpWasm3MapCapSet:
+		// M3 per-type maps: struct.set on a $go.map.<K,V> field. The op
+		// is memory-typed; it must live here in ssaGenValue (not
+		// ssaGenValueOnStack) because the default branch returns early
+		// for memory-typed values before delegating to ssaGenValueOnStack
+		// — so without an explicit case here the codegen would never run.
+		mapType, ok := v.Aux.(*types.Type)
+		if !ok || !mapType.IsMap() {
+			v.Fatalf("OpWasm3Map*Set: v.Aux is not a map type: %v", v.Aux)
+		}
+		mapIdx := int64(wasm3RegisterMapStruct(s.FuncInfo(), mapType))
+		var field int64
+		switch v.Op {
+		case ssa.OpWasm3MapUsedSet:
+			field = 0
+		case ssa.OpWasm3MapCapSet:
+			field = 1
+		case ssa.OpWasm3MapKeysSet:
+			field = 2
+		case ssa.OpWasm3MapValuesSet:
+			field = 3
+		}
+		getValue64(s, v.Args[0])
+		pCast := s.Prog(wasm.ARefCast)
+		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		getValue64(s, v.Args[1])
+		p := s.Prog(wasm.AStructSet)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
+
+	case ssa.OpWasm3MapClear:
+		// M3 per-type maps: reset a $go.map.<K,V> back to empty —
+		// used=0, cap=0, keys=null, values=null. See note on
+		// OpWasm3Map*Set above: memory-typed, must live in ssaGenValue.
+		mapType, ok := v.Aux.(*types.Type)
+		if !ok || !mapType.IsMap() {
+			v.Fatalf("OpWasm3MapClear: v.Aux is not a map type: %v", v.Aux)
+		}
+		mapIdx := int64(wasm3RegisterMapStruct(s.FuncInfo(), mapType))
+		// used = 0
+		getValue64(s, v.Args[0])
+		pCast1 := s.Prog(wasm.ARefCast)
+		pCast1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		pZero1 := s.Prog(wasm.AI64Const)
+		pZero1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+		pUsed := s.Prog(wasm.AStructSet)
+		pUsed.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		pUsed.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+		// cap = 0
+		getValue64(s, v.Args[0])
+		pCast2 := s.Prog(wasm.ARefCast)
+		pCast2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		pZero2 := s.Prog(wasm.AI64Const)
+		pZero2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+		pCap := s.Prog(wasm.AStructSet)
+		pCap.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		pCap.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
+		// keys = null
+		getValue64(s, v.Args[0])
+		pCast3 := s.Prog(wasm.ARefCast)
+		pCast3.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		s.Prog(wasm.ARefNull)
+		pKeys := s.Prog(wasm.AStructSet)
+		pKeys.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		pKeys.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 2}
+		// values = null
+		getValue64(s, v.Args[0])
+		pCast4 := s.Prog(wasm.ARefCast)
+		pCast4.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		s.Prog(wasm.ARefNull)
+		pVals := s.Prog(wasm.AStructSet)
+		pVals.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
+		pVals.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 3}
+
 	case ssa.OpWasm3ArrayCopyInto:
 		// In-place value copy into a pre-allocated array ref (b := a where
 		// b is a local StackArray, a fixed allocated ref that cannot be
@@ -1579,78 +1653,6 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p := s.Prog(wasm.AStructGet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
-
-	case ssa.OpWasm3MapKeysSet, ssa.OpWasm3MapValuesSet, ssa.OpWasm3MapUsedSet, ssa.OpWasm3MapCapSet:
-		// M3 per-type maps: struct.set on a $go.map.<K,V> field.
-		mapType, ok := v.Aux.(*types.Type)
-		if !ok || !mapType.IsMap() {
-			v.Fatalf("OpWasm3Map*Set: v.Aux is not a map type: %v", v.Aux)
-		}
-		mapIdx := int64(wasm3RegisterMapStruct(s.FuncInfo(), mapType))
-		var field int64
-		switch v.Op {
-		case ssa.OpWasm3MapUsedSet:
-			field = 0
-		case ssa.OpWasm3MapCapSet:
-			field = 1
-		case ssa.OpWasm3MapKeysSet:
-			field = 2
-		case ssa.OpWasm3MapValuesSet:
-			field = 3
-		}
-		getValue64(s, v.Args[0])
-		pCast := s.Prog(wasm.ARefCast)
-		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
-		getValue64(s, v.Args[1])
-		p := s.Prog(wasm.AStructSet)
-		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
-		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
-
-	case ssa.OpWasm3MapClear:
-		// M3 per-type maps: reset a $go.map.<K,V> back to empty —
-		// used=0, cap=0, keys=null, values=null. Nulling the backings
-		// releases all key/value references for host-GC; the next
-		// insert reallocates. arg0=map ref. v.Aux is the map's
-		// *types.Type.
-		mapType, ok := v.Aux.(*types.Type)
-		if !ok || !mapType.IsMap() {
-			v.Fatalf("OpWasm3MapClear: v.Aux is not a map type: %v", v.Aux)
-		}
-		mapIdx := int64(wasm3RegisterMapStruct(s.FuncInfo(), mapType))
-		// used = 0
-		getValue64(s, v.Args[0])
-		pCast1 := s.Prog(wasm.ARefCast)
-		pCast1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
-		pZero1 := s.Prog(wasm.AI64Const)
-		pZero1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
-		pUsed := s.Prog(wasm.AStructSet)
-		pUsed.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
-		pUsed.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
-		// cap = 0
-		getValue64(s, v.Args[0])
-		pCast2 := s.Prog(wasm.ARefCast)
-		pCast2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
-		pZero2 := s.Prog(wasm.AI64Const)
-		pZero2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
-		pCap := s.Prog(wasm.AStructSet)
-		pCap.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
-		pCap.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
-		// keys = null
-		getValue64(s, v.Args[0])
-		pCast3 := s.Prog(wasm.ARefCast)
-		pCast3.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
-		s.Prog(wasm.ARefNull)
-		pKeys := s.Prog(wasm.AStructSet)
-		pKeys.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
-		pKeys.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 2}
-		// values = null
-		getValue64(s, v.Args[0])
-		pCast4 := s.Prog(wasm.ARefCast)
-		pCast4.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
-		s.Prog(wasm.ARefNull)
-		pVals := s.Prog(wasm.AStructSet)
-		pVals.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
-		pVals.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 3}
 
 	case ssa.OpWasm3MakeMap:
 		// M3 per-type maps: allocate a fresh $go.map.<K,V> WasmGC struct

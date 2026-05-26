@@ -35,6 +35,45 @@ import (
 // The GC CPU limiter is part of mgcpacer.go, which is excluded.
 type limiterEvent struct{}
 
+// start records a new limiter-event timestamp. wasm3 has no limiter
+// — no-op. Returns false so the caller skips its limiter-window
+// branch.
+func (e *limiterEvent) start(typ int, now int64) bool {
+	_ = typ
+	_ = now
+	return false
+}
+
+// stop closes a previously-started event. No-op on wasm3.
+func (e *limiterEvent) stop(typ int, now int64) {
+	_ = typ
+	_ = now
+}
+
+// limiterEventIdle is the event-type constant for "P went idle" the
+// scheduler hands to limiterEvent.start. wasm3's stub start returns
+// false unconditionally so the value never matters; matches upstream
+// limiterEventIdle for clarity.
+const limiterEventIdle = 0
+
+// fmtNSAsMS formats a nanosecond duration as a millisecond decimal
+// for the debugger output proc.go emits during scheduler tracing.
+// The standard definition lives in mgcpacer.go (excluded). A simple
+// stub that integer-divides into the buffer works.
+func fmtNSAsMS(buf []byte, ns uint64) []byte {
+	return itoaDiv(buf, ns, 6)
+}
+
+// maxProfStackDepth is the upper bound on stack depth the profile
+// samplers record. runtime1.go reads it to size a local scratch
+// slice. wasm3 never samples; use the upstream value (64).
+const maxProfStackDepth = 64
+
+// mutexprofilerate is the public runtime.SetMutexProfileFraction
+// setting. sema.go reads it via the if-rate gate. wasm3 never
+// samples; rate stays zero.
+var mutexprofilerate int64
+
 // gcWork is referenced as struct field type in p (runtime2.go) and as
 // parameter type in mcheckmark.go and preempt_noxreg.go. The mark
 // queue itself lives in mgcwork.go, which is excluded.
@@ -174,10 +213,18 @@ func (b *synctestBubble) raceaddr() unsafe.Pointer { _ = b; return nil }
 // stack.go's growth machinery is part of the M2 exclusion set per
 // doc/wasm3-design.md, but the surviving stack.go bits (signature
 // touches in proc.go etc.) still mention mSpanList in declarations.
-// Empty stub: any actual reach into mSpanList is in code paths that
-// are unreachable on wasm3 (no Go-managed stack growth — wasm
-// frames live in wasm locals).
-type mSpanList struct{}
+// .first / .last are fields not methods so stack.go's `s := list.
+// first` typechecks as `*mspan`, not a method value.
+type mSpanList struct {
+	first *mspan
+	last  *mspan
+}
+
+func (l *mSpanList) init()                  {}
+func (l *mSpanList) insert(span *mspan)     { _ = span }
+func (l *mSpanList) remove(span *mspan)     { _ = span }
+func (l *mSpanList) isEmpty() bool          { return true }
+func (l *mSpanList) insertBack(span *mspan) { _ = span }
 
 // gcMarkWorkerMode is the worker-role enum that the GC scheduler
 // hands to background mark workers. wasm3 has no concurrent GC so the
@@ -333,6 +380,42 @@ func bulkBarrierPreWrite(dst, src, size uintptr, typ *_type) {
 	_ = typ
 }
 
+// bulkBarrierPreWriteSrcOnly is the source-only variant the slice
+// code uses when the destination is freshly allocated and needs no
+// pre-image barrier. No-op on wasm3.
+func bulkBarrierPreWriteSrcOnly(dst, src, size uintptr, typ *_type) {
+	_ = dst
+	_ = src
+	_ = size
+	_ = typ
+}
+
+// roundupsize is the size-class round-up the standard allocator uses
+// to convert a requested byte count into the next-largest span class.
+// wasm3 has no span classes — return the requested size unchanged
+// (modulo 8-byte alignment) so callers behave consistently.
+func roundupsize(size uintptr, noscan bool) uintptr {
+	_ = noscan
+	return (size + 7) &^ 7
+}
+
+// freegc releases a typed allocation back to the heap. wasm3 has no
+// freelist — host WasmGC reclaims unreferenced objects. Return false
+// so the caller's "freed-via-runtime" branch is skipped.
+func freegc(ptr unsafe.Pointer, size uintptr, noscan bool) bool {
+	_ = ptr
+	_ = size
+	_ = noscan
+	return false
+}
+
+// mutexevent is the standard runtime's mutex-contention sampling
+// entry. wasm3 never samples — no-op.
+func mutexevent(cycles int64, skip int) {
+	_ = cycles
+	_ = skip
+}
+
 // persistentalloc is the standard runtime's off-heap allocator, used
 // for itab allocation, the lock-rank dependency graph, etc. wasm3
 // routes everything through the bump-heap shim — there is no separate
@@ -380,8 +463,12 @@ func (c *gcControllerStub) findRunnableGCWorker(pp *p, now int64) (*g, int64) {
 }
 
 // assignWaitingGCWorker is the scheduler hook for grabbing a queued
-// mark worker. wasm3 has no workers — return nil.
-func (c *gcControllerStub) assignWaitingGCWorker(pp *p) *g { _ = pp; return nil }
+// mark worker. wasm3 has no workers — return false and pass `now`
+// through unchanged so the caller's for-loop exits.
+func (c *gcControllerStub) assignWaitingGCWorker(pp *p, now int64) (bool, int64) {
+	_ = pp
+	return false, now
+}
 
 // addIdleMarkWorker / removeIdleMarkWorker manage the count of
 // idle-mode mark workers the scheduler may run. wasm3 has no mark
@@ -435,7 +522,9 @@ var gcCPULimiter gcCPULimiterStub
 
 // scavenger is the page-scavenger goroutine state machine. proc.go's
 // sysmon wakes it. wasm3 has no pages to scavenge — stub.
-type scavengerStub struct{}
+type scavengerStub struct {
+	sysmonWake atomic.Uint32
+}
 
 func (s *scavengerStub) wake()  {}
 func (s *scavengerStub) ready() {}
@@ -588,17 +677,41 @@ func (e *synctestDeadlockError) Error() string { return "synctest deadlock" }
 // enough for the surviving paths (which are dead-code at runtime on
 // wasm3 — proc.go's p-flush only fires when there's actual heap
 // state).
-var mheap_ struct {
+type mheapStub struct {
 	cachealloc fixalloc
 	spanalloc  fixalloc
 	pages      pageAllocStub
 	lock       mutex
 }
 
+var mheap_ mheapStub
+
 // pageAllocStub stands in for mheap.pages (pageAlloc). proc.go's
 // p-flush path calls mheap_.pages.scav etc. wasm3 doesn't manage
 // pages — the few touched methods are no-ops.
 type pageAllocStub struct{}
+
+// _StackCacheSize is the per-mcache stack-cache byte capacity. stack.go
+// uses it for cache-slot indexing. wasm3 has no Go-managed stacks so
+// the indexing is dead; match upstream value (32 KiB) for consistency.
+const _StackCacheSize = 32 * 1024
+
+// pageMask is the bit-mask for page-aligned addresses. wasm3 has no
+// pages of its own; the wasm spec uses 64KiB pages. _PageSize - 1.
+const pageMask = 65535
+
+// allocManual is mheap.allocManual — manual non-GC span allocation
+// for stack frames etc. wasm3 doesn't manage spans — return nil so
+// the caller's "needs to allocate" branch hits a nil-deref guard.
+func (h *mheapStub) allocManual(npages uintptr, typ int) *mspan {
+	_ = npages
+	_ = typ
+	return nil
+}
+
+// spanAllocStack is the "stack" tag for allocManual. wasm3 doesn't
+// allocate stack spans — value is unread.
+const spanAllocStack = 0
 
 // fixalloc is mheap's per-class allocator. panic.go has a code path
 // that frees an mcache through mheap_.cachealloc.free; with mheap.go
@@ -636,13 +749,13 @@ var work struct {
 
 type goroutineLeakStub struct {
 	enabled atomic.Bool
-	count   atomic.Uint64
+	count   int
 }
 
 type spanqMaskStub struct{}
 
-func (s *spanqMaskStub) any() bool          { return false }
-func (s *spanqMaskStub) resize(n uintptr)   { _ = n }
+func (s spanqMaskStub) any() bool                  { return false }
+func (s spanqMaskStub) resize(n int32) spanqMaskStub { _ = n; return s }
 
 // allocmcache returns a fresh per-P size-class cache. mcache.go owns
 // the real implementation. wasm3 has no caches (no mallocgc) so
@@ -662,6 +775,11 @@ type gcTrigger struct {
 	now  int64
 	n    uint32
 }
+
+// test reports whether this trigger has been satisfied (should fire
+// a GC cycle). wasm3 has no GC — always false so the sysmon never
+// schedules one.
+func (t gcTrigger) test() bool { return false }
 
 const gcTriggerTime = 0
 

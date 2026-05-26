@@ -88,17 +88,107 @@ func mapAssignFuncWasm3(t *types.Type) *ir.Func {
 	fn.Body.Append(ir.NewAssignStmt(pos, usedVar,
 		callMapHelper(t, "wasm3MapUsed", []ir.Node{nm})))
 
-	// MVP body — same shape as MapAccessFuncWasm3 (which works) so
-	// we can isolate the wasm validator "bad stack" failure that the
-	// full mapAssign body triggers. Today mapAssign is effectively a
-	// stub that behaves like mapAccess (no insert, no growth) — the
-	// full implementation will be reinstated in a follow-up commit
-	// once the bad-stack root cause is understood. See
-	// project_wasm3_per_type_maps.md.
-	_ = nkey
-	_ = usedVar
+	// Refresh-in-place: if used > 0 { keys := wasm3MapKeys(m); for i := 0; i < used; i++ { if keys[i] == key { vs := wasm3MapValues(m); return &vs[i] } } }
+	gtZero := ir.NewBinaryExpr(pos, ir.OGT, usedVar, ir.NewInt(pos, 0))
+	refreshKeysVar := typecheck.TempAt(pos, ir.CurFunc, types.NewSlice(K))
+	refreshIVar := typecheck.TempAt(pos, ir.CurFunc, uintptrT)
+	refreshValsVar := typecheck.TempAt(pos, ir.CurFunc, types.NewSlice(V))
+	refreshBody := []ir.Node{
+		ir.NewAssignStmt(pos, refreshKeysVar,
+			callMapHelper(t, "wasm3MapKeys", []ir.Node{nm}, K)),
+		ir.NewForStmt(pos,
+			ir.NewAssignStmt(pos, refreshIVar, ir.NewInt(pos, 0)),
+			ir.NewBinaryExpr(pos, ir.OLT, refreshIVar, usedVar),
+			ir.NewAssignStmt(pos, refreshIVar, ir.NewBinaryExpr(pos, ir.OADD, refreshIVar, ir.NewInt(pos, 1))),
+			[]ir.Node{
+				ir.NewIfStmt(pos,
+					ir.NewBinaryExpr(pos, ir.OEQ, ir.NewIndexExpr(pos, refreshKeysVar, refreshIVar), nkey),
+					[]ir.Node{
+						ir.NewAssignStmt(pos, refreshValsVar,
+							callMapHelper(t, "wasm3MapValues", []ir.Node{nm}, V)),
+						ir.NewReturnStmt(pos, []ir.Node{
+							typecheck.NodAddr(ir.NewIndexExpr(pos, refreshValsVar, refreshIVar)),
+						}),
+					}, nil),
+			}, false),
+	}
+	fn.Body.Append(ir.NewIfStmt(pos, gtZero, refreshBody, nil))
+
+	// Miss: cap := wasm3MapCap(m); if used == cap { grow ... }
+	capVar := typecheck.TempAt(pos, ir.CurFunc, uintptrT)
+	fn.Body.Append(ir.NewAssignStmt(pos, capVar,
+		callMapHelper(t, "wasm3MapCap", []ir.Node{nm})))
+
+	atCap := ir.NewBinaryExpr(pos, ir.OEQ, usedVar, capVar)
+	newCapVar := typecheck.TempAt(pos, ir.CurFunc, uintptrT)
+	growBody := []ir.Node{
+		// newCap := cap * 2; if newCap == 0 { newCap = 4 }
+		ir.NewAssignStmt(pos, newCapVar,
+			ir.NewBinaryExpr(pos, ir.OMUL, capVar, ir.NewInt(pos, 2))),
+		ir.NewIfStmt(pos,
+			ir.NewBinaryExpr(pos, ir.OEQ, newCapVar, ir.NewInt(pos, 0)),
+			[]ir.Node{ir.NewAssignStmt(pos, newCapVar, ir.NewInt(pos, 4))}, nil),
+	}
+	// newKeys := make([]K, newCap); newValues := make([]V, newCap)
+	newKeysVar := typecheck.TempAt(pos, ir.CurFunc, types.NewSlice(K))
+	newValsVar := typecheck.TempAt(pos, ir.CurFunc, types.NewSlice(V))
+	makeKeys := ir.NewMakeExpr(pos, ir.OMAKESLICE, newCapVar, newCapVar)
+	makeKeys.SetType(types.NewSlice(K))
+	makeKeys.SetTypecheck(1)
+	makeVals := ir.NewMakeExpr(pos, ir.OMAKESLICE, newCapVar, newCapVar)
+	makeVals.SetType(types.NewSlice(V))
+	makeVals.SetTypecheck(1)
+	growBody = append(growBody,
+		ir.NewAssignStmt(pos, newKeysVar, makeKeys),
+		ir.NewAssignStmt(pos, newValsVar, makeVals))
+	// if cap > 0 { copy old data }
+	oldKeysVar := typecheck.TempAt(pos, ir.CurFunc, types.NewSlice(K))
+	oldValsVar := typecheck.TempAt(pos, ir.CurFunc, types.NewSlice(V))
+	copyIVar := typecheck.TempAt(pos, ir.CurFunc, uintptrT)
+	copyBody := []ir.Node{
+		ir.NewAssignStmt(pos, oldKeysVar,
+			callMapHelper(t, "wasm3MapKeys", []ir.Node{nm}, K)),
+		ir.NewAssignStmt(pos, oldValsVar,
+			callMapHelper(t, "wasm3MapValues", []ir.Node{nm}, V)),
+		ir.NewForStmt(pos,
+			ir.NewAssignStmt(pos, copyIVar, ir.NewInt(pos, 0)),
+			ir.NewBinaryExpr(pos, ir.OLT, copyIVar, usedVar),
+			ir.NewAssignStmt(pos, copyIVar, ir.NewBinaryExpr(pos, ir.OADD, copyIVar, ir.NewInt(pos, 1))),
+			[]ir.Node{
+				ir.NewAssignStmt(pos,
+					ir.NewIndexExpr(pos, newKeysVar, copyIVar),
+					ir.NewIndexExpr(pos, oldKeysVar, copyIVar)),
+				ir.NewAssignStmt(pos,
+					ir.NewIndexExpr(pos, newValsVar, copyIVar),
+					ir.NewIndexExpr(pos, oldValsVar, copyIVar)),
+			}, false),
+	}
+	growBody = append(growBody,
+		ir.NewIfStmt(pos,
+			ir.NewBinaryExpr(pos, ir.OGT, capVar, ir.NewInt(pos, 0)),
+			copyBody, nil))
+	// Writeback: wasm3MapKeysSet(m, newKeys); wasm3MapValuesSet(m, newValues); wasm3MapCapSet(m, newCap)
+	// The any in wasm3MapKeysSet/ValuesSet stub signatures is the slice
+	// element type — substitute with K / V via the LookupRuntime variadic.
+	growBody = append(growBody,
+		callMapHelper(t, "wasm3MapKeysSet", []ir.Node{nm, newKeysVar}, K),
+		callMapHelper(t, "wasm3MapValuesSet", []ir.Node{nm, newValsVar}, V),
+		callMapHelper(t, "wasm3MapCapSet", []ir.Node{nm, newCapVar}))
+	fn.Body.Append(ir.NewIfStmt(pos, atCap, growBody, nil))
+
+	// Insert: keys := wasm3MapKeys(m); keys[used] = key; wasm3MapUsedSet(m, used+1); vs := wasm3MapValues(m); return &vs[used]
+	insertKeysVar := typecheck.TempAt(pos, ir.CurFunc, types.NewSlice(K))
+	fn.Body.Append(ir.NewAssignStmt(pos, insertKeysVar,
+		callMapHelper(t, "wasm3MapKeys", []ir.Node{nm}, K)))
+	fn.Body.Append(ir.NewAssignStmt(pos,
+		ir.NewIndexExpr(pos, insertKeysVar, usedVar), nkey))
+	fn.Body.Append(callMapHelper(t, "wasm3MapUsedSet", []ir.Node{nm,
+		ir.NewBinaryExpr(pos, ir.OADD, usedVar, ir.NewInt(pos, 1))}))
+	insertValsVar := typecheck.TempAt(pos, ir.CurFunc, types.NewSlice(V))
+	fn.Body.Append(ir.NewAssignStmt(pos, insertValsVar,
+		callMapHelper(t, "wasm3MapValues", []ir.Node{nm}, V)))
 	fn.Body.Append(ir.NewReturnStmt(pos, []ir.Node{
-		ir.NewUnaryExpr(pos, ir.ONEW, ir.TypeNode(V)),
+		typecheck.NodAddr(ir.NewIndexExpr(pos, insertValsVar, usedVar)),
 	}))
 
 	typecheck.FinishFuncBody()

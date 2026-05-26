@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build !wasm3
+
 // # Go execution tracer
 //
 // The tracer captures a wide range of execution events like goroutine

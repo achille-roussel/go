@@ -80,6 +80,164 @@ var mutexprofilerate int64
 // chunks.
 const pageSize = 65536
 
+// Tracer-subsystem stubs. With trace*.go, profbuf.go, cpuprof.go all
+// excluded on wasm3, the per-g / per-m / per-p tracer-state fields in
+// runtime2.go still need stub types. None of these are reachable on
+// wasm3 (the tracer subsystem is wholly excluded) but the struct
+// definitions in runtime2.go need them to typecheck.
+type gTraceState struct{}
+type mTraceState struct{}
+type pTraceState struct{}
+type traceBlockReason uint8
+type traceLocker struct{}
+
+// traceAdvance is the runtime/trace advance hook panic.go calls
+// during fatal traces. wasm3 has no tracer — no-op.
+func traceAdvance(stopTrace bool) { _ = stopTrace }
+
+// traceReaderAvailable reports whether trace data is ready for the
+// reader goroutine. wasm3 has no tracer — always nil.
+func traceReaderAvailable() *g { return nil }
+
+// traceReader returns the trace-consumer goroutine to schedule.
+// wasm3 has no tracer — always nil.
+func traceReader() *g { return nil }
+
+// defaultTraceAdvancePeriod is the trace's per-generation interval.
+// wasm3 has no tracer; constant must exist.
+const defaultTraceAdvancePeriod = 0
+
+// traceBlockReason values the runtime emits as the "why this g blocked"
+// tag. wasm3 doesn't trace; consts must exist for chan.go / proc.go /
+// netpoll.go / sema.go references.
+const (
+	traceBlockGeneric traceBlockReason = iota
+	traceBlockForever
+	traceBlockNet
+	traceBlockSelect
+	traceBlockCondWait
+	traceBlockSync
+	traceBlockChanSend
+	traceBlockChanRecv
+	traceBlockGCMarkAssist
+	traceBlockGCSweep
+	traceBlockSystemGoroutine
+	traceBlockPreempted
+	traceBlockDebugCall
+	traceBlockUntilGCEnds
+	traceBlockSleep
+)
+
+// traceAcquire / traceRelease are the standard runtime's lock-style
+// entries for emitting a tracer event from a non-blocking critical
+// section. wasm3 has no tracer; return a zero traceLocker. Callers
+// guard reads with `if trace.ok()` which is always false here.
+func traceAcquire() traceLocker            { return traceLocker{} }
+func traceRelease(tl traceLocker)          { _ = tl }
+
+// ok reports whether this traceLocker is live. wasm3: always false.
+func (tl traceLocker) ok() bool { return false }
+
+// All tracer event methods on traceLocker are no-ops on wasm3.
+// Listed alphabetically and exhaustively to cover everything proc.go,
+// coro.go, time.go, chan.go, sema.go, mfinal.go etc. reach for.
+func (tl traceLocker) GoBlock(reason traceBlockReason, skip int) { _ = reason; _ = skip }
+func (tl traceLocker) GoCreate(newg *g, pc uintptr, blocked bool) {
+	_ = newg
+	_ = pc
+	_ = blocked
+}
+func (tl traceLocker) GoCreateSyscall(gp *g)             { _ = gp }
+func (tl traceLocker) GoDestroySyscall()                 {}
+func (tl traceLocker) GoEnd()                            {}
+func (tl traceLocker) GoPark(reason traceBlockReason, skip int) {
+	_ = reason
+	_ = skip
+}
+func (tl traceLocker) GoPreempt()                        {}
+func (tl traceLocker) GoSched()                          {}
+func (tl traceLocker) GoStart()                          {}
+func (tl traceLocker) GoStop(reason traceBlockReason, skip int) {
+	_ = reason
+	_ = skip
+}
+func (tl traceLocker) GoSwitch(nextg *g, destroy bool)   { _ = nextg; _ = destroy }
+func (tl traceLocker) GoSwitchDestroy(nextg *g)          { _ = nextg }
+func (tl traceLocker) GoSysBlock(pp *p)                  { _ = pp }
+func (tl traceLocker) GoSysCall()                        {}
+func (tl traceLocker) GoSysExit(lostP bool)              { _ = lostP }
+func (tl traceLocker) GoUnpark(gp *g, skip int)          { _ = gp; _ = skip }
+func (tl traceLocker) GCActive()                         {}
+func (tl traceLocker) GCDone()                           {}
+func (tl traceLocker) GCMarkAssistStart()                {}
+func (tl traceLocker) GCMarkAssistDone()                 {}
+func (tl traceLocker) GCStart()                          {}
+func (tl traceLocker) GCSweepDone()                      {}
+func (tl traceLocker) GCSweepSpan(bytesSwept uintptr)    { _ = bytesSwept }
+func (tl traceLocker) GCSweepStart()                     {}
+func (tl traceLocker) HeapAlloc(live uint64)             { _ = live }
+func (tl traceLocker) HeapGoal()                         {}
+func (tl traceLocker) OneNewExtraM(gp *g)                { _ = gp }
+func (tl traceLocker) ProcStart()                        {}
+func (tl traceLocker) ProcSteal(pp *p, inSyscall ...bool) {
+	_ = pp
+	_ = inSyscall
+}
+func (tl traceLocker) ProcStop(pp *p)                    { _ = pp }
+func (tl traceLocker) STWStart(reason stwReason)         { _ = reason }
+func (tl traceLocker) STWDone()                          {}
+func (tl traceLocker) GoroutineLeak(gp *g)               { _ = gp }
+func (tl traceLocker) ProcsChange()                      {}
+func (tl traceLocker) Gomaxprocs(n int32)                { _ = n }
+
+// traceEnabled reports whether tracing is on. wasm3: always false.
+func traceEnabled() bool { return false }
+
+// traceLockInit / traceShuttingDown / traceThreadDestroy / cpuprof
+// are the few non-method tracer entry points proc.go still touches.
+// All no-ops on wasm3.
+func traceLockInit()                  {}
+func traceShuttingDown() bool         { return true }
+func traceThreadDestroy(mp *m)        { _ = mp }
+
+// cpuprof is the runtime's CPU-profiler state. cpuprof.go is excluded;
+// proc.go's sysmon calls cpuprof.add. Empty stub with no-op fields.
+var cpuprof cpuProfileStub
+
+type cpuProfileStub struct {
+	lock        mutex
+	lostAtomic  uint64
+}
+
+func (c *cpuProfileStub) add(tagPtr *unsafe.Pointer, stk []uintptr) {
+	_ = tagPtr
+	_ = stk
+}
+
+// gTraceState's reset clears the per-g tracer state during goroutine
+// reset / startup. wasm3 doesn't trace — no-op.
+func (s *gTraceState) reset() { _ = s }
+
+// traceExitingSyscall / traceExitedSyscall are the syscall-bracket
+// tracer entries proc.go calls. wasm3 doesn't trace — no-op.
+func traceExitingSyscall() {}
+func traceExitedSyscall()  {}
+
+// traceCPUSample is the CPU profiler's per-sample tracer hook proc.go
+// calls. wasm3 doesn't trace — no-op.
+func traceCPUSample(gp *g, mp *m, pp *p, stk []uintptr) {
+	_ = gp
+	_ = mp
+	_ = pp
+	_ = stk
+}
+
+// maxCPUProfStack is the max stack-depth the CPU profiler records.
+// cpuprof.go is excluded; proc.go uses the constant for a buffer
+// size literal.
+const maxCPUProfStack = 64
+// (stwReason is defined in proc.go; no stub needed here.)
+
 // gcWork is referenced as struct field type in p (runtime2.go) and as
 // parameter type in mcheckmark.go and preempt_noxreg.go. The mark
 // queue itself lives in mgcwork.go, which is excluded.

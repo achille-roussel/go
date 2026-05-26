@@ -989,6 +989,17 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 				})
 				continue
 
+			case ARefNullAny:
+				// ref.null any — abstract anyref null. Encoded as the
+				// generic ref.null opcode (0xD0) followed by the
+				// single-byte anyref heaptype (0x6E). No typeidx, no
+				// relocation. Used for ConstNil of ref-typed Go values
+				// (interface, slice, *T...) whose per-value local is
+				// anyref (per wasm3ValueType's cutover rules).
+				w.WriteByte(0xD0)
+				w.WriteByte(0x6E)
+				continue
+
 			case AArrayNew, AArrayNewDefault, AArrayGet, AArrayGetS, AArrayGetU, AArraySet, AArrayFill:
 				// 0xFB-prefixed array GC opcodes with a single type-
 				// index operand. Stack on entry / exit varies per op

@@ -219,6 +219,7 @@ var Anames = []string{
 	"CallRef",
 	"ReturnCallRef",
 	"RefNull",
+	"RefNullAny",
 	"RefIsNull",
 	"RefFunc",
 	"RefEq",

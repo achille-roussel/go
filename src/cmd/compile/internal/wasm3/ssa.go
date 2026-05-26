@@ -1396,6 +1396,19 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// be boxed into an anyref field). Other words are already refs.
 		wasm3EnsureCollector(s.FuncInfo())
 		emitWord := func(a *ssa.Value) {
+			// ConstNil of itab/data slots: a Go SSA value of type uintptr
+			// (the standard itab repr) or unsafe.Pointer rewrites to
+			// I64Const [0] via the default ConstNil rule, but the
+			// struct.new $go.iface field is anyref. Detect the zero-i64
+			// case, consume the i64 value (to keep OnWasmStack accounting
+			// balanced), drop it, then emit ref.null any so the field
+			// type matches.
+			if a.Op == ssa.OpWasm3I64Const && a.AuxInt == 0 {
+				getValue64(s, a)
+				s.Prog(wasm.ADrop)
+				s.Prog(wasm.ARefNullAny)
+				return
+			}
 			if a.Op == ssa.OpWasm3LoweredAddr {
 				if sym, ok := a.Aux.(*obj.LSym); ok {
 					// Consume + drop the linear address operand (only
@@ -1672,6 +1685,14 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 	case ssa.OpWasm3RefNull:
 		p := s.Prog(wasm.ARefNull)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterStructAux(s, v))}
+
+	case ssa.OpWasm3RefNullAny:
+		// ref.null any — used for ConstNil of ref-typed Go values
+		// (interface, slice, *T where T isn't a specific struct, etc.)
+		// whose per-value local is anyref. The abstract anyref null
+		// is a single (opcode, heaptype) byte pair with no typeidx
+		// relocation. See ARefNullAny encoder in wasm3obj.go.
+		s.Prog(wasm.ARefNullAny)
 
 	// OpWasm3StackArray emits via ssaGenValueOnStack so the default
 	// case's localSetIdx fall-through lands the (ref (array T))

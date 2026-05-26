@@ -333,7 +333,7 @@ func wasm3IsDirectAnyref(v *Value) bool {
 	switch v.Op {
 	case OpWasm3StructNew, OpWasm3StructNewDefault,
 		OpWasm3ArrayNew, OpWasm3ArrayNewDefault,
-		OpWasm3RefNull, OpWasm3RefCast,
+		OpWasm3RefNull, OpWasm3RefNullAny, OpWasm3RefCast,
 		OpWasm3StackArray, OpWasm3StackStruct, OpWasm3MakeSlice, OpWasm3MakeMap, OpWasm3MapKeys, OpWasm3MapValues, OpWasm3SubSlice, OpWasm3SliceData, OpWasm3StringData, OpWasm3IfaceItab, OpWasm3IfaceData, OpWasm3IfaceMake,
 		OpWasm3FuncValue, OpWasm3MakeClosureRef,
 		OpWasm3MakeClosureRefInline,
@@ -598,7 +598,7 @@ func wasm3ValueType(v *Value) byte {
 	switch v.Op {
 	case OpWasm3StructNew, OpWasm3StructNewDefault,
 		OpWasm3ArrayNew, OpWasm3ArrayNewDefault,
-		OpWasm3RefNull, OpWasm3RefCast,
+		OpWasm3RefNull, OpWasm3RefNullAny, OpWasm3RefCast,
 		OpWasm3StackArray, OpWasm3StackStruct, OpWasm3MakeSlice, OpWasm3MakeMap, OpWasm3MapKeys, OpWasm3MapValues, OpWasm3SubSlice, OpWasm3SliceData, OpWasm3StringData, OpWasm3IfaceItab, OpWasm3IfaceData, OpWasm3IfaceMake,
 		OpWasm3FuncValue, OpWasm3MakeClosureRef,
 		OpWasm3MakeClosureRefInline,

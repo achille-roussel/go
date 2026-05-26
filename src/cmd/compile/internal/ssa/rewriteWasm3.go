@@ -960,6 +960,17 @@ func rewriteValueWasm3_OpConstNil(v *Value) bool {
 		v.Aux = typeToAux(t.Elem())
 		return true
 	}
+	// match: (ConstNil <t>)
+	// cond: config.arch == "wasm3" && (t.IsUnsafePtr() || t.IsPtr() || t.IsInterface() || t.IsSlice() || t.IsString() || t.Kind() == types.TFUNC)
+	// result: (RefNullAny)
+	for {
+		t := v.Type
+		if !(config.arch == "wasm3" && (t.IsUnsafePtr() || t.IsPtr() || t.IsInterface() || t.IsSlice() || t.IsString() || t.Kind() == types.TFUNC)) {
+			break
+		}
+		v.reset(OpWasm3RefNullAny)
+		return true
+	}
 	// match: (ConstNil)
 	// result: (I64Const [0])
 	for {

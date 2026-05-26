@@ -273,6 +273,7 @@ const (
 	ACallRef       // opcode 0x14
 	AReturnCallRef // opcode 0x15
 	ARefNull       // opcode 0xD0
+	ARefNullAny    // opcode 0xD0 0x6E — ref.null any (abstract anyref, no typeidx)
 	ARefIsNull     // opcode 0xD1
 	ARefFunc       // opcode 0xD2
 	ARefEq         // opcode 0xD3

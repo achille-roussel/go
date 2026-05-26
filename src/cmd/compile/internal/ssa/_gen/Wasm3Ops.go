@@ -347,6 +347,7 @@ func init() {
 		{name: "ArraySet", argLength: 4, reg: regInfo{inputs: []regMask{gp, gp, gp}}, aux: "Typ", typ: "Mem"}, // array.set $Aux; arg0=array, arg1=index, arg2=value, arg3=mem; returns mem
 		{name: "ArrayLen", argLength: 1, reg: gp11, typ: "Int64"},                                             // array.len; arg0=array
 		{name: "RefNull", argLength: 0, reg: gp01, aux: "Typ", rematerializeable: true},                       // ref.null $Aux
+		{name: "RefNullAny", argLength: 0, reg: gp01, rematerializeable: true},                               // ref.null any (0xD0 0x6E) — abstract anyref null, no typeidx; used for ConstNil of non-*struct ref types (interface, slice, func, etc.) so the value lands in an anyref local rather than getting i64.const 0.
 		{name: "RefIsNull", argLength: 1, reg: gp11, typ: "Bool"},                                             // ref.is_null; arg0=ref
 		{name: "RefCast", argLength: 1, reg: gp11, aux: "Typ"},                                                // ref.cast (ref $Aux); arg0=ref
 		{name: "RefTest", argLength: 1, reg: gp11, aux: "Typ", typ: "Bool"},                                   // ref.test (ref $Aux); arg0=ref

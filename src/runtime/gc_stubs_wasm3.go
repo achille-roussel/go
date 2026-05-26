@@ -74,6 +74,12 @@ const maxProfStackDepth = 64
 // samples; rate stays zero.
 var mutexprofilerate int64
 
+// pageSize is the host-OS page size constant the standard runtime
+// reads in many places (mheap, trace, etc). wasm3 inherits the wasm
+// page size (64 KiB) since the host engine grants memory in those
+// chunks.
+const pageSize = 65536
+
 // gcWork is referenced as struct field type in p (runtime2.go) and as
 // parameter type in mcheckmark.go and preempt_noxreg.go. The mark
 // queue itself lives in mgcwork.go, which is excluded.
@@ -182,11 +188,14 @@ func (*Pinner) Pin(obj any) { _ = obj }
 func (*Pinner) Unpin() {}
 
 // synctestBubble is referenced as struct field type in g (runtime2.go)
-// and as parameter type in chan.go. The testing/synctest experimental
-// runtime support lives in synctest.go, which is excluded — bubble
-// semantics depend on the heap-special / mheap subsystems.
+// and as parameter type in chan.go / time.go. The testing/synctest
+// experimental runtime support lives in synctest.go, which is
+// excluded. .now / .timers are fields (not methods) so time.go's
+// `bubble.now / 1e9` and `&bubble.timers` typecheck.
 type synctestBubble struct {
-	id uint64
+	id     uint64
+	now    int64
+	timers timers
 }
 
 // incActive / decActive are coro.go's per-bubble active-coroutine
@@ -208,6 +217,7 @@ func (b *synctestBubble) changegstatus(gp *g, oldval, newval uint32) {
 // race-detector synchronisation. wasm3 doesn't run the race detector;
 // return nil.
 func (b *synctestBubble) raceaddr() unsafe.Pointer { _ = b; return nil }
+
 
 // mSpanList is referenced from stack.go's pool of free stack spans.
 // stack.go's growth machinery is part of the M2 exclusion set per
@@ -441,10 +451,15 @@ type gcControllerStub struct {
 	memoryLimit       atomic.Int64
 	gcPercent         atomic.Int32
 	heapMarked        uint64
-	heapGoal          atomic.Uint64
 	bgScanCredit      atomic.Int64
 	assistWorkPerByte atomicFloat64Stub
 }
+
+// heapGoal is the target heap size for the next GC cycle. mstats.go
+// and traceruntime.go call it as a function. wasm3 has no GC; return
+// math.MaxUint64 so the heuristic "we're under the goal" is always
+// true.
+func (c *gcControllerStub) heapGoal() uint64 { return ^uint64(0) }
 
 // atomicFloat64Stub is a stand-in for atomic.Float64 used by the GC
 // pacer for sub-cycle work bookkeeping. wasm3 never updates it; the
@@ -482,6 +497,29 @@ func (c *gcControllerStub) addScannableStack(pp *p, n int64) {
 	_ = pp
 	_ = n
 }
+
+// addGlobals adds a globals-region byte count to the GC's scan
+// budget. wasm3 has no GC — no-op.
+func (c *gcControllerStub) addGlobals(amount int64) { _ = amount }
+
+// gcMarkWorkerNotWorker is the gcMarkWorkerMode constant signalling
+// "this g isn't a mark worker". wasm3 has no mark workers; constant
+// must exist for traceruntime.go to compile.
+const gcMarkWorkerNotWorker = 0
+
+// fingRunningFinalizer is the special stackguard0 / status value the
+// runtime sets while a finalizer is executing. wasm3 has no
+// finalizers; constant must exist for traceback.go's check.
+const fingRunningFinalizer = 0
+
+// traceSnapshotMemory records the heap layout into the trace. wasm3
+// has no managed heap to snapshot — no-op.
+func traceSnapshotMemory(gen uintptr) { _ = gen }
+
+// traceAllocFreeTypesBatch is the per-type-batch tag byte the
+// runtime tracer prefixes when emitting alloc/free type records.
+// wasm3's tracer never emits these; constant must exist.
+const traceAllocFreeTypesBatch = 0
 
 
 // gcMarkWorkerIdleMode is the gcMarkWorkerMode constant for idle-time
@@ -689,7 +727,27 @@ var mheap_ mheapStub
 // pageAllocStub stands in for mheap.pages (pageAlloc). proc.go's
 // p-flush path calls mheap_.pages.scav etc. wasm3 doesn't manage
 // pages — the few touched methods are no-ops.
-type pageAllocStub struct{}
+type pageAllocStub struct {
+	inUse addrRangesStub
+}
+
+// addrRangesStub mirrors the standard pageAlloc.inUse — an
+// address-range list. wasm3 never tracks pages.
+type addrRangesStub struct {
+	ranges []addrRangeStub
+}
+
+type addrRangeStub struct {
+	base, limit offAddrStub
+}
+
+// offAddrStub mirrors the standard pageAlloc's offAddr — a uintptr
+// wrapper with an addr() method that strips the per-space offset.
+// wasm3 doesn't track address spaces; addr() returns the underlying
+// uintptr unchanged.
+type offAddrStub uintptr
+
+func (a offAddrStub) addr() uintptr { return uintptr(a) }
 
 // _StackCacheSize is the per-mcache stack-cache byte capacity. stack.go
 // uses it for cache-slot indexing. wasm3 has no Go-managed stacks so
@@ -824,6 +882,11 @@ const (
 // wakefing returns the finalizer goroutine to schedule (or nil if
 // none). wasm3 has no finalizer queue — always nil.
 func wakefing() *g { return nil }
+
+// blockUntilEmptyFinalizerQueue blocks until pending finalizers run.
+// wasm3 has none — return immediately true to satisfy callers
+// waiting on a drain.
+func blockUntilEmptyFinalizerQueue(timeout int64) bool { _ = timeout; return true }
 
 // gcCleanups is the per-runtime cleanup queue maintained by mcleanup.go.
 // proc.go's sysmon checks it for pending cleanups. wasm3 has none.

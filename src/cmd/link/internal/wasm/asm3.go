@@ -309,27 +309,32 @@ func (m *wasm3Module) mergeTable(pkgTableBytes []byte) []int {
 			remappedT.Super = int(remap[int(t.Super)])
 		}
 		hasSelfRef := remappedT.Super == selfRefSentinel
+		// Check RefType == selfRefSentinel directly (not via IsRef):
+		// the sentinel is negative, so IsRef() returns false for a
+		// remapped self-ref. The Storage was a ref at input (otherwise
+		// remapStorage would not have touched RefType); the sentinel
+		// faithfully marks "ref pointing at the in-progress type."
 		for _, f := range t.Fields {
 			f.Storage = remapStorage(f.Storage, remap)
-			if f.Storage.IsRef() && f.Storage.RefType == selfRefSentinel {
+			if f.Storage.RefType == selfRefSentinel {
 				hasSelfRef = true
 			}
 			remappedT.Fields = append(remappedT.Fields, f)
 		}
 		remappedT.Elem = remapStorage(t.Elem, remap)
-		if remappedT.Elem.IsRef() && remappedT.Elem.RefType == selfRefSentinel {
+		if remappedT.Elem.RefType == selfRefSentinel {
 			hasSelfRef = true
 		}
 		for _, p := range t.Params {
 			pr := remapStorage(p, remap)
-			if pr.IsRef() && pr.RefType == selfRefSentinel {
+			if pr.RefType == selfRefSentinel {
 				hasSelfRef = true
 			}
 			remappedT.Params = append(remappedT.Params, pr)
 		}
 		for _, r := range t.Results {
 			rr := remapStorage(r, remap)
-			if rr.IsRef() && rr.RefType == selfRefSentinel {
+			if rr.RefType == selfRefSentinel {
 				hasSelfRef = true
 			}
 			remappedT.Results = append(remappedT.Results, rr)
@@ -367,21 +372,25 @@ func fixupSelfRefs(t *wasmgc.Type, sentinel, real int) {
 	if t.Super == sentinel {
 		t.Super = real
 	}
+	// Match by RefType == sentinel directly (not IsRef()-gated): the
+	// sentinel is negative, so IsRef() returns false and the gate
+	// would skip the patch, leaving Storage.RefType = sentinel in the
+	// final table — which the encoder reads as a non-ref Prim=0 (i8).
 	for i := range t.Fields {
-		if t.Fields[i].Storage.IsRef() && t.Fields[i].Storage.RefType == sentinel {
+		if t.Fields[i].Storage.RefType == sentinel {
 			t.Fields[i].Storage.RefType = real
 		}
 	}
-	if t.Elem.IsRef() && t.Elem.RefType == sentinel {
+	if t.Elem.RefType == sentinel {
 		t.Elem.RefType = real
 	}
 	for i := range t.Params {
-		if t.Params[i].IsRef() && t.Params[i].RefType == sentinel {
+		if t.Params[i].RefType == sentinel {
 			t.Params[i].RefType = real
 		}
 	}
 	for i := range t.Results {
-		if t.Results[i].IsRef() && t.Results[i].RefType == sentinel {
+		if t.Results[i].RefType == sentinel {
 			t.Results[i].RefType = real
 		}
 	}

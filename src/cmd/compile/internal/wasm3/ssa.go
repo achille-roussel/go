@@ -3463,6 +3463,14 @@ func wasm3FieldValueNeedsRefCast(t *types.Type) bool {
 	if t.IsPtr() && t.Elem() != nil && (t.Elem().IsStruct() || t.Elem().IsArray()) {
 		return true
 	}
+	// func / map / chan fields lower to (ref null TypeGoObject) per
+	// lowerFieldsImpl's TFUNC/TMAP/TCHAN case; the SSA value lives in
+	// an anyref local, so the same anyref→(ref null TypeGoObject)
+	// narrowing applies.
+	switch t.Kind() {
+	case types.TFUNC, types.TMAP, types.TCHAN:
+		return true
+	}
 	// String/slice/interface field-value stores go through different
 	// SSA paths (BoxStore for *string/*slice/*iface cells, the boxed-
 	// component path for slice header fields). The simple FieldSet

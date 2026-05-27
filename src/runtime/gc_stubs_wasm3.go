@@ -635,15 +635,17 @@ func mutexevent(cycles int64, skip int) {
 }
 
 // persistentalloc is the standard runtime's off-heap allocator, used
-// for itab allocation, the lock-rank dependency graph, etc. wasm3
-// routes everything through the bump-heap shim — there is no separate
-// persistent arena, and any allocation that previously came from one
-// just lives in the same wasm3Heap. The sysStat parameter is ignored
-// (no per-sysmem-stat accounting on wasm3).
+// for itab allocation, the lock-rank dependency graph, etc. On wasm3
+// no reachable code path needs it (itabs are WasmGC objects under
+// the M2 cutover; runtime-internal data structures are intrinsified
+// or stubbed). Trap so any future caller surfaces immediately rather
+// than allocating from a defunct linear-memory bump arena.
 func persistentalloc(size, align uintptr, sysStat *sysMemStat) unsafe.Pointer {
+	_ = size
 	_ = align
 	_ = sysStat
-	return wasm3BumpAlloc(size)
+	throw("wasm3: runtime.persistentalloc called — M2 bump arena retired in M3.5; allocate via WasmGC instead")
+	return nil
 }
 
 // gcController is the GC pacer's global controller state. mem.go's
@@ -1056,7 +1058,9 @@ var finlock mutex
 
 // mallocinit is the allocator's bootstrap entry called from proc.go
 // during runtime startup. wasm3's allocation is intrinsified at the
-// SSA layer (struct.new) and falls back to the wasm3Heap bump arena;
+// SSA layer (struct.new / array.new_default), and the M2-era
+// linear-memory bump arena is retired (mallocgc / newobject /
+// persistentalloc / makeslice / stackalloc all trap if reached);
 // no initialization needed.
 func mallocinit() {}
 

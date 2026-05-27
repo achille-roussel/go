@@ -8,28 +8,22 @@ package runtime
 
 import "unsafe"
 
-// mallocgc on wasm3 redirects every allocation to the bump-heap
-// arena. The standard mallocgc walks the per-P mcache, the mheap
-// span lists, and the fixalloc free lists for metadata, none of
-// which the wasm3 backend can lower today (the M2 cutover to host
-// WasmGC has not been completed for those subsystems; see
-// doc/wasm3-m3-stage-f-interfaces.md).
-//
-// Callers can be split into two groups by which argument carries
-// the requested byte count:
-//   - convT* (interface boxing): pass `typ` and trust typ.Size_;
-//     size==typ.Size_.
-//   - growslice / persistentalloc / etc: pass the byte count in
-//     `size` and may pass `typ==nil` (e.g. the noscan growslice
-//     branch).
-//
-// Routing through wasm3BumpAlloc(size) honours both shapes — it
-// uses the explicit byte count instead of dereferencing typ — so
-// `mallocgc(capmem, nil, false)` from growslice no longer faults.
+// mallocgc is the runtime's allocation entry — convT* (interface
+// boxing), growslice, append, etc. funnel through it on other
+// platforms. On wasm3 every allocation site has been intrinsified
+// at the SSA layer (OpWasm3MakeSlice → array.new_default,
+// OpWasm3StructNewDefault → struct.new_default, …), so a live call
+// reaching this body indicates a missed intrinsification — trap so
+// it surfaces immediately rather than silently corrupting state
+// against a defunct linear-memory bump arena. The symbol must stay
+// (other runtime files linkname-bind it).
 //
 //go:linkname mallocgc
+//go:nosplit
 func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
+	_ = size
 	_ = typ
 	_ = needzero
-	return wasm3BumpAlloc(size)
+	throw("wasm3: runtime.mallocgc called — allocation site failed to intrinsify")
+	return nil
 }

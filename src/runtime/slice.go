@@ -97,11 +97,11 @@ func makeslicecopy(et *_type, tolen int, fromlen int, from unsafe.Pointer) unsaf
 
 // makeslice / makeslice64 are defined per-target. The default
 // (build tag !wasm3) lives in makeslice_default.go and lands the
-// allocation in mallocgc; the wasm3 variant (makeslice_wasm3.go)
-// routes through the runtime fork's bump allocator (wasm3HeapAlloc)
-// to avoid pulling in the wasm3-incompatible mallocgc chain
-// (postMallocgcDebug / page allocator / trace locker — see
-// doc/wasm3-m3-notes.md "Stage E ABI surfaces").
+// allocation in mallocgc. The wasm3 variant (makeslice_wasm3.go)
+// is a trap stub: every reachable `make([]T, ...)` is intrinsified
+// at the SSA layer (OpWasm3MakeSlice → array.new_default
+// $go.array.T) so makeslice itself is dead code; the symbol stays
+// only to satisfy compile-time linkname binders.
 
 // growslice allocates new backing store for a slice.
 //
@@ -240,12 +240,12 @@ func growslice(oldPtr unsafe.Pointer, newLen, oldCap, num int, et *_type) slice 
 		// The reflect_growslice() that calls growslice will manually clear
 		// the region not cleared here.
 		//
-		// On wasm3 the bump-heap mallocgc already zeroes the returned
-		// allocation (see runtime.wasm3BumpAlloc), so the trailing
-		// clear is redundant; gate it out so memclrNoHeapPointers
-		// stays unreachable on wasm3 (its sub-word stride helpers
-		// pull in linear-memory pointer arithmetic the wasm3 backend
-		// can't lower cleanly).
+		// On wasm3 the makeslice path is a trap stub
+		// (every reachable make() intrinsifies to array.new_default,
+		// which zero-fills the wasmgc backing). The trailing clear
+		// is redundant and memclrNoHeapPointers' sub-word stride
+		// helpers pull in linear-memory pointer arithmetic the wasm3
+		// backend can't lower cleanly; gate the call out.
 		if goarch.IsWasm3 == 0 {
 			memclrNoHeapPointers(add(p, newlenmem), capmem-newlenmem)
 		}

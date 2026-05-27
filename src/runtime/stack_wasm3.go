@@ -120,9 +120,8 @@ func stackalloc(n uint32) stack {
 	if n == 0 {
 		return stack{}
 	}
-	p := wasm3BumpAlloc(uintptr(n))
-	base := uintptr(p)
-	return stack{lo: base, hi: base + uintptr(n)}
+	throw("wasm3: stackalloc called — pre-M4 should not need linear-memory stacks (M2 bump arena retired in M3.5)")
+	return stack{}
 }
 
 // stackfree releases a previously-allocated stack. wasm3's bump

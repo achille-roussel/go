@@ -72,10 +72,12 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 	// (i8, i16, i32, i64, f32, f64, ref), go.iface, the
 	// getter/setter/ptr accessor-pair triples for the i64, ref, f64, and
 	// f32 classes, and the M4 stack-switching pair go.goroutine.entry +
-	// go.cont. All typed-ref heap references emit the exact-heap-type
-	// prefix (opExactHeap=0x62) so wasmtime accepts them without leaning
-	// on exact->inexact subtyping. Pin the exact bytes — this is the
-	// module preamble every wasm3 binary starts with.
+	// go.cont. Typed-ref heap references emit the plain (non-exact)
+	// encoding (0x64 / 0x63 followed by typeidx) — the exact-heap-type
+	// prefix opExactHeap=0x62 was dropped to match wasmfxtime /
+	// wasmparser 1.223, which predates the custom-descriptors extension.
+	// See heaptype helper in typesec.go for rationale. Pin the exact
+	// bytes — this is the module preamble every wasm3 binary starts with.
 	want := []byte{
 		0x19, // 25 rec groups
 
@@ -94,7 +96,7 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 		opRec, 0x01,
 		opSub, 0x01, 0x00, // 1 supertype: index 0
 		opStruct, 0x03,
-		opRef, opExactHeap, 0x01, fieldConst, // (ref (exact 1)) const
+		opRef,0x01, fieldConst, // (ref (exact 1)) const
 		valI64, fieldConst,
 		valI64, fieldConst,
 
@@ -123,8 +125,8 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x04,
 		valAnyref, fieldConst,
 		valI32, fieldConst,
-		opRef, opExactHeap, 0x0b, fieldConst,
-		opRef, opExactHeap, 0x0c, fieldConst,
+		opRef,0x0b, fieldConst,
+		opRef,0x0c, fieldConst,
 
 		// rec { go.getter.ref }: final func type (anyref, i32) -> anyref.
 		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x02, valAnyref, valI32, 0x01, valAnyref,
@@ -136,8 +138,8 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x04,
 		valAnyref, fieldConst,
 		valI32, fieldConst,
-		opRef, opExactHeap, 0x0e, fieldConst,
-		opRef, opExactHeap, 0x0f, fieldConst,
+		opRef,0x0e, fieldConst,
+		opRef,0x0f, fieldConst,
 
 		// rec { go.getter.f64 }: final func type (anyref, i32) -> f64.
 		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x02, valAnyref, valI32, 0x01, valF64,
@@ -149,8 +151,8 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x04,
 		valAnyref, fieldConst,
 		valI32, fieldConst,
-		opRef, opExactHeap, 0x11, fieldConst,
-		opRef, opExactHeap, 0x12, fieldConst,
+		opRef,0x11, fieldConst,
+		opRef,0x12, fieldConst,
 
 		// rec { go.getter.f32 }: final func type (anyref, i32) -> f32.
 		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x02, valAnyref, valI32, 0x01, valF32,
@@ -162,12 +164,14 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x04,
 		valAnyref, fieldConst,
 		valI32, fieldConst,
-		opRef, opExactHeap, 0x14, fieldConst,
-		opRef, opExactHeap, 0x15, fieldConst,
+		opRef,0x14, fieldConst,
+		opRef,0x15, fieldConst,
 
-		// rec { go.goroutine.entry }: final func type (anyref) -> anyref —
-		// the universal M4 goroutine entry shape.
-		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x01, valAnyref, 0x01, valAnyref,
+		// rec { go.goroutine.entry }: final func type () -> () — the
+		// universal M4 goroutine entry shape (void). V8 December 2025
+		// doesn't implement resume against (func anyref -> anyref);
+		// args/results route through globals or tag payloads instead.
+		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x00, 0x00,
 
 		// rec { go.cont }: final cont type wrapping go.goroutine.entry
 		// (table index 23 → wasm index 23).

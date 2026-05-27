@@ -884,15 +884,11 @@ func writeGlobalSec3(ctxt *ld.Link, ldr *loader.Loader, m *wasm3Module, hostImpo
 		}
 		if e.descriptor {
 			// Type-descriptor identity ref: an immutable
-			// (global (ref (exact $go.object)) (struct.new_default $go.object)).
-			// struct.new returns a `(ref (exact $T))` per the WasmGC
-			// "exact heap types" extension; without subtype inheritance
-			// in Go (we don't use Go-side struct subtyping), the global
-			// is annotated as exact too so the validator sees a direct
-			// type match. Encoding:
-			//   0x64 (ref prefix, non-null) 0x62 (exact heaptype prefix) <typeidx>
+			// (global (ref $go.object) (struct.new_default $go.object)).
+			// The exact-heap-type prefix (0x62) was dropped to match
+			// wasmfxtime; see typesec.go heaptype helper for rationale.
+			// Encoding:  0x64 (ref prefix, non-null) <typeidx>
 			ctxt.Out.WriteByte(0x64) // ref (non-null) prefix
-			ctxt.Out.WriteByte(0x62) // exact heaptype prefix
 			writeSleb128(ctxt.Out, int64(wasmgc.TypeGoObject))
 			ctxt.Out.WriteByte(0x00) // immutable
 			ctxt.Out.WriteByte(0xFB) // GC prefix
@@ -902,13 +898,10 @@ func writeGlobalSec3(ctxt *ld.Link, ldr *loader.Loader, m *wasm3Module, hostImpo
 			continue
 		}
 		key := e.key
-		// valtype = (ref (exact $closureCtx)). struct.new returns an
-		// exact ref; declaring the global exact too matches the spec
-		// without relying on exact->inexact subtyping (which wasmtime
-		// 44 doesn't accept). Encoding:
-		//   0x64 (ref) 0x62 (exact) <typeidx>
+		// valtype = (ref $closureCtx). Exact prefix dropped — see
+		// typesec.go heaptype helper for rationale.
+		// Encoding:  0x64 (ref) <typeidx>
 		ctxt.Out.WriteByte(0x64) // ref (non-null) prefix
-		ctxt.Out.WriteByte(0x62) // exact heaptype prefix
 		writeSleb128(ctxt.Out, int64(key.globalCtxIx))
 		ctxt.Out.WriteByte(0x00) // immutable
 		// init expression: struct.new $closureCtx

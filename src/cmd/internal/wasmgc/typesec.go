@@ -101,17 +101,27 @@ func (table Table) EncodeTypeSection() []byte {
 	}
 
 	heaptype := func(b []byte, tableIdx int) []byte {
-		// All typed-index heap references are emitted as exact
-		// `(exact $T)` heap types. Go has no struct-subtype
-		// inheritance the way Java/C# do; the $go.object root that
-		// the runtime descriptor system uses is a single-level
-		// hierarchy (every concrete type's super == TypeGoObject)
-		// rather than a deep tree. Emitting exact heap types
-		// everywhere matches what struct.new / array.new produce
-		// without leaning on the exact->inexact subtyping rule,
-		// which wasmtime 44 and earlier doesn't accept even with
-		// the custom-descriptors feature enabled.
-		b = append(b, opExactHeap)
+		// Heap type encoding: typed-index reference, optionally
+		// exact-prefixed.
+		//
+		// The "exact" prefix (opExactHeap = 0x62) is part of the
+		// WasmGC custom-descriptors extension. V8 14.x with
+		// --experimental-wasm-custom-descriptors and wasmtime 45+
+		// recognise it; wasmtime 30 (and the wasmfxtime fork's
+		// pinned wasmparser v1.223) reject it as "invalid value
+		// type" because the custom-descriptors proposal post-dates
+		// their parser snapshot.
+		//
+		// The wasm3 backend USED to emit exact-heap-type everywhere
+		// because wasmtime 44 rejected exact->inexact subtyping with
+		// custom-descriptors enabled — a strictness that only
+		// matters when the custom-descriptors extension is active.
+		// Older runtimes (and wasmfxtime today) don't have the
+		// extension at all, accept the implicit subtype rule, and
+		// reject the prefix outright. Emit the non-exact form so
+		// the same binary runs on both new V8 (which downcasts
+		// implicitly when no exact prefix is present) and
+		// wasmfxtime (which sees the standard 1.0 GC encoding).
 		return AppendSleb(b, int64(wasmIndex[tableIdx]))
 	}
 

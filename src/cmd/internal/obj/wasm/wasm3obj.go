@@ -916,9 +916,11 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 				case obj.TYPE_NONE:
 					w.WriteByte(0x40) // void block type
 				case obj.TYPE_CONST:
-					// (ref null \$T) = 0x63 0x62 <typeidx>
+					// (ref null \$T) = 0x63 <typeidx>. The exact-heap-
+					// type prefix 0x62 was dropped to match wasmfxtime
+					// (wasmtime 30 / wasmparser 1.223) — see the
+					// typesec.go heaptype helper for the full rationale.
 					w.WriteByte(0x63) // ref null prefix
-					w.WriteByte(0x62) // exact-heap-type prefix
 					relocs = append(relocs, obj.Reloc{
 						Type: objabi.R_WASMTYPE,
 						Off:  int32(w.Len()),
@@ -1045,19 +1047,16 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 
 			case ARefCast, ARefCastNull, ARefTest:
 				// ref.cast / ref.cast null / ref.test: heap-type
-				// immediate (per WasmGC custom-descriptors: short
-				// forms take a heaptype, which can be exact-prefixed
-				// via 0x62 + typeidx). The wasm3 backend uses exact
-				// reference types everywhere (Go has no struct-
-				// subtype inheritance — see wasmgc/typesec.go's
-				// heaptype helper); emit 0x62 before the relocated
-				// typeidx so the cast target matches the exact field
-				// types and global types this backend produces.
+				// immediate. Plain (typeidx) heap type — no exact
+				// prefix; see typesec.go heaptype helper for the full
+				// rationale on dropping 0x62 to match wasmfxtime /
+				// wasmparser 1.223. The wasmgc subtyping rule lets a
+				// (ref (exact $T)) produced by struct.new / array.new
+				// be downcast implicitly to (ref $T).
 				if p.From.Type != obj.TYPE_CONST {
 					return nil, false
 				}
 				writeOpcode(w, p.As)
-				w.WriteByte(0x62) // exact heaptype prefix
 				relocs = append(relocs, obj.Reloc{
 					Type: objabi.R_WASMTYPE,
 					Off:  int32(w.Len()),
@@ -1068,17 +1067,13 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 
 			case ARefNull:
 				// ref.null heaptype — single byte heap-type immediate
-				// for abstract heap types, or an exact-prefixed typeidx
-				// for typed refs. The wasm3 backend uses exact reference
-				// types everywhere (Go has no struct-subtype inheritance
-				// — see wasmgc/typesec.go's heaptype helper); emit 0x62
-				// before the relocated typeidx so the produced null
-				// matches the exact field types this backend declares.
+				// for abstract heap types, or a typed (typeidx) form
+				// for typed refs. No exact-prefix; see typesec.go's
+				// heaptype helper for rationale.
 				if p.From.Type != obj.TYPE_CONST {
 					return nil, false
 				}
 				writeOpcode(w, p.As)
-				w.WriteByte(0x62) // exact heaptype prefix
 				relocs = append(relocs, obj.Reloc{
 					Type: objabi.R_WASMTYPE,
 					Off:  int32(w.Len()),

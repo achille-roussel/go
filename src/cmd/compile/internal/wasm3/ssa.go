@@ -823,6 +823,115 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		p.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: sym}
 		p.Mark = wasm.Wasm3GlobalRef
 
+	case ssa.OpWasm3ResetLinearMemory:
+		// M3.5 linear-memory bridge: rewind the bump pointer to
+		// args[0] (i32). Single global.set on wasm global 0.
+		getValue32(s, v.Args[0])
+		p := s.Prog(wasm.AGlobalSet)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm.Wasm3GlobalIndexLinearBumpPtr)}
+
+	case ssa.OpWasm3ReadLinearMemory:
+		// M3.5 linear-memory bridge: copy len(dst) bytes from linear
+		// memory at src offset args[1] into the caller's []byte slice
+		// args[0]. No allocation. Mirror of WriteLinearMemory:
+		//
+		//   $arr (anyref)     ← struct.get $go.slice.u8 0 (backing)
+		//   $sliceOff (i32)   ← i32.wrap(struct.get $go.slice.u8 1)
+		//   $n (i32)          ← i32.wrap(struct.get $go.slice.u8 2)
+		//   $srcOff (i32)     ← args[1]
+		//   $i (i32)          ← copy index
+		//
+		//   block { loop {
+		//     local.get $i; local.get $n; i32.ge_u; br_if 1
+		//     ;; array.set $go.bytes $arr (sliceOff+i) i32.load8_u(srcOff+i)
+		//     local.get $arr; ref.cast $go.bytes
+		//     local.get $sliceOff; local.get $i; i32.add
+		//     local.get $srcOff;   local.get $i; i32.add; i32.load8_u 0
+		//     array.set $go.bytes
+		//     local.get $i; i32.const 1; i32.add; local.set $i
+		//     br 0
+		//   } end } end
+		wasm3EnsureCollector(s.FuncInfo())
+		bytesIdx := int64(wasmgc.TypeGoBytes)
+		sliceIdx := int64(wasm3RegisterSliceStruct(s.FuncInfo(), types.NewSlice(types.Types[types.TUINT8])))
+
+		arrLocal := wasm3AllocAnyrefTempLocal(s)
+		sliceOffLocal := wasm3AllocI32TempLocal(s)
+		nLocal := wasm3AllocI32TempLocal(s)
+		srcOffLocal := wasm3AllocI32TempLocal(s)
+		iLocal := wasm3AllocI32TempLocal(s)
+
+		// $arr = struct.get $go.slice.u8 0
+		getValue64(s, v.Args[0])
+		pC1 := s.Prog(wasm.ARefCast)
+		pC1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceIdx}
+		pGB := s.Prog(wasm.AStructGet)
+		pGB.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceIdx}
+		pGB.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+		localSetIdx(s, arrLocal)
+
+		// $sliceOff = i32.wrap(struct.get $go.slice.u8 1)
+		getValue64(s, v.Args[0])
+		pC2 := s.Prog(wasm.ARefCast)
+		pC2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceIdx}
+		pGO := s.Prog(wasm.AStructGet)
+		pGO.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceIdx}
+		pGO.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
+		s.Prog(wasm.AI32WrapI64)
+		localSetIdx(s, sliceOffLocal)
+
+		// $n = i32.wrap(struct.get $go.slice.u8 2)
+		getValue64(s, v.Args[0])
+		pC3 := s.Prog(wasm.ARefCast)
+		pC3.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceIdx}
+		pGN := s.Prog(wasm.AStructGet)
+		pGN.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceIdx}
+		pGN.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 2}
+		s.Prog(wasm.AI32WrapI64)
+		localSetIdx(s, nLocal)
+
+		// $srcOff = args[1] (already i32)
+		getValue32(s, v.Args[1])
+		localSetIdx(s, srcOffLocal)
+
+		// $i = 0
+		i32Const(s, 0)
+		localSetIdx(s, iLocal)
+
+		// block { loop { ... ; br 0 } end } end
+		s.Prog(wasm.ABlock)
+		s.Prog(wasm.ALoop)
+		// if (i >= n) br 1
+		localGetIdx(s, iLocal)
+		localGetIdx(s, nLocal)
+		s.Prog(wasm.AI32GeU)
+		pBrEx := s.Prog(wasm.ABrIf)
+		pBrEx.From = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
+		// array.set $arr (sliceOff+i) (load8_u (srcOff+i))
+		localGetIdx(s, arrLocal)
+		pCG := s.Prog(wasm.ARefCast)
+		pCG.From = obj.Addr{Type: obj.TYPE_CONST, Offset: bytesIdx}
+		localGetIdx(s, sliceOffLocal)
+		localGetIdx(s, iLocal)
+		s.Prog(wasm.AI32Add)
+		localGetIdx(s, srcOffLocal)
+		localGetIdx(s, iLocal)
+		s.Prog(wasm.AI32Add)
+		pLd := s.Prog(wasm.AI32Load8U)
+		pLd.From = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+		pAS := s.Prog(wasm.AArraySet)
+		pAS.From = obj.Addr{Type: obj.TYPE_CONST, Offset: bytesIdx}
+		// i++
+		localGetIdx(s, iLocal)
+		i32Const(s, 1)
+		s.Prog(wasm.AI32Add)
+		localSetIdx(s, iLocal)
+		// br 0
+		pBrLp := s.Prog(wasm.ABr)
+		pBrLp.From = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+		s.Prog(wasm.AEnd) // end loop
+		s.Prog(wasm.AEnd) // end block
+
 	case ssa.OpWasm3ArrayCopy:
 		// M3 Stage E phase 4: copy(dst, src) lowered to `array.copy`
 		// on two wasmgc backings. arg0=dst (anyref), arg1=src
@@ -2354,6 +2463,215 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		pGetRes := s.Prog(wasm.ALocalGet)
 		pGetRes.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(tmp)}
 
+	case ssa.OpWasm3WriteLinearMemory:
+		// M3.5 linear-memory bridge: copy a []byte slice's bytes into
+		// the linear-memory scratch arena and return the byte offset
+		// of the copy. The bump pointer is wasm global 0
+		// (writeGlobalSec3 reserves it; previously dead, repurposed
+		// here). Linear memory is grown on demand via memory.grow.
+		// arg0 = data []byte (anyref / ref $go.slice.u8), arg1 = mem.
+		// The slice header is {backing $go.bytes, off i64, len i64,
+		// cap i64}; cracks into backing+off+len to honor sub-sliced
+		// inputs (where off > 0 or len < cap < array.len(backing)).
+		//
+		//     local $arr  (anyref)  ← data, ref.cast'd to $go.bytes
+		//     local $n    (i32)     ← array.len $arr
+		//     local $off  (i32)     ← saved bump pointer (return value)
+		//     local $i    (i32)     ← byte-copy index
+		//
+		//     ;; cast and stash data ref
+		//     <getValue arg0>; ref.cast $go.bytes; local.set $arr
+		//
+		//     ;; length
+		//     local.get $arr; array.len; local.set $n
+		//
+		//     ;; saved offset
+		//     global.get 0; local.set $off
+		//
+		//     ;; grow memory if needed:
+		//     ;;   pages_needed = ((off+n) - memory.size*65536 + 65535) >> 16
+		//     ;;   if pages_needed > 0: memory.grow pages_needed
+		//     ;;     (trap on -1 via unreachable)
+		//     local.get $off; local.get $n; i32.add        ;; end = off+n
+		//     memory.size; i32.const 16; i32.shl           ;; bytes available
+		//     i32.gt_u                                     ;; end > bytes ?
+		//     if
+		//         ;; pages = (end - bytes_avail + 65535) >> 16, but simpler:
+		//         ;; pages = ((end-1)>>16) - memory.size + 1
+		//         local.get $off; local.get $n; i32.add
+		//         i32.const 1; i32.sub
+		//         i32.const 16; i32.shr_u
+		//         memory.size
+		//         i32.sub
+		//         i32.const 1; i32.add
+		//         memory.grow
+		//         i32.const -1; i32.eq
+		//         if; unreachable; end                     ;; OOM trap
+		//     end
+		//
+		//     ;; byte copy: for i := 0; i < n; i++ {
+		//     ;;     i32.store8(off+i, array.get_u arr i)
+		//     ;; }
+		//     i32.const 0; local.set $i
+		//     block
+		//         loop
+		//             local.get $i; local.get $n; i32.ge_u
+		//             br_if 1                              ;; exit block on i >= n
+		//             ;; addr = off+i
+		//             local.get $off; local.get $i; i32.add
+		//             ;; byte = array.get_u $arr $i
+		//             local.get $arr; local.get $i; array.get_u $go.bytes
+		//             i32.store8 offset=0
+		//             ;; i++
+		//             local.get $i; i32.const 1; i32.add; local.set $i
+		//             br 0
+		//         end
+		//     end
+		//
+		//     ;; advance bump and produce result on stack
+		//     local.get $off; local.get $n; i32.add; global.set 0
+		//     local.get $off
+		wasm3EnsureCollector(s.FuncInfo())
+		bytesIdx := int64(wasmgc.TypeGoBytes)
+		sliceIdx := int64(wasm3RegisterSliceStruct(s.FuncInfo(), types.NewSlice(types.Types[types.TUINT8])))
+
+		// Allocate temp locals.
+		//   $arr (anyref) ← the $go.bytes backing
+		//   $sliceOff (i32) ← the slice's offset into its backing
+		//   $n (i32) ← the slice's length
+		//   $off (i32) ← saved bump pointer (return value)
+		//   $i (i32) ← byte-copy index
+		arrLocal := wasm3AllocAnyrefTempLocal(s)
+		sliceOffLocal := wasm3AllocI32TempLocal(s)
+		nLocal := wasm3AllocI32TempLocal(s)
+		offLocal := wasm3AllocI32TempLocal(s)
+		iLocal := wasm3AllocI32TempLocal(s)
+
+		// $arr = struct.get $go.slice.u8 0 (ref.cast slice arg)
+		getValue64(s, v.Args[0])
+		pCastSlice1 := s.Prog(wasm.ARefCast)
+		pCastSlice1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceIdx}
+		pGetBacking := s.Prog(wasm.AStructGet)
+		pGetBacking.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceIdx}
+		pGetBacking.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+		localSetIdx(s, arrLocal)
+
+		// $sliceOff = i32.wrap(struct.get $go.slice.u8 1)
+		getValue64(s, v.Args[0])
+		pCastSlice2 := s.Prog(wasm.ARefCast)
+		pCastSlice2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceIdx}
+		pGetSliceOff := s.Prog(wasm.AStructGet)
+		pGetSliceOff.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceIdx}
+		pGetSliceOff.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
+		s.Prog(wasm.AI32WrapI64)
+		localSetIdx(s, sliceOffLocal)
+
+		// $n = i32.wrap(struct.get $go.slice.u8 2)
+		getValue64(s, v.Args[0])
+		pCastSlice3 := s.Prog(wasm.ARefCast)
+		pCastSlice3.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceIdx}
+		pGetSliceLen := s.Prog(wasm.AStructGet)
+		pGetSliceLen.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceIdx}
+		pGetSliceLen.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 2}
+		s.Prog(wasm.AI32WrapI64)
+		localSetIdx(s, nLocal)
+
+		// $off = global.get 0 (current bump pointer)
+		pGG := s.Prog(wasm.AGlobalGet)
+		pGG.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm.Wasm3GlobalIndexLinearBumpPtr)}
+		localSetIdx(s, offLocal)
+
+		// Grow-if-needed: if off+n > memory.size*65536, grow.
+		// end_addr = $off + $n
+		localGetIdx(s, offLocal)
+		localGetIdx(s, nLocal)
+		s.Prog(wasm.AI32Add)
+		// bytes_avail = memory.size << 16
+		s.Prog(wasm.ACurrentMemory)
+		i32Const(s, 16)
+		s.Prog(wasm.AI32Shl)
+		// end_addr > bytes_avail ?
+		s.Prog(wasm.AI32GtU)
+		// if (need-grow) ...
+		pIfGrow := s.Prog(wasm.AIf)
+		_ = pIfGrow
+		// pages = ((end_addr - 1) >> 16) - memory.size + 1
+		// (compute end_addr again from off+n; locals make this cheap)
+		localGetIdx(s, offLocal)
+		localGetIdx(s, nLocal)
+		s.Prog(wasm.AI32Add)
+		i32Const(s, 1)
+		s.Prog(wasm.AI32Sub)
+		i32Const(s, 16)
+		s.Prog(wasm.AI32ShrU)
+		s.Prog(wasm.ACurrentMemory)
+		s.Prog(wasm.AI32Sub)
+		i32Const(s, 1)
+		s.Prog(wasm.AI32Add)
+		// memory.grow
+		s.Prog(wasm.AGrowMemory)
+		// if (== -1) unreachable
+		i32Const(s, -1)
+		s.Prog(wasm.AI32Eq)
+		pIfOOM := s.Prog(wasm.AIf)
+		_ = pIfOOM
+		s.Prog(wasm.AUnreachable)
+		s.Prog(wasm.AEnd) // end of OOM-if
+		s.Prog(wasm.AEnd) // end of grow-if
+
+		// $i = 0
+		i32Const(s, 0)
+		localSetIdx(s, iLocal)
+
+		// block { loop { ... ; br 0 } end } end
+		s.Prog(wasm.ABlock)
+		s.Prog(wasm.ALoop)
+		//   if (i >= n) br 1  (out of block)
+		localGetIdx(s, iLocal)
+		localGetIdx(s, nLocal)
+		s.Prog(wasm.AI32GeU)
+		pBrExit := s.Prog(wasm.ABrIf)
+		pBrExit.From = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
+		//   addr = off + i
+		localGetIdx(s, offLocal)
+		localGetIdx(s, iLocal)
+		s.Prog(wasm.AI32Add)
+		//   byte = array.get_u $go.bytes (ref.cast $arr) (sliceOff+i)
+		localGetIdx(s, arrLocal)
+		pCastG := s.Prog(wasm.ARefCast)
+		pCastG.From = obj.Addr{Type: obj.TYPE_CONST, Offset: bytesIdx}
+		localGetIdx(s, sliceOffLocal)
+		localGetIdx(s, iLocal)
+		s.Prog(wasm.AI32Add)
+		pAG := s.Prog(wasm.AArrayGetU)
+		pAG.From = obj.Addr{Type: obj.TYPE_CONST, Offset: bytesIdx}
+		//   i32.store8 offset=0 (align=0)
+		pSt := s.Prog(wasm.AI32Store8)
+		pSt.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+		//   i++
+		localGetIdx(s, iLocal)
+		i32Const(s, 1)
+		s.Prog(wasm.AI32Add)
+		localSetIdx(s, iLocal)
+		//   br 0 (back to loop)
+		pBrLoop := s.Prog(wasm.ABr)
+		pBrLoop.From = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+		s.Prog(wasm.AEnd) // end loop
+		s.Prog(wasm.AEnd) // end block
+
+		// advance bump: global 0 = off + n
+		localGetIdx(s, offLocal)
+		localGetIdx(s, nLocal)
+		s.Prog(wasm.AI32Add)
+		pGS := s.Prog(wasm.AGlobalSet)
+		pGS.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm.Wasm3GlobalIndexLinearBumpPtr)}
+
+		// Result (left on stack via the default localSetIdx fall-
+		// through): the saved offset. wasm3 per-value locals for
+		// scalar values are i64, so widen the i32 offset.
+		localGetIdx(s, offLocal)
+		s.Prog(wasm.AI64ExtendI32U)
+
 	default:
 		v.Fatalf("unexpected op: %s", v.Op)
 
@@ -3083,6 +3401,23 @@ func wasm3RegisterArrayAux(s *ssagen.State, v *ssa.Value) uint32 {
 	}
 	v.Fatalf("wasm3RegisterArrayAux: v.Aux is not array/slice/pointer type: %v", t)
 	return 0
+}
+
+// wasm3AllocI32TempLocal appends a fresh i32 scratch local for ops
+// that need an i32-typed cursor / accumulator (e.g. M3.5 linear-memory
+// bridge byte loops). Mirrors wasm3AllocAnyrefTempLocal.
+func wasm3AllocI32TempLocal(s *ssagen.State) uint32 {
+	fi := s.FuncInfo()
+	if fi == nil {
+		panic("wasm3AllocI32TempLocal: no FuncInfo")
+	}
+	idx := uint32(len(fi.Wasm3LocalTypes))
+	fi.Wasm3LocalTypes = append(fi.Wasm3LocalTypes, 0x7F) // i32
+	base := uint32(0)
+	if wt := fi.WasmType; wt != nil {
+		base = uint32(len(wt.Params))
+	}
+	return base + idx
 }
 
 // wasm3AllocAnyrefTempLocal appends a fresh anyref scratch local to

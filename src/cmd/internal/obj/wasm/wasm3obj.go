@@ -66,6 +66,13 @@ func wasm3GlobalIndex(reg int16) (uint64, bool) {
 	return 0, false
 }
 
+// Wasm3GlobalIndexLinearBumpPtr is the index of the i32 mutable
+// module global used as the bump pointer for the M3.5 linear-memory
+// bridge (runtime/wasm.{Write,Read,Reset}LinearMemory). The linker
+// reserves this slot in writeGlobalSec3 (originally an M2-era
+// placeholder; repurposed here).
+const Wasm3GlobalIndexLinearBumpPtr = 0
+
 // Wasm3GlobalIndexCtxRef is the index of the CTXT_REF anyref module
 // global (see writeGlobalSec3). Exposed so the compile-side codegen
 // for OpWasm3LoweredGetClosureRef can emit `global.get 2` without
@@ -593,10 +600,12 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 			writeOpcode(w, AElse)
 
 		case AEnd:
-			// The SSA backend emits AEnd only as the terminator of an
-			// AIf it opened. A spurious AEnd that does not match an
-			// open `if` indicates an unsupported pattern.
-			if len(stack) == 0 || stack[0].kind != wasm3CFIf {
+			// AEnd terminates either an SSA-emitted AIf, or an SSA
+			// op's inline ABlock/ALoop pair (wasm3CFInline). Other
+			// frames (CFBlock/CFLoop/CFDispatch/CFPlanBlock/CFPlanLoop)
+			// are closed by the planner / boundary machinery above,
+			// not by a raw AEnd in the op stream.
+			if len(stack) == 0 || (stack[0].kind != wasm3CFIf && stack[0].kind != wasm3CFInline) {
 				return nil, false
 			}
 			writeOpcode(w, AEnd)
@@ -883,10 +892,45 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 				return nil, false
 			}
 			switch p.As {
-			case ABlock, ALoop, ABrIf, ABrTable,
-				ACall, ACallIndirect:
-				// AIf/AElse/AEnd/ABr are handled above (the branches
-				// rung); the rest are still bailout cases.
+			case ABlock, ALoop:
+				// Inline structured-CF opener emitted by a single SSA
+				// op's codegen (M3.5 linear-memory bridge byte loops).
+				// Block-type is void (0x40). The matching AEnd at the
+				// same depth pops a wasm3CFInline frame.
+				writeOpcode(w, p.As)
+				w.WriteByte(0x40)
+				stack = append([]wasm3CFFrame{{kind: wasm3CFInline}}, stack...)
+				continue
+
+			case ABrIf:
+				// Inline conditional branch — depth comes from p.From.Offset.
+				// Used inside SSA-op inline loops; the SSA op author is
+				// responsible for setting the depth consistent with the
+				// frames it opened.
+				if p.From.Type != obj.TYPE_CONST || p.From.Offset < 0 {
+					return nil, false
+				}
+				writeOpcode(w, p.As)
+				writeUleb128(w, uint64(p.From.Offset))
+				continue
+
+			case ABr:
+				// Inline unconditional branch. Same shape as ABrIf — the
+				// AJMP-driven path that earlier branches reach is in the
+				// outer switch (case obj.AJMP); reaching this case means
+				// the SSA op author emitted a literal ABr with an
+				// explicit depth in p.From.Offset.
+				if p.From.Type != obj.TYPE_CONST || p.From.Offset < 0 {
+					return nil, false
+				}
+				writeOpcode(w, p.As)
+				writeUleb128(w, uint64(p.From.Offset))
+				continue
+
+			case ABrTable, ACall, ACallIndirect:
+				// AIf/AElse/AEnd handled above; ABrTable / ACall /
+				// ACallIndirect are not currently emittable from SSA ops
+				// at this rung.
 				return nil, false
 
 			case ARefFunc:
@@ -1050,6 +1094,18 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 				writeOpcode(w, p.As)
 				continue
 
+			case ACurrentMemory, AGrowMemory:
+				// memory.size (0x3F 0x00) / memory.grow (0x40 0x00).
+				// Single-byte memory-index immediate (always 0 for
+				// the wasm 1.0 single-memory model — the multi-memory
+				// proposal allows higher indices, not used here).
+				// Stack semantics: memory.size → pushes current
+				// page count i32; memory.grow → pops delta-pages i32,
+				// pushes previous size i32 or -1 on failure.
+				writeOpcode(w, p.As)
+				w.WriteByte(0x00)
+				continue
+
 			case AArrayCopy:
 				// array.copy takes two type indices: dst-array type
 				// and src-array type. p.From.Offset = dst typeidx,
@@ -1171,6 +1227,7 @@ const (
 	wasm3CFDispatch                     // a `block` of the dispatch-loop scheme's br_table nest
 	wasm3CFPlanLoop                     // wasm `loop` opened by the relooper plan; target = loop header block ID
 	wasm3CFPlanBlock                    // wasm `block` opened by the relooper plan; target = block ID that follows the scope's `end`
+	wasm3CFInline                       // wasm `block` or `loop` emitted inline by a single SSA op's codegen (M3.5 linear-memory bridge byte loops); only AEnd at matching depth closes it
 )
 
 // wasm3CFG is the result of the encoder's CFG pre-pass.

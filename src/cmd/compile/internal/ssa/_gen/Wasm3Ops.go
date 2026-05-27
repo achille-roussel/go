@@ -656,6 +656,35 @@ func init() {
 		// setter). arg0 = fat-pointer ref, arg1 = i64 value, arg2 = mem.
 		// Returns mem.
 		{name: "PtrStore", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, typ: "Mem"},
+
+		// M3.5 linear-memory bridge intrinsics — the only place
+		// wasm3 Go code crosses from WasmGC into linear memory.
+		// Used by runtime/wasm.{WriteLinearMemory, ReadLinearMemory,
+		// ResetLinearMemory}; everything else in the runtime is plain
+		// Go over boxed prelude types. The bump pointer is the wasm
+		// global at index 0 (declared by writeGlobalSec3, currently
+		// a no-op slot — repurposed here). Memory grows on demand via
+		// memory.grow; programs that never touch linear memory have
+		// zero pages allocated.
+
+		// WriteLinearMemory: copy data into the scratch arena, return
+		// absolute offset. arg0=data (anyref / ref $go.bytes),
+		// arg1=mem. Codegen emits ref.cast $go.bytes; array.len;
+		// global.get $bump; if need to grow, memory.grow; byte-copy
+		// loop; global.set $bump (advanced); leaves offset on stack.
+		// hasSideEffects+AuxInt(unique) so generic CSE doesn't
+		// collapse distinct calls.
+		{name: "WriteLinearMemory", argLength: 2, reg: regInfo{inputs: []regMask{gp}, outputs: []regMask{gp}}, aux: "Int64", typ: "UInt32", hasSideEffects: true},
+
+		// ReadLinearMemory: copy len(dst) bytes from linear memory into
+		// the caller-provided dst []byte slice. The caller pre-allocates;
+		// this op never returns a new slice. arg0=dst (anyref / slice),
+		// arg1=off (i32 source offset), arg2=mem. Returns Mem.
+		{name: "ReadLinearMemory", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, typ: "Mem", hasSideEffects: true},
+
+		// ResetLinearMemory: rewind the bump pointer. arg0=off (i32),
+		// arg1=mem. Emits a single global.set $bump.
+		{name: "ResetLinearMemory", argLength: 2, reg: regInfo{inputs: []regMask{gp}}, typ: "Mem", hasSideEffects: true},
 	}
 
 	archs = append(archs, arch{

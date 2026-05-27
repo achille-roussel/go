@@ -278,6 +278,43 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			return nil
 		}
 	}
+	// M3.5: the runtime/wasm.{WriteLinearMemory, ReadLinearMemory,
+	// ResetLinearMemory} package functions are the only seam between
+	// wasm3 Go code (WasmGC-backed) and host linear memory. Their
+	// bodies are //go:wasmimport-shaped panics in the source — the
+	// intrinsics replace the call with the corresponding
+	// OpWasm3{Write,Read,Reset}LinearMemory SSA op, which lowers to
+	// a structured byte-copy loop over wasm global 0 (the bump
+	// pointer) plus memory.grow on demand. AuxInt carries the unique
+	// allocation/call-site ID (wasm3NextAllocID) so generic CSE
+	// doesn't collapse two distinct calls with matching arg types
+	// into one allocation (per [[wasm3-cse-disambiguation]]).
+	add("runtime/wasm", "WriteLinearMemory", func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		// args[0] = mem int32 (memory selector, currently ignored — wasi
+		// has one memory), args[1] = data []byte. SSA arg layout for a
+		// `[]byte` parameter on wasm3 is a single anyref (slice ref).
+		v := s.newValue2(ssa.OpWasm3WriteLinearMemory, types.Types[types.TUINT32], args[1], s.mem())
+		v.AuxInt = wasm3NextAllocID()
+		return v
+	}, sys.ArchWasm3)
+	add("runtime/wasm", "ReadLinearMemory", func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		// args[0] = mem int32, args[1] = data []byte (caller-allocated
+		// destination), args[2] = off uint32 (source offset). Copies
+		// len(data) bytes from linear memory at off into the caller's
+		// slice. No allocation; returns nothing — mem-typed op for the
+		// SSA chain.
+		v := s.newValue3(ssa.OpWasm3ReadLinearMemory, types.TypeMem, args[1], args[2], s.mem())
+		s.vars[memVar] = v
+		return nil
+	}, sys.ArchWasm3)
+	add("runtime/wasm", "ResetLinearMemory", func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		// args[0] = mem int32, args[1] = off uint32. Returns nothing
+		// (mem-typed op for the SSA chain).
+		v := s.newValue2(ssa.OpWasm3ResetLinearMemory, types.TypeMem, args[1], s.mem())
+		s.vars[memVar] = v
+		return nil
+	}, sys.ArchWasm3)
+
 	add("runtime", "wasm3MapUsed", wasm3MapFieldGetter(ssa.OpWasm3MapUsed, types.Types[types.TUINTPTR]), sys.ArchWasm3)
 	add("runtime", "wasm3MapCap", wasm3MapFieldGetter(ssa.OpWasm3MapCap, types.Types[types.TUINTPTR]), sys.ArchWasm3)
 	add("runtime", "wasm3MapKeys", wasm3MapFieldGetter(ssa.OpWasm3MapKeys, nil), sys.ArchWasm3)

@@ -6,20 +6,15 @@
 
 package runtime
 
-import "runtime/wasm"
-
-// gwrite for GOARCH=wasm3 stages the byte slice in the linear-
-// memory bridge arena and hands the offset to wasm3WriteBytes.
-// Goroutine-buffered output (g.writebuf, recordForPanic) is
-// skipped — no current wasm3 program reaches those paths.
+// gwrite for GOARCH=wasm3 forwards to write1Bytes; the linear-
+// memory bridge marshalling lives there. Goroutine-buffered output
+// (g.writebuf, recordForPanic) is skipped — no current wasm3
+// program reaches those paths.
 //
 //go:nosplit
 func gwrite(b []byte) {
-	n := uint32(len(b))
-	if n == 0 {
+	if len(b) == 0 {
 		return
 	}
-	off := wasm.WriteLinearMemory(0, b)
-	wasm3WriteBytes(2, off, n)
-	wasm.ResetLinearMemory(0, off)
+	write1Bytes(2, b)
 }

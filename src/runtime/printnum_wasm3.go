@@ -6,15 +6,12 @@
 
 package runtime
 
-import "runtime/wasm"
-
 // printuint / printint for GOARCH=wasm3 compose the decimal digits
 // in a Stage-D wasmgc stack array (`var buf [21]byte` lowers to
-// `(ref (array i8))`), stage the digit run in the linear-memory
-// bridge arena, and call wasm3WriteBytes with the resulting
-// offset. No package-global scratch buffer needed; the bridge
-// arena owns the temporary storage and the reset rewinds the
-// whole sequence.
+// `(ref (array i8))`), then forward the digit run as a []byte slice
+// to write1Bytes. The slice-arg call boundary works cleanly under
+// the unified single-anyref slice ABI (flatPrimitiveFields TSLICE
+// → one anyref).
 
 const printnumScratchSize = 21 // -9223372036854775808 is 20 chars
 
@@ -30,9 +27,7 @@ func printuint(v uint64) {
 			break
 		}
 	}
-	off := wasm.WriteLinearMemory(0, buf[i:])
-	wasm3WriteBytes(2, off, uint32(printnumScratchSize-1-int(i)))
-	wasm.ResetLinearMemory(0, off)
+	write1Bytes(2, buf[i:])
 }
 
 //go:nosplit
@@ -56,7 +51,5 @@ func printint(v int64) {
 		i--
 		buf[i] = '-'
 	}
-	off := wasm.WriteLinearMemory(0, buf[i:])
-	wasm3WriteBytes(2, off, uint32(printnumScratchSize-1-int(i)))
-	wasm.ResetLinearMemory(0, off)
+	write1Bytes(2, buf[i:])
 }

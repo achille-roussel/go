@@ -254,29 +254,17 @@ func flatPrimitiveFields(t *types.Type) ([]obj.WasmField, bool) {
 			{Type: obj.WasmAnyref},
 		}, true
 	case types.TSLICE:
-		// Stage E phase 2: the slice's data pointer is a wasmgc
-		// `(ref (array T))`. We declare the wasm signature's first
-		// field as the anyref abstract heap-type shortcut rather
-		// than a typed `(ref $arrayT)` for two reasons:
-		//
-		//   - The Go []T type alone doesn't fix T's wasmgc backing
-		//     index at signature-emit time; the index is per-
-		//     function-package and the linker remaps it. Typed
-		//     refs would force every cross-package call site to
-		//     downcast to a known typed-ref form.
-		//
-		//   - Per-value locals for slice ptrs (OpWasm3MakeSlice's
-		//     output, OpArgIntReg of a slice-ptr param) are
-		//     anyref-typed already (per wasm3ValueType). Matching
-		//     the wasm field type to anyref lets the call site
-		//     local.get the per-value local without any cast.
-		//
-		// len and cap stay i64 — they're regular ints with no
-		// reference semantics.
+		// M3.5 follow-up: a Go slice on wasm3 is a single
+		// (ref $go.slice.T) — the SSA call site pushes one anyref
+		// (the struct.new $go.slice ref) per slice arg. The old
+		// 3-field (anyref data, i64 len, i64 cap) lowering predates
+		// the boxing cutover and now mismatches every call site
+		// ("not enough arguments on the stack for call: need 3,
+		// got 1"). One anyref keeps the caller's stack and the
+		// callee's signature lined up; the body cracks len/cap via
+		// struct.get $go.slice.T as needed.
 		return []obj.WasmField{
 			{Type: obj.WasmAnyref},
-			{Type: obj.WasmI64},
-			{Type: obj.WasmI64},
 		}, true
 	case types.TINTER:
 		// Boxed-interface ABI: a Go interface is a single $go.iface

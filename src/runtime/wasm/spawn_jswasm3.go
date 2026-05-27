@@ -9,40 +9,55 @@
 // `wasm.Spawn(fn)` creates a JSPI suspender that runs fn
 // concurrently with the calling activation.
 //
-// Mechanism: Spawn stashes fn in a global slot, then asks the JS
-// host (via the SpawnGoroutine import) to schedule a new
-// promising-wrapped call to the goroutine_run wasm export. JS
+// Mechanism: Spawn enqueues fn onto a FIFO of pending spawns, then
+// asks the JS host (via the SpawnGoroutine import) to schedule a
+// new promising-wrapped call to the goroutine_run wasm export. JS
 // calls `WebAssembly.promising(instance.exports.goroutine_run)(0)`;
-// each such call is its own JSPI suspender stack.
+// each such call is its own JSPI suspender stack. goroutine_run
+// dequeues the next pending fn and invokes it.
 //
-// Phase 4 minimum is one-pending-spawn (single global slot — slot
-// arrays of func() values currently hit wasm3 backend codegen bugs
-// around local.tee with ref-typed elements). The full bag-of-
-// stacks design lands once the codegen for ref-array indexing is
-// fixed.
+// The queue lets a tight `for { go worker() }` loop spawn N
+// goroutines before any of them runs — every spawn lands on the
+// queue, every queueMicrotask'd goroutine_run consumes one.
 
 package wasm
 
-var spawnSlot func()
+// spawnNode is one entry on the pending-spawn FIFO. fn is the
+// goroutine entry point; next chains nodes in spawn order.
+type spawnNode struct {
+	fn   func()
+	next *spawnNode
+}
 
-// Spawn schedules fn to run as a new JSPI-goroutine. fn runs in its
-// own suspender stack the next time the JS event loop runs the
-// queued promising call.
+// Pending spawn FIFO. head is the oldest pending spawn (next to
+// run); tail is the newest (where Spawn appends). nil = empty.
 //
-// Phase 4 minimum constraint: only one un-started Spawn may be
-// pending at a time. The caller must let the previous Spawn's
-// goroutine_run be invoked before Spawning again. In practice this
-// is fine because SpawnGoroutine queueMicrotask's the runner
-// immediately and the only way the caller can interfere is by
-// also Spawning before yielding — don't.
+// Single-threaded: wasm is single-activation under JSPI (a
+// suspender either holds the engine or is suspended on a Promise
+// — never two at once), so Spawn and goroutineRun never race.
+var (
+	spawnHead *spawnNode
+	spawnTail *spawnNode
+)
+
+// Spawn schedules fn to run as a new JSPI-goroutine. fn runs in
+// its own suspender stack the next time the JS event loop runs
+// the queued promising call to goroutine_run.
 //
-// //go:noinline because the spawnSlot=fn assignment must survive
-// inlining — the only reader is goroutineRun via the //go:wasmexport
-// entry, which the inliner doesn't see as a use of spawnSlot.
+// //go:noinline so the queue mutations and the wasmSpawn host call
+// survive inlining as a coherent block — the only reader is
+// goroutineRun via the //go:wasmexport entry, which the inliner
+// doesn't see as a use of the FIFO.
 //
 //go:noinline
 func Spawn(fn func()) {
-	spawnSlot = fn
+	n := &spawnNode{fn: fn}
+	if spawnTail == nil {
+		spawnHead = n
+	} else {
+		spawnTail.next = n
+	}
+	spawnTail = n
 	wasmSpawn(0)
 }
 
@@ -53,20 +68,24 @@ func Spawn(fn func()) {
 //go:noescape
 func wasmSpawn(id int32)
 
-// goroutineRun is the entry point JS calls for each spawn. It picks
-// up the registered entry function and invokes it. Exposed as a
+// goroutineRun is the entry point JS calls for each spawn. It
+// dequeues the next pending fn and invokes it. Exposed as a
 // promising-wrapped export by the JS shim.
 //
-// //go:noinline because the global-slot dance is reordered out of
-// existence otherwise.
+// //go:noinline because the dequeue dance must survive across the
+// JSPI activation boundary as a single logical block.
 //
 //go:wasmexport goroutine_run
 //go:noinline
 func goroutineRun(id int32) {
-	if spawnSlot == nil {
+	if spawnHead == nil {
 		return
 	}
-	fn := spawnSlot
-	spawnSlot = nil
-	fn()
+	n := spawnHead
+	spawnHead = n.next
+	if spawnHead == nil {
+		spawnTail = nil
+	}
+	n.next = nil // drop the reference so the node can be collected.
+	n.fn()
 }

@@ -1148,6 +1148,41 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 				})
 				writeUleb128(w, uint64(p.To.Offset))
 				continue
+
+			case AContNew:
+				// cont.new $typeidx — single typeidx operand. The
+				// per-package wasmgc type index is in p.From.Offset,
+				// R_WASMTYPE-relocated to the module-global typeidx.
+				if p.From.Type != obj.TYPE_CONST {
+					return nil, false
+				}
+				writeOpcode(w, p.As)
+				relocs = append(relocs, obj.Reloc{
+					Type: objabi.R_WASMTYPE,
+					Off:  int32(w.Len()),
+					Siz:  1,
+					Add:  p.From.Offset,
+				})
+				continue
+
+			case AResume:
+				// resume $typeidx <handler-vec>. The wasm3 backend
+				// currently emits an empty handler vec (no tag handlers
+				// installed at this resume site) — p.To.Offset is the
+				// handler count (0 for now). Phase 3 will extend
+				// p.To/p.RestArgs to carry a non-empty vec.
+				if p.From.Type != obj.TYPE_CONST || p.To.Type != obj.TYPE_CONST {
+					return nil, false
+				}
+				writeOpcode(w, p.As)
+				relocs = append(relocs, obj.Reloc{
+					Type: objabi.R_WASMTYPE,
+					Off:  int32(w.Len()),
+					Siz:  1,
+					Add:  p.From.Offset,
+				})
+				writeUleb128(w, uint64(p.To.Offset))
+				continue
 			}
 			// Operand-less wasm stack instructions only. If an
 			// operand-carrying op landed here, it's an unhandled

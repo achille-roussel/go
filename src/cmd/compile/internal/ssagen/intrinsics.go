@@ -315,6 +315,36 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		return nil
 	}, sys.ArchWasm3)
 
+	// M4 Phase 2: runtime.wasm3RunInCont(fn) wraps a bare top-level
+	// function in a WebAssembly 3.0 continuation, resumes it once with
+	// nil as the entry argument, and returns the entry's return value.
+	// The intrinsic accepts only a literal function name (PFUNC) — the
+	// arg must lower to an OpWasm3FuncValue, from which the *obj.LSym is
+	// extracted and threaded as the OpWasm3RunInCont Aux. Phase 3 will
+	// split this into separate runtime.wasm3ContNew / wasm3Resume /
+	// wasm3Suspend intrinsics once the scheduler needs them.
+	add("runtime/wasm", "RunInCont", func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		if len(n.Args) != 1 {
+			s.Fatalf("runtime/wasm.RunInCont: expected 1 arg, got %d", len(n.Args))
+		}
+		nameNode := n.Args[0]
+		for {
+			conv, ok := nameNode.(*ir.ConvExpr)
+			if !ok {
+				break
+			}
+			nameNode = conv.X
+		}
+		nm, ok := nameNode.(*ir.Name)
+		if !ok || nm.Class != ir.PFUNC {
+			s.Fatalf("runtime/wasm.RunInCont: argument must be a bare top-level function name, got %T %v", nameNode, nameNode)
+		}
+		v := s.newValue1A(ssa.OpWasm3RunInCont, types.TypeMem, nm.Linksym(), s.mem())
+		v.AuxInt = wasm3NextAllocID()
+		s.vars[memVar] = v
+		return nil
+	}, sys.ArchWasm3)
+
 	add("runtime", "wasm3MapUsed", wasm3MapFieldGetter(ssa.OpWasm3MapUsed, types.Types[types.TUINTPTR]), sys.ArchWasm3)
 	add("runtime", "wasm3MapCap", wasm3MapFieldGetter(ssa.OpWasm3MapCap, types.Types[types.TUINTPTR]), sys.ArchWasm3)
 	add("runtime", "wasm3MapKeys", wasm3MapFieldGetter(ssa.OpWasm3MapKeys, nil), sys.ArchWasm3)

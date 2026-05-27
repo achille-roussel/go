@@ -830,6 +830,28 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		p := s.Prog(wasm.AGlobalSet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm.Wasm3GlobalIndexLinearBumpPtr)}
 
+	case ssa.OpWasm3RunInCont:
+		// M4 Phase 2: wrap Aux's function in a cont, resume it. The
+		// cont's body type is (func) — no params, no results — so
+		// the emitted sequence is:
+		//   ref.func $sym                ;; (ref $go.goroutine.entry)
+		//   cont.new $go.cont            ;; (ref $go.cont)
+		//   resume $go.cont {}           ;; no result
+		// Mem-typed op — handled in ssaGenValue (not ssaGenValueOnStack)
+		// so the default-mem return path doesn't drop it.
+		sym, ok := v.Aux.(*obj.LSym)
+		if !ok {
+			v.Fatalf("OpWasm3RunInCont: v.Aux is not *obj.LSym: %T", v.Aux)
+		}
+		wasm3EnsureCollector(s.FuncInfo())
+		pf := s.Prog(wasm.ARefFunc)
+		pf.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: sym}
+		pn := s.Prog(wasm.AContNew)
+		pn.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoCont)}
+		pr := s.Prog(wasm.AResume)
+		pr.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoCont)}
+		pr.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0} // empty handler vec
+
 	case ssa.OpWasm3ReadLinearMemory:
 		// M3.5 linear-memory bridge: copy len(dst) bytes from linear
 		// memory at src offset args[1] into the caller's []byte slice

@@ -353,15 +353,17 @@ func PreludeTypes() []Type {
 		},
 	}
 
-	// M4: (func (param anyref) (result anyref)). One shape every goroutine
-	// entry conforms to: the param is the goroutine's closure payload, the
-	// result is a sentinel returned at goexit (ignored by the scheduler).
+	// M4: (func). The cont's body type. V8 (December 2025) does not yet
+	// implement resume against (func (param anyref) (result anyref)) shapes
+	// ("unimplemented code" in GetContinuationResumeDescriptor); restrict
+	// the Phase 2 minimum to a void body and route arg/result through
+	// runtime globals or other side channels once Phase 3 reaches them.
+	// The original anyref-shaped goroutine entry is recovered in Phase 3+
+	// or as engine support catches up.
 	t[TypeGoGoroutineEntry] = Type{
-		Name:    "go.goroutine.entry",
-		Kind:    KindFunc,
-		Super:   -1,
-		Params:  []Storage{AnyRefStorage()},
-		Results: []Storage{AnyRefStorage()},
+		Name:  "go.goroutine.entry",
+		Kind:  KindFunc,
+		Super: -1,
 	}
 
 	// M4: (cont $go.goroutine.entry). Single cont type shared by every

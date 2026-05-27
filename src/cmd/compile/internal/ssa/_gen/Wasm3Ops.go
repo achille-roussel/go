@@ -730,6 +730,18 @@ func init() {
 		// as a *obj.LSym referencing the linker-generated declaration;
 		// the exact aux shape may evolve in Phase 3.
 
+		// RunInCont (M4 Phase 2 minimum): create a continuation that
+		// runs Aux (a bare top-level *obj.LSym function) — the cont
+		// body type is (func), so the emitted sequence is just
+		// `ref.func $sym; cont.new $go.cont; resume $go.cont {}`.
+		// Single composite op so Phase 2 can validate the cont
+		// infrastructure end-to-end without committing to a stable
+		// contNew/contResume split until Phase 3 needs it. argLength:
+		// 0; Aux holds the entry symbol; AuxInt is a CSE disambiguator;
+		// no result (the SSA value is dead after lowering, and Mem
+		// keeps it in the side-effect chain).
+		{name: "RunInCont", argLength: 1, reg: regInfo{}, aux: "Sym", symEffect: "None", typ: "Mem", hasSideEffects: true},
+
 		// ContNew: cont.new $typ. arg0 = entry funcref (anyref). Result
 		// is a fresh continuation ref (anyref). Aux = cont type sym.
 		{name: "ContNew", argLength: 1, reg: gp11, aux: "Sym", symEffect: "None", typ: "BytePtr", hasSideEffects: true},

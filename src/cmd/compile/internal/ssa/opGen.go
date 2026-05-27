@@ -5921,6 +5921,7 @@ const (
 	OpWasm3StringByte
 	OpWasm3SubString
 	OpWasm3StringOffset
+	OpWasm3RunInCont
 	OpWasm3ContNew
 	OpWasm3ContBind
 	OpWasm3Suspend
@@ -89366,6 +89367,14 @@ var opcodeTable = [...]opInfo{
 				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
 			},
 		},
+	},
+	{
+		name:           "RunInCont",
+		auxType:        auxSym,
+		argLen:         1,
+		hasSideEffects: true,
+		symEffect:      SymNone,
+		reg:            regInfo{},
 	},
 	{
 		name:           "ContNew",

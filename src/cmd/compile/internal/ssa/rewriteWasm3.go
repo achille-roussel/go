@@ -3867,6 +3867,50 @@ func rewriteValueWasm3_OpSliceMake(v *Value) bool {
 	v_0 := v.Args[0]
 	b := v.Block
 	typ := &b.Func.Config.Types
+	// match: (SliceMake <t> (LoweredConvert (StringData <_> s) _) len cap)
+	// result: (StructNew <t> {t} (StringData <typ.BytePtr> s) (StringOffset s) len cap)
+	for {
+		t := v.Type
+		if v_0.Op != OpWasm3LoweredConvert {
+			break
+		}
+		v_0_0 := v_0.Args[0]
+		if v_0_0.Op != OpWasm3StringData {
+			break
+		}
+		s := v_0_0.Args[0]
+		len := v_1
+		cap := v_2
+		v.reset(OpWasm3StructNew)
+		v.Type = t
+		v.Aux = typeToAux(t)
+		v0 := b.NewValue0(v.Pos, OpWasm3StringData, typ.BytePtr)
+		v0.AddArg(s)
+		v1 := b.NewValue0(v.Pos, OpWasm3StringOffset, typ.Int64)
+		v1.AddArg(s)
+		v.AddArg4(v0, v1, len, cap)
+		return true
+	}
+	// match: (SliceMake <t> (StringData <_> s) len cap)
+	// result: (StructNew <t> {t} (StringData <typ.BytePtr> s) (StringOffset s) len cap)
+	for {
+		t := v.Type
+		if v_0.Op != OpWasm3StringData {
+			break
+		}
+		s := v_0.Args[0]
+		len := v_1
+		cap := v_2
+		v.reset(OpWasm3StructNew)
+		v.Type = t
+		v.Aux = typeToAux(t)
+		v0 := b.NewValue0(v.Pos, OpWasm3StringData, typ.BytePtr)
+		v0.AddArg(s)
+		v1 := b.NewValue0(v.Pos, OpWasm3StringOffset, typ.Int64)
+		v1.AddArg(s)
+		v.AddArg4(v0, v1, len, cap)
+		return true
+	}
 	// match: (SliceMake <t> ptr len cap)
 	// result: (StructNew <t> {t} ptr (I64Const <typ.Int64> [0]) len cap)
 	for {

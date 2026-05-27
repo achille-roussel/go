@@ -715,6 +715,16 @@
 // and full slices; SubSlice carries its own offset). The dec.rules
 // folds (SlicePtr(SliceMake)=>ptr etc.) are gated off for wasm3 so
 // these survive decomposition and reach this lowering.
+// `unsafe.Slice(unsafe.StringData(s), len(s))` aliases a string's
+// bytes as a []byte. Default SliceMake lowering builds the slice
+// with off=0, but a wasm3 string's first-byte pointer is logically
+// s.bytes[s.off] — losing s.off here means substrings (s[i:j])
+// alias the WRONG bytes. Rewrite this pattern to use s's actual
+// offset. unsafe.StringData / unsafe.Slice insert a
+// LoweredConvert (no-op type cast through unsafe.Pointer) between
+// the StringData and SliceMake — look through it.
+(SliceMake <t> (LoweredConvert (StringData <_> s) _) len cap) => (StructNew <t> {t} (StringData <typ.BytePtr> s) (StringOffset s) len cap)
+(SliceMake <t> (StringData <_> s) len cap) => (StructNew <t> {t} (StringData <typ.BytePtr> s) (StringOffset s) len cap)
 (SliceMake <t> ptr len cap) => (StructNew <t> {t} ptr (I64Const <typ.Int64> [0]) len cap)
 (SlicePtr <t> s) => (SliceData <t> {s.Type} s)
 (SlicePtrUnchecked <t> s) => (SliceData <t> {s.Type} s)

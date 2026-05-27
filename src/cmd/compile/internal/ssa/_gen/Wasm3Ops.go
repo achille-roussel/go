@@ -708,6 +708,13 @@ func init() {
 		// of StringData. arg0=original string ref (anyref), arg1=i (i64),
 		// arg2=j (i64). Result is a new $go.string ref (anyref).
 		{name: "SubString", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp, gp}, outputs: []regMask{gp}}, typ: "String"},
+
+		// StringOffset: read the offset field (struct.get $go.string s 1)
+		// of a wasm3 boxed string. Used by SliceMake-of-StringData
+		// rewrite: `unsafe.Slice(unsafe.StringData(s), len(s))` should
+		// produce a slice that aliases s's BYTES from s.off, not 0.
+		// arg0=string ref. Result is i64 (the offset field).
+		{name: "StringOffset", argLength: 1, reg: gp11, typ: "Int64"},
 	}
 
 	archs = append(archs, arch{

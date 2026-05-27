@@ -1633,6 +1633,18 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// widen byte (i32) to i64 to match the per-value local
 		s.Prog(wasm.AI64ExtendI32U)
 
+	case ssa.OpWasm3StringOffset:
+		// struct.get $go.string s 1 — i64 offset field. Used by the
+		// SliceMake(StringData)+StringOffset rule so a slice aliasing
+		// a substring's bytes uses the right starting offset.
+		wasm3EnsureCollector(s.FuncInfo())
+		getValue64(s, v.Args[0])
+		pCast := s.Prog(wasm.ARefCastNull)
+		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoString)}
+		p := s.Prog(wasm.AStructGet)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoString)}
+		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
+
 	case ssa.OpWasm3StringData, ssa.OpWasm3StringLength:
 		// Boxed string component reads: struct.get $go.string at the fixed
 		// field index (0=backing $go.bytes ref, 2=length i64). $go.string

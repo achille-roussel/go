@@ -5920,6 +5920,7 @@ const (
 	OpWasm3ResetLinearMemory
 	OpWasm3StringByte
 	OpWasm3SubString
+	OpWasm3StringOffset
 
 	OpLast
 	OpAdd8
@@ -89342,6 +89343,18 @@ var opcodeTable = [...]opInfo{
 				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
 				{1, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
 				{2, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+			},
+			outputs: []outputInfo{
+				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:   "StringOffset",
+		argLen: 1,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, regMask{v1: 281474976776191, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 SP
 			},
 			outputs: []outputInfo{
 				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15

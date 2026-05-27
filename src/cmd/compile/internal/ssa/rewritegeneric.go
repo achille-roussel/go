@@ -34001,7 +34001,10 @@ func rewriteValuegeneric_OpStringLen(v *Value) bool {
 }
 func rewriteValuegeneric_OpStringPtr(v *Value) bool {
 	v_0 := v.Args[0]
+	b := v.Block
+	config := b.Func.Config
 	// match: (StringPtr (StringMake (Addr <t> {s} base) _))
+	// cond: config.arch != "wasm3"
 	// result: (Addr <t> {s} base)
 	for {
 		if v_0.Op != OpStringMake {
@@ -34014,6 +34017,9 @@ func rewriteValuegeneric_OpStringPtr(v *Value) bool {
 		t := v_0_0.Type
 		s := auxToSym(v_0_0.Aux)
 		base := v_0_0.Args[0]
+		if !(config.arch != "wasm3") {
+			break
+		}
 		v.reset(OpAddr)
 		v.Type = t
 		v.Aux = symToAux(s)

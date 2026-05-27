@@ -151,6 +151,16 @@ func InitConfig() {
 	ir.Syms.Asanwrite = typecheck.LookupRuntimeFunc("asanwrite")
 	ir.Syms.Newobject = typecheck.LookupRuntimeFunc("newobject")
 	ir.Syms.Newproc = typecheck.LookupRuntimeFunc("newproc")
+	if buildcfg.GOOS == "js" && buildcfg.GOARCH == "wasm3" {
+		// js/wasm3 lacks a scheduler — `go fn()` dispatches to
+		// runtime.newprocJSWasm3(fn func()) which forwards to
+		// runtime/wasm.Spawn (a JSPI-suspender bridge). The signature
+		// differs from newproc's (fn func()) vs (fn *funcval) — the
+		// wasm3 backend can't lower the unsafe *funcval→func() cast
+		// the standard runtime does, so the dispatch entry takes the
+		// closure ref directly. See callGo path below.
+		ir.Syms.NewprocJSWasm3 = typecheck.LookupRuntimeFunc("newprocJSWasm3")
+	}
 	ir.Syms.PanicBounds = typecheck.LookupRuntimeFunc("panicBounds")
 	ir.Syms.PanicExtend = typecheck.LookupRuntimeFunc("panicExtend")
 	ir.Syms.Panicdivide = typecheck.LookupRuntimeFunc("panicdivide")
@@ -5465,7 +5475,16 @@ func (s *state) call(n *ir.CallExpr, k callKind, returnResultAddr bool, deferExt
 			aux := ssa.StaticAuxCall(sym, s.f.ABIDefault.ABIAnalyzeTypes(ACArgs, ACResults)) // TODO paramResultInfo for Deferproc(at)
 			call = s.newValue0A(ssa.OpStaticLECall, aux.LateExpansionResultType(), aux)
 		case k == callGo:
-			aux := ssa.StaticAuxCall(ir.Syms.Newproc, s.f.ABIDefault.ABIAnalyzeTypes(ACArgs, ACResults))
+			sym := ir.Syms.Newproc
+			if ir.Syms.NewprocJSWasm3 != nil {
+				// js/wasm3: route `go fn()` through the JSPI bridge,
+				// not the standard newproc(*funcval). The closure SSA
+				// value was already built as a func() ref by the
+				// callee-arg-packing block above; newprocJSWasm3
+				// accepts that ref directly.
+				sym = ir.Syms.NewprocJSWasm3
+			}
+			aux := ssa.StaticAuxCall(sym, s.f.ABIDefault.ABIAnalyzeTypes(ACArgs, ACResults))
 			call = s.newValue0A(ssa.OpStaticLECall, aux.LateExpansionResultType(), aux) // TODO paramResultInfo for Newproc
 		case closure != nil:
 			// Stage G: on wasm3 a closure that came from a bare

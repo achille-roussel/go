@@ -5323,7 +5323,9 @@ func malg(stacksize int32) *g {
 
 // Create a new g running fn.
 // Put it on the queue of g's waiting to run.
-// The compiler turns a go statement into a call to this.
+// The compiler turns a go statement into a call to this — except on
+// js/wasm3, where the compiler routes OGO to runtime.newprocJSWasm3
+// directly (see cmd/compile/internal/ssagen/ssa.go callGo path).
 func newproc(fn *funcval) {
 	gp := getg()
 	pc := sys.GetCallerPC()

@@ -48,6 +48,7 @@ type symsStruct struct {
 	Msanmove                  *obj.LSym
 	Newobject                 *obj.LSym
 	Newproc                   *obj.LSym
+	NewprocJSWasm3            *obj.LSym // GOOS=js GOARCH=wasm3: runtime.newprocJSWasm3(fn func())
 	PanicBounds               *obj.LSym
 	PanicExtend               *obj.LSym
 	Panicdivide               *obj.LSym

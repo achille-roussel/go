@@ -1,142 +1,115 @@
-# GOARCH=wasm3 GOOS=js — `go fn()` keyword status
+# GOARCH=wasm3 GOOS=js — `go fn()` keyword
 
-## Where this stands
+## Status: working
 
-`runtime/wasm.Spawn(fn)` works end-to-end: a Go program that calls
-`wasm.Spawn(fn)` gets a real concurrent goroutine on its own JSPI
-suspender stack, validated on Node 25.9 with
-`--experimental-wasm-stack-switching` (see
-`doc/wasm3-js-m4-complete.md` for the canary).
+The literal Go-language `go fn()` keyword runs end-to-end on js/wasm3.
+Each `go` statement starts a new JSPI suspender stack via
+`runtime/wasm.Spawn`.
 
-**The literal Go-language `go fn()` keyword does NOT yet route
-through `wasm.Spawn`** — it goes through `runtime.newproc` as on
-every other arch, which hits the standard scheduler the wasm3
-runtime doesn't have.
+Verified shapes:
 
-## What I tried, and what blocks
+  - `go bareFunc()`            → ✓ (`log 42`)
+  - `go func() { ... }()`      → ✓ (`log 42`)
+  - `go func() { ... }()` with captured local → ✓ (`log 99`)
 
-The natural route is to compile-time-gate `runtime.newproc` so
-js/wasm3 dispatches to a `newprocJSPI` function that forwards to
-`runtime/wasm.Spawn`:
+## Dispatch path
+
+The compiler routes `OGO` to a wasm3-specific runtime symbol instead
+of the standard `runtime.newproc`:
+
+```
+go fn()
+   ↓  cmd/compile/internal/ssagen/ssa.go callGo path
+runtime.newprocJSWasm3(fn func())
+   ↓  src/runtime/spawn_jswasm3.go
+runtime/wasm.Spawn(fn)
+   ↓  src/runtime/wasm/spawn_jswasm3.go
+spawnSlot = fn ; wasmSpawn(0)  // JS host: queueMicrotask(promising_goroutine_run(0))
+   ↓  JS event loop
+WebAssembly.promising(instance.exports.goroutine_run)(0)
+   ↓  runtime/wasm.goroutineRun
+fn()                                   // runs on its own JSPI suspender stack
+```
+
+The signature change (`fn func()` instead of `fn *funcval`) lets the
+closure SSA value — already typed `(ref $closureCtx)` by the wasm3
+backend — flow straight into the spawn machinery without going
+through the `*(*func())(unsafe.Pointer(&fn))` reinterpret-cast that
+the standard runtime uses but the wasm3 backend can't lower (typed-
+ref locals aren't address-takeable).
+
+## Enabler: R_WASMHEAPTYPE
+
+The first attempt to wire newproc → wasm.Spawn produced V8
+instantiation failures: `Unknown heap type -64` in
+`runtime_wasm.goroutineRun`. Diagnosis:
+
+  - `ref.cast` / `ref.test` / `ref.null` take a `heaptype`
+    immediate, which the wasm GC spec encodes as **s33 LEB128**.
+  - The wasm3 linker was writing typeidx immediates as **uleb128**
+    via `R_WASMTYPE` in every slot, including heap-type positions.
+  - For typeidx ≥ 64, uleb and sleb diverge: typeidx 64 is uleb
+    `0x40` (one byte) but sleb33 `0xC0 0x00` (two bytes). A wasm
+    validator reading the position as a sleb33 sees `0x40` as -64,
+    the void block-type byte → "invalid heap type".
+
+The fix is a new relocation type, `objabi.R_WASMHEAPTYPE`, with a
+parallel handler in the linker that calls `writeSleb128` instead of
+`writeUleb128`. The four ops that emit heap-type immediates —
+`ARefCast`, `ARefCastNull`, `ARefTest`, `ARefNull`, and the
+`(ref null T)` block-result form for `ABlock`/`ALoop` — switched to
+the new relocation. Other ops (`AStructGet`, `AArrayGet`,
+`ACallIndirect`, ...) keep `R_WASMTYPE` since their spec position is
+typeidx (uleb).
+
+## Known limitation: single-slot Spawn
+
+`wasm.Spawn` uses one global slot (`spawnSlot`); a tight loop of N
+goroutines spawns N times before any goroutine_run runs, and only
+the last surviving slot value executes. From a Phase 4 test:
 
 ```go
-// proc.go
-func newproc(fn *funcval) {
-    if goos.IsJs == 1 && goarch.IsWasm3 == 1 {
-        newprocJSPI(fn)
-        return
-    }
-    // ... standard scheduler ...
-}
-
-// runtime/spawn_jswasm3.go
-func newprocJSPI(fn *funcval) {
-    wasm.Spawn(*(*func())(unsafe.Pointer(&fn)))
+for i := int32(10); i < 13; i++ {
+    v := i
+    go func() { logInt(v) }()
 }
 ```
 
-This compiles cleanly. But the resulting binary fails V8 instantiation:
+prints `log 12` only. The other two spawns are lost.
 
-```
-CompileError: Compiling function #11:"runtime_wasm.goroutineRun"
-              failed: Unknown heap type -64 @+1773
-```
+This is the documented Phase 4 floor — the bag-of-stacks rewrite is
+gated on wasm3 codegen for `[N]func()` arrays and `map[K]func()`
+(see `runtime/wasm/spawn_jswasm3.go`'s doc comment). It's orthogonal
+to the `go` keyword wiring: as soon as Spawn is multi-slot, `go fn()`
+inherits it for free.
 
-`wasm-tools print` confirms a malformed byte in `goroutineRun`'s
-body — specifically a `0x40` (s33-encoded as `-64`) in a position
-where the wasm decoder expects a typed heap type. The byte is
-emitted by the wasm3 backend when `wasm.Spawn` gets inlined into
-`newprocJSPI` and the inliner's interaction with
-`goroutineRun`'s `//go:wasmexport` and the func-typed
-`spawnSlot` global produces invalid codegen for the slot store
-path.
-
-Diagnosis details:
-
-  - The exact same `goroutineRun` body compiles cleanly when
-    `wasm.Spawn(fn)` is called only from user code (the working
-    `m4_spawn.wasm` fixture). Adding a second caller from
-    `runtime.newprocJSPI` is what triggers the bug.
-  - All six shapes I tried produced the same `Unknown heap type
-    -64` error:
-    1. Direct `wasm.Spawn(*(*func())(unsafe.Pointer(&fn)))` import.
-    2. `unsafe.Pointer`-typed slot stored from runtime, read as
-       func() in goroutineRun via reinterpret.
-    3. `*funcval`-typed slot stored from runtime, read via
-       reinterpret in a separate helper.
-    4. `//go:linkname` bridge from runtime to runtime/wasm slot
-       global.
-    5. `//go:linkname` bridge from runtime to runtime/wasm.Spawn
-       (typed as `*funcval` on the runtime side, `func()` on
-       runtime/wasm side — same wasm-level anyref).
-    6. `//go:nowritebarrier` + `//go:noinline` on the
-       newprocJSPI / Spawn / goroutineRun trio.
-
-  - The bug is not the cast or the linkname — it's specifically
-    the wasm3 SSA/codegen pass that emits goroutineRun's body
-    when an additional caller of wasm.Spawn exists. Suspect: a
-    type-analysis pass that treats spawnSlot's element type
-    differently in the multi-caller case and emits a malformed
-    typed-ref opcode.
-
-## What unblocks `go fn()`
-
-Fixing the wasm3 backend codegen for the malformed-heap-type
-emission. Specifically:
-
-1. Reproduce minimally: a 30-line Go program with a func()
-   global, a //go:wasmexport reader, and two writers — one in
-   the same package, one cross-package via a runtime intercept
-   path. (The `newprocJSPI`-as-intercept arrangement triggers it
-   reliably.)
-2. wasm-tools dump the emitted module; locate the
-   `Unknown heap type -64` byte (a `0x40` in a typed-ref slot).
-3. Trace it back through the wasm3 obj-backend encoder to find
-   the SSA op that emits it without the correct preceding
-   reference type. Suspect: `OpWasm3LoweredCall` /
-   `OpWasm3FuncValue` / one of the closure-related ops with an
-   off-by-one in the type-immediate sequence.
-4. Once that's fixed, the `newprocJSPI` intercept in proc.go
-   should produce a working `go fn()` keyword path without
-   further integration work — the runtime side is already
-   sketched out (see this doc's "What I tried" section).
-
-## Workaround for now
-
-Use `runtime/wasm.Spawn(fn)` explicitly instead of `go fn()`:
+## Canary
 
 ```go
-import "runtime/wasm"
+package main
 
-wasm.Spawn(func() {
-    // goroutine body — runs on its own JSPI suspender stack.
-})
+import _ "runtime/wasm"
+
+//go:wasmimport gojs runtime.LogInt
+func logInt(n int32)
+
+func main() {
+    logInt(0)
+    go func() { logInt(42) }()
+    logInt(1)
+}
 ```
 
-Same concurrency model, same JSPI semantics, just a different
-spelling. The `m4_spawn.wasm` and `m4_chan.wasm` fixtures both use
-this path and run end-to-end.
+```
+$ GOOS=js GOARCH=wasm3 go build -o main.wasm .
+$ node --experimental-wasm-stack-switching \
+       --experimental-wasm-wasmfx \
+       misc/wasm/wasm_exec_wasm3.js main.wasm
+log 0
+log 1
+log 42
+```
 
-## Why the wasm3 backend bug isn't trivial to fix in-session
-
-The malformed byte is downstream of an SSA pass that's making a
-type-analysis decision based on the call-graph shape. It's not a
-single missing case statement — it's an interaction between the
-inliner, the global-store codegen, the //go:wasmexport wrapper
-emission, and the wasm3 register/local-type planner. Each of
-those works in isolation; the combination breaks.
-
-A real fix needs:
-
-  1. A focused minimal reproducer (the rough shape is in
-     `runtime/spawn_jswasm3.go` reverts above + `runtime/wasm/
-     spawn_jswasm3.go`'s goroutineRun reader).
-  2. SSA-html dumps of goroutineRun in both the working
-     (single-caller) and failing (multi-caller) cases.
-  3. Comparing the late-phase SSA to find where the type
-     diverges.
-  4. Identifying the pass that emits the bad opcode.
-  5. Fixing in `cmd/compile/internal/wasm3/ssa.go` or
-     `cmd/internal/obj/wasm/wasm3obj.go`.
-
-This is several hours of focused wasm3 backend work.
+The `log 1` printing before `log 42` shows the goroutine ran on a
+separate JSPI suspender — it was queued via `queueMicrotask` after
+main yielded, then executed.

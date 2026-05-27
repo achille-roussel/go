@@ -921,8 +921,10 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 					// (wasmtime 30 / wasmparser 1.223) — see the
 					// typesec.go heaptype helper for the full rationale.
 					w.WriteByte(0x63) // ref null prefix
+					// The typeidx after 0x63 is in heap-type position,
+					// so R_WASMHEAPTYPE (sleb33), not R_WASMTYPE.
 					relocs = append(relocs, obj.Reloc{
-						Type: objabi.R_WASMTYPE,
+						Type: objabi.R_WASMHEAPTYPE,
 						Off:  int32(w.Len()),
 						Siz:  1,
 						Add:  p.From.Offset,
@@ -1053,12 +1055,18 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 				// wasmparser 1.223. The wasmgc subtyping rule lets a
 				// (ref (exact $T)) produced by struct.new / array.new
 				// be downcast implicitly to (ref $T).
+				//
+				// Use R_WASMHEAPTYPE — the heap-type position is s33,
+				// not uleb. For typeidx >= 64, uleb would write the
+				// single byte 0x40 which a sleb-reading validator
+				// decodes as -64 (the void block type), producing
+				// "invalid heap type" at instantiation.
 				if p.From.Type != obj.TYPE_CONST {
 					return nil, false
 				}
 				writeOpcode(w, p.As)
 				relocs = append(relocs, obj.Reloc{
-					Type: objabi.R_WASMTYPE,
+					Type: objabi.R_WASMHEAPTYPE,
 					Off:  int32(w.Len()),
 					Siz:  1,
 					Add:  p.From.Offset,
@@ -1069,13 +1077,14 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 				// ref.null heaptype — single byte heap-type immediate
 				// for abstract heap types, or a typed (typeidx) form
 				// for typed refs. No exact-prefix; see typesec.go's
-				// heaptype helper for rationale.
+				// heaptype helper for rationale. Heap-type position is
+				// s33, so use R_WASMHEAPTYPE.
 				if p.From.Type != obj.TYPE_CONST {
 					return nil, false
 				}
 				writeOpcode(w, p.As)
 				relocs = append(relocs, obj.Reloc{
-					Type: objabi.R_WASMTYPE,
+					Type: objabi.R_WASMHEAPTYPE,
 					Off:  int32(w.Len()),
 					Siz:  1,
 					Add:  p.From.Offset,

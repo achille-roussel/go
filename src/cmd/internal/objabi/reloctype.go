@@ -480,6 +480,18 @@ const (
 	// global.set carrying this reloc. See doc/wasm3-pointer-cutover.
 	R_WASMGLOBAL
 
+	// R_WASMHEAPTYPE (GOARCH=wasm3 only) is like R_WASMTYPE but the
+	// resolved type index is written as signed LEB128 (s33), not
+	// unsigned LEB128. Used for heap-type immediates of ref.cast,
+	// ref.test, and ref.null, where the wasm spec encodes typeidx as
+	// s33 to share the encoding with abstract heap types (anyref =
+	// 0x6E, etc.). For typeidx >= 64, uleb and sleb diverge: uleb
+	// writes a single 0x40 byte (which a sleb-reading validator
+	// decodes as -64, the void block type — i.e. the type-section
+	// blocktype byte). Using sleb for heap-type contexts and uleb for
+	// struct.get / array.* keeps both encoders spec-correct.
+	R_WASMHEAPTYPE
+
 	// R_WASMDESCRIPTOR (GOARCH=wasm3 only) resolves to the wasm global
 	// index of a type descriptor's opaque WasmGC identity ref. Sym names
 	// the descriptor symbol. The linker allocates one immutable

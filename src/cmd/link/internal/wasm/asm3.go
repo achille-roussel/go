@@ -723,14 +723,30 @@ func writeWasm3FuncBody(ctxt *ld.Link, ldr *loader.Loader, fn loader.Sym, wfn *b
 			// The relocation's Add carries the per-package type
 			// index; remap to the module-global index using the
 			// function's merged-table remap. Emitted as uleb128 (not
-			// sleb128) — wasm type indices are unsigned in the binary
-			// format.
+			// sleb128) — wasm type indices in struct.get / array.* /
+			// call_indirect positions are unsigned in the binary
+			// format. For heap-type positions (ref.cast / ref.test /
+			// ref.null), use R_WASMHEAPTYPE instead.
 			pkgIx := int(r.Add())
 			if pkgIx < 0 || pkgIx >= len(remap) {
 				ldr.Errorf(fn, "R_WASMTYPE per-package index %d out of range for remap len %d", pkgIx, len(remap))
 				continue
 			}
 			writeUleb128(wfn, uint64(remap[pkgIx]))
+		case objabi.R_WASMHEAPTYPE:
+			// Heap-type immediate (ref.cast / ref.test / ref.null):
+			// signed LEB128 (s33). The spec shares the encoding with
+			// abstract heap types (anyref = -18 = 0x6E, etc.), so
+			// typeidx must always go through sleb. For typeidx >= 64,
+			// uleb and sleb diverge: uleb's single byte 0x40 would be
+			// decoded by a sleb-reading validator as -64 (void block
+			// type), the "invalid heap type" instantiation error.
+			pkgIx := int(r.Add())
+			if pkgIx < 0 || pkgIx >= len(remap) {
+				ldr.Errorf(fn, "R_WASMHEAPTYPE per-package index %d out of range for remap len %d", pkgIx, len(remap))
+				continue
+			}
+			writeSleb128(wfn, int64(remap[pkgIx]))
 		case objabi.R_WASMGLOBAL:
 			// Boxed package-level variable: r.Sym names the variable.
 			// Allocate (or reuse) one wasm anyref ref-global for it and

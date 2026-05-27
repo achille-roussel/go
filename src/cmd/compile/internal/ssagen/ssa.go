@@ -3967,6 +3967,26 @@ func (s *state) exprCheckPtr(n ir.Node, checkPtrOK bool) *ssa.Value {
 		if n.High != nil {
 			j = s.expr(n.High)
 		}
+		// wasm3: a string is a single (ref $go.string) — ptr arithmetic
+		// on its bytes ref doesn't lower (would emit `anyref + i64`).
+		// Bypass the generic slice()+StringMake path and build the
+		// substring directly: SubString shares the original $go.bytes
+		// backing and emits struct.new $go.string {bytes, orig.off+i,
+		// j-i}. Strings are immutable, so backing-sharing is safe.
+		if buildcfg.GOARCH == "wasm3" {
+			zero := s.constInt(types.Types[types.TINT], 0)
+			length := s.newValue1(ssa.OpStringLen, types.Types[types.TINT], v)
+			if i == nil {
+				i = zero
+			}
+			if j == nil {
+				j = length
+			}
+			// Bounds check: 0 <= i <= j <= length
+			j = s.boundsCheck(j, length, ssa.BoundsSliceAlen, n.Bounded())
+			i = s.boundsCheck(i, j, ssa.BoundsSliceB, n.Bounded())
+			return s.newValue3(ssa.OpWasm3SubString, n.Type(), v, i, j)
+		}
 		p, l, _ := s.slice(v, i, j, nil, n.Bounded())
 		return s.newValue2(ssa.OpStringMake, n.Type(), p, l)
 
@@ -6301,10 +6321,14 @@ func (s *state) slice(v, i, j, k *ssa.Value, bounded bool) (p, l, c *ssa.Value) 
 	// — writes to the sub-slice do not propagate. See
 	// doc/wasm3-m3-notes.md "Stage E phase 3".
 	//
-	// String sub-slicing (t.IsString()) still goes through the
-	// standard OpAddPtr path; strings are linear-memory-pointer-
-	// backed in the current wasm3 wedge and don't need this. The
-	// (ptr-to-array) case (t.IsPtr) only fires for `s := a[i:]` on
+	// String sub-slicing (t.IsString()) on wasm3 is handled at the
+	// OSLICESTR call site (see s.expr case ir.OSLICESTR), which
+	// emits OpWasm3SubString directly and bypasses the StringMake
+	// wrap below. Strings are immutable so the right answer is to
+	// SHARE the original backing and adjust the offset field
+	// (struct.new $go.string {orig.bytes, orig.off+i, rlen}); no copy.
+	//
+	// The (ptr-to-array) case (t.IsPtr) only fires for `s := a[i:]` on
 	// a Go array; arrays in wasm3 lower to (ref (array T)) too, and
 	// pointer arithmetic on them has the same problem — handled by
 	// the same OpWasm3SubSlice op (the input ptr is anyref, output

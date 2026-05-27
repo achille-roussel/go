@@ -1547,6 +1547,50 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceTypeIdx}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
 
+	case ssa.OpWasm3SubString:
+		// `s[i:j]` on a wasm3 string: emit struct.new $go.string
+		// {bytes = s.bytes, off = s.off + i, len = j - i}. Strings
+		// are immutable so the shared bytes backing is safe.
+		// arg0 = original string ref, arg1 = i (i64), arg2 = j (i64).
+		// Result on stack: the new $go.string ref (anyref).
+		// Both args are cached in locals because getValue64 on an
+		// OnWasmStack value isn't replayable.
+		wasm3EnsureCollector(s.FuncInfo())
+		stringIdx := int64(wasmgc.TypeGoString)
+		sLocal := wasm3AllocAnyrefTempLocal(s)
+		iLocal := wasm3AllocTempLocal(s, types.Types[types.TINT64])
+		getValue64(s, v.Args[0])
+		localSetIdx(s, sLocal)
+		getValue64(s, v.Args[1])
+		localSetIdx(s, iLocal)
+
+		// field 0: bytes = struct.get $go.string s 0 (ref.cast first)
+		localGetIdx(s, sLocal)
+		pCB := s.Prog(wasm.ARefCastNull)
+		pCB.From = obj.Addr{Type: obj.TYPE_CONST, Offset: stringIdx}
+		pGB := s.Prog(wasm.AStructGet)
+		pGB.From = obj.Addr{Type: obj.TYPE_CONST, Offset: stringIdx}
+		pGB.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+
+		// field 1: new_off = struct.get $go.string s 1 + i
+		localGetIdx(s, sLocal)
+		pCO := s.Prog(wasm.ARefCastNull)
+		pCO.From = obj.Addr{Type: obj.TYPE_CONST, Offset: stringIdx}
+		pGO := s.Prog(wasm.AStructGet)
+		pGO.From = obj.Addr{Type: obj.TYPE_CONST, Offset: stringIdx}
+		pGO.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
+		localGetIdx(s, iLocal)
+		s.Prog(wasm.AI64Add)
+
+		// field 2: new_len = j - i
+		getValue64(s, v.Args[2])
+		localGetIdx(s, iLocal)
+		s.Prog(wasm.AI64Sub)
+
+		// struct.new $go.string
+		pNew := s.Prog(wasm.AStructNew)
+		pNew.From = obj.Addr{Type: obj.TYPE_CONST, Offset: stringIdx}
+
 	case ssa.OpWasm3StringByte:
 		// `s[i]` on a wasm3 string: emit array.get_u $go.bytes on the
 		// string's bytes ref at index (s.off + i). arg0 = string ref,

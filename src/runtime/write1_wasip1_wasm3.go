@@ -60,11 +60,9 @@ func wasm3WriteBytes(fd uintptr, bufOff, n uint32) int32 {
 	// read it back (no caller currently inspects the count).
 	var nwBytes [4]byte
 	nwOff := wasm.WriteLinearMemory(0, nwBytes[:])
-	// Swallow the rc — the runtime.throw path is currently not
-	// validation-clean on wasm3 (an internal placer issue surfaces
-	// the i64.shr_s strength-reduction in printuint when throw is
-	// reachable). Out-of-band print failure is acceptable for M3.5;
-	// re-enable the throw check once the placer issue is fixed.
-	fd_write(int32(fd), iovOff, 1, nwOff)
+	rc := fd_write(int32(fd), iovOff, 1, nwOff)
+	if rc != 0 {
+		throw("fd_write failed")
+	}
 	return int32(n)
 }

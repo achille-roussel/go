@@ -697,6 +697,17 @@ func init() {
 		// arg0=string ref (anyref), arg1=index (i64).
 		// Result is byte (i64-extended for the per-value local).
 		{name: "StringByte", argLength: 2, reg: regInfo{inputs: []regMask{gp, gp}, outputs: []regMask{gp}}, typ: "UInt8"},
+
+		// SubString: `s[i:j]` on a wasm3 string. The bytes backing is
+		// shared with the original (strings are immutable, so the
+		// shared backing is safe); the new $go.string has fields
+		// {bytes = s.bytes, off = s.off + i, len = j - i}. Emitted
+		// directly by ssagen for ir.OSLICESTR on wasm3, bypassing the
+		// generic `slice() + StringMake` path that would do
+		// AddPtr(StringPtr, i) — broken on the (ref $go.bytes) result
+		// of StringData. arg0=original string ref (anyref), arg1=i (i64),
+		// arg2=j (i64). Result is a new $go.string ref (anyref).
+		{name: "SubString", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp, gp}, outputs: []regMask{gp}}, typ: "String"},
 	}
 
 	archs = append(archs, arch{

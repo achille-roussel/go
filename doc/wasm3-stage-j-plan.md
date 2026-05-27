@@ -1,5 +1,22 @@
 # wasm3 Stage J — wasmgc memory model end to end
 
+> **SUPERSEDED by M3.5 (`.claude/plans/retire-go-runtime-wat-static-link.md`).**
+> The Stage J plan calls for a dynamically-linked `go_runtime.wat` module
+> hosting the three linear-memory bridge primitives. M3.5 took a
+> different fork: the three primitives became compiler intrinsics that
+> emit inline byte-copy loops over wasm `global 0` as the bump pointer,
+> with `memory.grow` for on-demand growth. The `go_runtime.wat` module
+> and its `//go:wasmimport` bridges (`stringEqual` / `strcmp` /
+> `stringHash` / `stringConcat2`) are retired; equivalents live in plain
+> Go using `s[i]` (which lowers via `OpWasm3StringByte` to
+> `array.get_u $go.bytes` directly). Single-binary output, no dynamic
+> linking, no host-side wat plumbing.
+>
+> This document is kept for the design rationale on the WasmGC-only
+> memory model and the bridge primitives' shape (still valid), but the
+> mechanism section below describing wat-module hosting is obsolete.
+
+
 ## Goal
 
 Replace the residual linear-memory model in the wasm3 runtime with a

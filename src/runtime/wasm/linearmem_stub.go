@@ -16,7 +16,7 @@ func WriteLinearMemory(mem int32, data []byte) uint32 {
 	panic("runtime/wasm: WriteLinearMemory is only supported on GOARCH=wasm3")
 }
 
-func ReadLinearMemory(mem int32, off, length uint32) []byte {
+func ReadLinearMemory(mem int32, data []byte, off uint32) {
 	panic("runtime/wasm: ReadLinearMemory is only supported on GOARCH=wasm3")
 }
 

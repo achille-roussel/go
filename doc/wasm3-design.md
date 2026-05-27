@@ -401,8 +401,15 @@ pass; type-section emission.
    cleanup API are either dropped (restricted subset) or host-backed via
    `FinalizationRegistry` (js host only). Decision pending.
 5. **`string`/`[]byte`/slice/interface representations** — *Resolved (§6.3).*
-6. **Linear memory: zero, or scratch region?** — Decides whether *any* linear-memory
-   allocator survives. Most consequential remaining item.
+6. **Linear memory: zero, or scratch region?** — *Resolved (M3.5):* a small bridge
+   arena, grown on demand via `memory.grow`, with the bump pointer in wasm `global 0`.
+   The arena is the only linear-memory content after M3.5; programs that never touch
+   linear memory have zero pages allocated. Accessed exclusively through three
+   compiler-intrinsic primitives (`runtime/wasm.WriteLinearMemory` /
+   `ReadLinearMemory` / `ResetLinearMemory`); every other runtime helper that
+   previously used linear memory (write1, printstring, printnum, gwrite, the
+   `string`↔`[]byte` bridge) is now plain Go over the boxed prelude types.
+   See `.claude/plans/retire-go-runtime-wat-static-link.md`.
 
 ---
 

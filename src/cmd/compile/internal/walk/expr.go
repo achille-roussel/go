@@ -919,16 +919,22 @@ func walkIndexMap(n *ir.IndexExpr, init *ir.Nodes) ir.Node {
 	map_ := n.X
 	t := map_.Type()
 	if buildcfg.GOARCH == "wasm3" {
-		// M3 per-type maps (wasm3): m[k] dispatches to the per-(K,V)
-		// generated access or assign function. Both return *V; the
-		// caller dereferences here to get the value (read path) or
-		// stores through it (assign path, via OAS upstream).
-		var fn *ir.Func
-		if n.Assigned {
-			fn = reflectdata.MapAssignFuncWasm3(t)
-		} else {
-			fn = reflectdata.MapAccessFuncWasm3(t)
+		// M3 per-type maps (wasm3): m[k] read dispatches to the per-
+		// (K,V) generated access-full function that returns V directly
+		// (no *V → no cross-function interior-pointer codegen needed).
+		// The assign path is intercepted in walkAssign (m[k] = v →
+		// MapAssignFullFuncWasm3(m, k, v)); n.Assigned shouldn't reach
+		// here for stores, but if it does, fall through to a
+		// degenerate access call as a no-op stand-in.
+		if !n.Assigned {
+			fn := reflectdata.MapAccessFullFuncWasm3(t)
+			mapPtr := typecheck.ConvNop(map_, types.Types[types.TUNSAFEPTR])
+			call := mkcall1(fn.Nname, t.Elem(), init, mapPtr, n.Index)
+			return call
 		}
+		// Assigned path: walkAssign handles it. Should not be reached
+		// for stores. Return a zero value as a defensive fallback.
+		fn := reflectdata.MapAssignFuncWasm3(t)
 		mapPtr := typecheck.ConvNop(map_, types.Types[types.TUNSAFEPTR])
 		call := mkcall1(fn.Nname, types.NewPtr(t.Elem()), init, mapPtr, n.Index)
 		call.MarkNonNil()

@@ -1185,12 +1185,21 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 				continue
 
 			case AResume:
-				// resume $typeidx <handler-vec>. The wasm3 backend
-				// currently emits an empty handler vec (no tag handlers
-				// installed at this resume site) — p.To.Offset is the
-				// handler count (0 for now). Phase 3 will extend
-				// p.To/p.RestArgs to carry a non-empty vec.
-				if p.From.Type != obj.TYPE_CONST || p.To.Type != obj.TYPE_CONST {
+				// resume $typeidx <handler-vec>. Two operand shapes:
+				//
+				//   p.From = TYPE_CONST typeidx (R_WASMTYPE-relocated)
+				//   p.To   = TYPE_CONST 0                    -> empty handler vec
+				//   p.To   = TYPE_BRANCH branchTarget (depth) -> 1-handler vec
+				//                                                {on $park <depth>}
+				//
+				// The 1-handler shape lets a single SSA op (the Phase 4
+				// RunInContCatchSuspend / Resume primitive) install the
+				// goroutine-park-tag handler that catches a wasm.Suspend
+				// inside the enclosing block — without needing a multi-
+				// operand prog shape that doesn't fit the cmd/internal/obj
+				// model. Phase 5+ can extend p.RestArgs for multi-handler
+				// shapes (e.g. exception handlers alongside the park tag).
+				if p.From.Type != obj.TYPE_CONST {
 					return nil, false
 				}
 				writeOpcode(w, p.As)
@@ -1200,7 +1209,19 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 					Siz:  1,
 					Add:  p.From.Offset,
 				})
-				writeUleb128(w, uint64(p.To.Offset))
+				switch p.To.Type {
+				case obj.TYPE_CONST:
+					// Empty handler vec.
+					writeUleb128(w, uint64(p.To.Offset))
+				case obj.TYPE_BRANCH:
+					// One-handler vec: count=1, clause=0x00 (on), tag=park, label=depth.
+					writeUleb128(w, 1)
+					w.WriteByte(0x00) // (on $tag $label) clause
+					writeUleb128(w, uint64(Wasm3TagIndexPark))
+					writeUleb128(w, uint64(p.To.Offset))
+				default:
+					return nil, false
+				}
 				continue
 			}
 			// Operand-less wasm stack instructions only. If an

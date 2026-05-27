@@ -914,6 +914,22 @@ func walkUnsafeSlice(n *ir.BinaryExpr, init *ir.Nodes) ir.Node {
 	// Type checking guarantees that TIDEAL len/cap are positive and fit in an int.
 	// The case of len or cap overflow when converting TUINT or TUINTPTR to TINT
 	// will be handled by the negative range checks in unsafeslice during runtime.
+	// wasm3: skip the open-coded `mem > -uintptr(ptr)` overflow check
+	// for the same reason walkUnsafeString does (anyref→uintptr has
+	// no encoding); the host GC validates the underlying array access
+	// at array.get_u time. Negative len is still checked.
+	if buildcfg.GOARCH == "wasm3" {
+		nif := ir.NewIfStmt(base.Pos, nil, nil, nil)
+		nif.Cond = ir.NewBinaryExpr(base.Pos, ir.OLT, typecheck.Conv(len, types.Types[types.TINT]), ir.NewInt(base.Pos, 0))
+		nif.Body.Append(mkcall("panicunsafeslicelen", nil, &nif.Body))
+		appendWalkStmt(init, nif)
+		h := ir.NewSliceHeaderExpr(n.Pos(), sliceType,
+			typecheck.Conv(ptr, types.Types[types.TUNSAFEPTR]),
+			typecheck.Conv(len, types.Types[types.TINT]),
+			typecheck.Conv(len, types.Types[types.TINT]))
+		return walkExpr(typecheck.Expr(h), init)
+	}
+
 	if ir.ShouldCheckPtr(ir.CurFunc, 1) {
 		fnname := "unsafeslicecheckptr"
 		fn := typecheck.LookupRuntime(fnname)
@@ -1010,6 +1026,26 @@ func walkUnsafeString(n *ir.BinaryExpr, init *ir.Nodes) ir.Node {
 
 	lenType := types.Types[types.TINT64]
 	unsafePtr := typecheck.Conv(ptr, types.Types[types.TUNSAFEPTR])
+
+	// wasm3: the open-coded `if uintptr(len) > -uintptr(ptr)` overflow
+	// check below converts `ptr` (which on wasm3 is anyref — a
+	// (ref $go.bytes) when the caller is e.g. unsafe.SliceData on a
+	// []byte) to uintptr. anyref→uintptr has no instruction encoding.
+	// Skip the open-coded checks entirely: on wasm3 the host GC
+	// validates the underlying array access at array.get_u time, so an
+	// out-of-bounds (ptr, len) is caught at the use site rather than
+	// the construction site. Negative len is still checked.
+	if buildcfg.GOARCH == "wasm3" {
+		nif := ir.NewIfStmt(base.Pos, nil, nil, nil)
+		nif.Cond = ir.NewBinaryExpr(base.Pos, ir.OLT, typecheck.Conv(len, types.Types[types.TINT]), ir.NewInt(base.Pos, 0))
+		nif.Body.Append(mkcall("panicunsafestringlen", nil, &nif.Body))
+		appendWalkStmt(init, nif)
+		h := ir.NewStringHeaderExpr(n.Pos(),
+			typecheck.Conv(ptr, types.Types[types.TUNSAFEPTR]),
+			typecheck.Conv(len, types.Types[types.TINT]),
+		)
+		return walkExpr(typecheck.Expr(h), init)
+	}
 
 	// If checkptr enabled, call runtime.unsafestringcheckptr to check ptr and len.
 	// for simplicity, unsafestringcheckptr always uses int64.

@@ -8,39 +8,23 @@ package runtime
 
 import "unsafe"
 
-// wasm3SliceBytesToString bridges `string(b)` on wasm3 from a
-// wasmgc-backed []byte to a WasmGC $go.string sharing the same
-// $go.bytes backing. The standard slicebytetostring takes a `*byte`
-// data ptr (i64 on wasm) and calls mallocgc to allocate a fresh
-// linear-memory buffer — neither lowers on wasm3 (M3.5 retired the
-// linear-memory bump heap; *byte is anyref).
+// wasm3SliceBytesToString implements `string(b)` on wasm3. Per Go's
+// spec, the conversion COPIES b's bytes so a subsequent mutation of
+// b does not change the resulting string. We honour that by
+// allocating a fresh []byte of len(b) bytes (which lowers to
+// array.new_default $go.bytes via OpWasm3MakeSlice — host GC owned),
+// copying via the builtin `copy(fresh, b)` (which lowers to
+// array.copy $go.bytes $go.bytes via OpWasm3ArrayCopy), then
+// wrapping the fresh backing in a $go.string header via
+// unsafe.String + unsafe.SliceData. No linear memory involved end
+// to end.
 //
-// Pure WasmGC approach:
-//
-//   - unsafe.SliceData(b) lowers via the OSPTR / OpSlicePtr chain
-//     to OpWasm3SliceData (struct.get $go.slice.u8 0), returning
-//     the boxed $go.bytes backing as an anyref-typed *byte.
-//
-//   - unsafe.String(p, n) lowers to ir.OUNSAFESTRING → OpStringMake
-//     → OpWasm3StructNew with $go.string as Aux. The StructNew
-//     codegen ref.casts p to (ref $go.bytes) for the backing field
-//     and emits struct.new $go.string {bytes, 0, len}.
-//
-// Net effect: a string header is built around the slice's existing
-// backing, no copy, no linear memory. The buf argument is ignored
-// because the WasmGC backing is owned by the host GC; no alloc-
-// optimisation tmpBuf trick is needed.
-//
-// SEMANTIC NOTE: string(b) on standard Go copies b's data so a
-// subsequent mutation of b doesn't change the resulting string.
-// Phase 3 of M3.5 ships the aliasing form for simplicity; the
-// follow-up to add unsafe.SliceClone / array.copy-backed string
-// conversion preserves the immutability invariant. Map keys built
-// from []byte (the main consumer of this function in the runtime's
-// hot path) hash and equate by current bytes, so the aliasing
-// works correctly there. User code that string-converts a mutable
-// []byte and expects immutability is broken until the follow-up
-// lands; this is documented as a wasm3 known issue.
+// The buf argument is honoured for small results so escape-
+// analysis-marked non-escaping conversions can reuse a stack-
+// allocated tmpBuf, matching the default slicebytetostring's
+// optimisation — but wasm3 doesn't yet have escape-analysis-aware
+// non-escaping handling for this, so for now we always allocate.
+// TODO(M4): tmpBuf reuse.
 //
 //go:linkname wasm3SliceBytesToString
 func wasm3SliceBytesToString(buf *tmpBuf, b []byte) string {
@@ -49,5 +33,7 @@ func wasm3SliceBytesToString(buf *tmpBuf, b []byte) string {
 	if n == 0 {
 		return ""
 	}
-	return unsafe.String(unsafe.SliceData(b), n)
+	fresh := make([]byte, n)
+	copy(fresh, b)
+	return unsafe.String(unsafe.SliceData(fresh), n)
 }

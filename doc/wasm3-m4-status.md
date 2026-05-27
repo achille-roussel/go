@@ -120,9 +120,57 @@ near-term viability:
    the WasmFX team that implements the full `cont.new`/`resume`/
    `suspend`/`switch` runtime. Recommended reference engine for wasm3
    M4 validation today. Last push 2026-04-02, actively maintained.
-   Requires Rust + ~15-minute build from source; no prebuilt binaries.
-   Once installed, all Phase 4-7 work can validate end-to-end against
-   it; V8 / wasmtime mainline catch up over time.
+
+   **Installation gotchas:**
+   - Requires Rust 1.82 (pinned in `Cargo.toml`); newer Rust versions
+     fail on `wasmtime-wasi` lifetime macros.
+   - `cargo build --bin wasmtime` (skip the full workspace, which has
+     wasi-keyvalue / wasi-config bindgen failures under newer Rust).
+   - **Darwin not supported out of the box** — the `OperatingSystem`
+     match in `crates/wasmtime/src/engine.rs` (function `is_compatible_
+     ...`) and `crates/wasmtime/src/config.rs` (function
+     `validate_wasm_features`) hard-codes Linux + Windows; the
+     underlying x86_64 fibre code at `crates/wasmtime/src/runtime/vm/
+     fibre/unix/x86_64.rs` is pure asm + `rustix::mm::mmap_anonymous`,
+     no Linux-specific syscalls, so adding a `Darwin(_) => "basic"`
+     arm to both matches lets it run on Apple Silicon hosts via
+     Rosetta. Reference patch:
+     `/Users/achilleroussel/go/src/github.com/wasmfx/wasmfxtime` with
+     the two-line edit captured in this session's transcript.
+   - Build for `--target x86_64-apple-darwin` (Rosetta) on Apple
+     Silicon; native aarch64 fibres are not implemented.
+
+   **Validated on Darwin x86_64 (Rosetta):**
+   - Hand-built `.wat` with `cont.new + resume + suspend + (on $park
+     $caught)` handler runs end-to-end. "before-suspend" prints
+     inside the cont, body suspends, handler catches, "after-handler"
+     prints after the block, dead code after suspend correctly
+     skipped. This is exactly the catch-suspend pattern that V8
+     fatals "unimplemented code" on — wasmfxtime executes it.
+   - `empty.wasm` produced by our wasm3 toolchain runs cleanly with
+     `-W stack-switching=y -W gc=y -W function-references=y -W
+     exceptions=y`.
+
+   **Known wasmfxtime bugs hit by our larger fixtures** (not our
+   encoding — wasmfxtime upstream issues):
+   - `hello.wasm` (uses the linear-memory bridge): panics with
+     `every on-stack gc_ref inside a Wasm frame should have an entry
+     in the VMGcRefActivationsTable; 0x30 is not in the table` at
+     `crates/wasmtime/src/runtime/vm/gc/enabled/drc.rs:239`. Looks
+     like a deferred-reference-counting tracking bug when GC refs
+     interact with linear-memory-side calls.
+   - `m4_runincont.wasm` / `m4_catch.wasm` (cont + GC types in the
+     same function): panics in cranelift at `cranelift/codegen/src/
+     machinst/lower.rs:727` with `assertion left == right failed:
+     left=0 right=1`. Likely a cranelift codegen gap for the GC+
+     cont-opcode combination.
+
+   Both upstream bugs are individually fixable in wasmfxtime; once
+   resolved, the entire wasm3 M4 surface validates end-to-end. The
+   short-term path is to either (a) wait for wasmfxtime patches,
+   (b) work around by simplifying the test programs to avoid the
+   triggering patterns, or (c) file the bugs upstream with our
+   reproducers.
 
 2. **V8 mainline wasmfx executor** — under active development by
    Francis McCabe / Thibaud Michaud at Google. The "[wasmfx] Plumb

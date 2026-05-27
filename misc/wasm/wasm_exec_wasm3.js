@@ -48,6 +48,45 @@ async function main() {
         },
     );
 
+    // Phase 3 primitives: WasmPark suspends a wasm activation until
+    // WasmReady(parkID) resolves the matching Promise. The Go-side
+    // scheduler manages parkID — one per gopark call, derived from
+    // the parked g's pointer/identifier — so that goready(g) can
+    // look up and resolve its specific Promise.
+    //
+    // Pre-resolve semantics: if WasmReady fires BEFORE WasmPark
+    // (the ready-before-park race the standard Go scheduler
+    // tolerates), we stash the resolver-less "already ready" marker
+    // and the matching WasmPark returns immediately.
+    const parkResolvers = new Map(); // parkID -> resolver | "ready"
+
+    const wasmParkSuspending = new WebAssembly.Suspending(
+        function wasmPark(parkID) {
+            const id = Number(parkID);
+            const existing = parkResolvers.get(id);
+            if (existing === "ready") {
+                // ready-before-park: consume the marker and return.
+                parkResolvers.delete(id);
+                return Promise.resolve();
+            }
+            return new Promise((resolve) => {
+                parkResolvers.set(id, resolve);
+            });
+        },
+    );
+
+    function wasmReady(parkID) {
+        const id = Number(parkID);
+        const r = parkResolvers.get(id);
+        if (typeof r === "function") {
+            parkResolvers.delete(id);
+            r();
+        } else {
+            // Park hasn't happened yet — stash the marker.
+            parkResolvers.set(id, "ready");
+        }
+    }
+
     const importObject = {
         gojs: {
             // monotonic clock in nanoseconds since module start.
@@ -65,6 +104,21 @@ async function main() {
             // Phase 1 JSPI primitive: suspends the calling wasm
             // activation for ms milliseconds.
             "runtime.SleepMs": sleepMsSuspending,
+
+            // Phase 3 gopark/goready primitives.
+            "runtime.WasmPark": wasmParkSuspending,
+            "runtime.WasmReady": wasmReady,
+
+            // Phase 3 self-test (TEMPORARY): SelfWakeMs(parkID)
+            // schedules a setTimeout that will call WasmReady(parkID)
+            // after a fixed 100ms. Lets the wasm side test the
+            // WasmPark/WasmReady pair end-to-end via a single-param
+            // import while the //go:wasmimport multi-param wrapper
+            // gap on wasm3 is being investigated separately. Phase 4
+            // replaces this with a real second-goroutine path.
+            "runtime.SelfWakeMs": (parkID) => {
+                setTimeout(() => wasmReady(parkID), 100);
+            },
 
             // Phase 1 visibility helper — wasm3 write1Bytes through
             // a JS import lands in Phase 2; until then LogInt is the

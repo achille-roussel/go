@@ -33,3 +33,27 @@ package wasm
 //go:wasmimport gojs runtime.SleepMs
 //go:noescape
 func SleepMs(ms int32)
+
+// WasmPark suspends the calling wasm activation, registering parkID
+// in a JS-side resolver Map. The activation stays parked until
+// WasmReady(parkID) is called from any wasm activation (the same
+// one, or another goroutine via the JS scheduler). parkID is a
+// caller-supplied identifier — the Go scheduler stashes a fresh
+// integer per gopark call, keyed off the goroutine pointer.
+//
+// This is the Phase 3 primitive gopark lowers to. WasmReady is the
+// goready side.
+//
+//go:wasmimport gojs runtime.WasmPark
+//go:noescape
+func WasmPark(parkID int32)
+
+// WasmReady resolves a Promise registered by an earlier WasmPark
+// call. The corresponding suspended wasm activation resumes on the
+// next JS event-loop tick. If parkID has no pending park, the call
+// is a no-op (matches the goready semantics: ready-before-park is
+// fine, the next park races and wins).
+//
+//go:wasmimport gojs runtime.WasmReady
+//go:noescape
+func WasmReady(parkID int32)

@@ -42,6 +42,31 @@ func walkAssign(init *ir.Nodes, n ir.Node) ir.Node {
 		}
 	}
 
+	// wasm3 per-(K,V) maps: `m[k] = v` becomes a single call to
+	// mapassignFull(m, k, v) instead of `*mapassign(m, k) = v`. The
+	// pointer-returning form would require the wasm3 backend to
+	// materialise a writable interior pointer to the values backing's
+	// slice element, which today only the closed-form
+	// OpWasm3MakeFieldPtr (for struct fields) emits correctly. The
+	// full-store form sidesteps that by doing the assignment inside
+	// the generated mapassign body, which already uses the typed
+	// wasm3MapValuesSet helper.
+	if buildcfg.GOARCH == "wasm3" && left.Op() == ir.OINDEXMAP && right != nil && mapAppend == nil {
+		idx := left.(*ir.IndexExpr)
+		idx.X = walkExpr(idx.X, init)
+		idx.Index = walkExpr(idx.Index, init)
+		right = walkExpr(right, init)
+		mt := idx.X.Type()
+		// Convert right to the map's element type so the per-(K,V)
+		// helper's signature matches at the call site.
+		right = typecheck.AssignConv(right, mt.Elem(), "wasm3 map assign value")
+		fn := reflectdata.MapAssignFullFuncWasm3(mt)
+		mapPtr := typecheck.ConvNop(idx.X, types.Types[types.TUNSAFEPTR])
+		call := mkcallstmt1(fn.Nname, mapPtr, idx.Index, right)
+		init.Append(call)
+		return ir.NewBlockStmt(n.Pos(), nil)
+	}
+
 	left = walkExpr(left, init)
 	left = safeExpr(left, init)
 	if mapAppend != nil {

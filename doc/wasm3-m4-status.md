@@ -126,6 +126,50 @@ For our purposes:
   print, maps, slices, strings, the bridge — and produce the full
   binary-size win the milestone targets.
 
+## Toolchain primitives added since first status (December 2025)
+
+Continued Go-side preparation: the obj backend now has every wire-format
+piece needed to emit a Phase 4 catch-suspend composite. Specifically:
+
+- **One-handler `resume` vec encoding** (`36e6dab18d`). `AResume`
+  accepts `p.To = TYPE_BRANCH <depth>` and writes
+  `0xE3 <typeidx-reloc> 0x01 0x00 <Wasm3TagIndexPark> <depth>`. The
+  empty-vec form (`p.To = TYPE_CONST 0`) used by Phase 2 RunInCont
+  continues to work unchanged.
+- **Typed-result inline block encoding** (`4758200fab`). `ABlock`
+  accepts `p.From = TYPE_CONST T` and writes a block-type of
+  `(ref null $T)` (3 bytes: `0x63 0x62 <typeidx-reloc>`). The void
+  form (`p.From = TYPE_NONE`) used by M3.5 byte loops is unchanged.
+
+With those two primitives, the Phase 4 composite is encodable in 7
+progs from a single SSA op:
+
+```
+ABlock     (TYPE_CONST TypeGoCont)         ; block (result (ref null $go.cont))
+ARefFunc   (entry sym)                     ; ref.func $body
+AContNew   (TypeGoCont)                    ; cont.new $ct
+AResume    (TypeGoCont, TYPE_BRANCH 0)     ; resume $ct (on $park 0)
+ARefNull   ...                             ; ref.null cont — completed-normally path
+AEnd                                       ; block end
+ADrop                                      ; discard suspended cont (Phase 5 stashes)
+```
+
+The one remaining encoder gap is `ref.null` with a typed heap type
+(`ARefNull` today encodes `0xD0` followed by the abstract `any`
+shortcut; a `(ref null $T)` null needs `0xD0 0x62 <typeidx>`). That's
+~8 lines in `wasm3obj.go` once the rest of Phase 4 SSA-side is
+written; deferred so a single commit can land it together with the
+SSA-side composite when an engine actually executes it.
+
+Runtime scaffolding (`ad1e2e7d56`):
+
+- `g.wasm3Cont unsafe.Pointer` field on the shared `g` struct.
+- `runtime/proc_wasm3.go` with `gogo_wasm3` / `mcall_wasm3` /
+  `systemstack_wasm3` / `park_wasm3` shims wrapping
+  `runtime/wasm.Suspend()`. Every path traps at runtime today with a
+  message naming the missing Phase 4 piece, so when the engine
+  unblocks the first wired-up caller, the failure surface is precise.
+
 ## What deferred phases need (when engine support lands)
 
 - **Resume with handler vec encoding.** `OpWasm3Resume` currently emits

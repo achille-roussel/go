@@ -67,10 +67,35 @@ func concatstrings(buf *tmpBuf, a []string) string {
 	return r
 }
 
-// wasm3StringConcat2 bridges to the go_runtime.stringConcat2 wat
-// primitive — binary string concatenation. The compiler's `a + b`
-// lowering on wasm3 will eventually call this directly; for now
-// concatstrings folds through it.
+// wasm3StringConcat2 is binary string concatenation on wasm3.
+// Plain Go: allocate a []byte sized to la+lb, copy a's then b's
+// bytes via `a[i]` / `b[i]` (which lower via OpWasm3StringByte —
+// Phase 2 of M3.5 — to array.get_u on the $go.string backings),
+// then string-convert the buffer (which on wasm3 routes through
+// wasm3SliceBytesToString and wraps the WasmGC backing in a fresh
+// $go.string header).
 //
-//go:wasmimport go_runtime stringConcat2
-func wasm3StringConcat2(a, b string) string
+// Empty-operand identity preservation: returns the non-empty
+// operand unchanged when the other is "" (no allocation, shared
+// backing). This matches the wat primitive's behaviour and the
+// concatstrings count==1 fast path's contract.
+//
+//go:nosplit
+func wasm3StringConcat2(a, b string) string {
+	la := len(a)
+	lb := len(b)
+	if la == 0 {
+		return b
+	}
+	if lb == 0 {
+		return a
+	}
+	buf := make([]byte, la+lb)
+	for i := 0; i < la; i++ {
+		buf[i] = a[i]
+	}
+	for i := 0; i < lb; i++ {
+		buf[la+i] = b[i]
+	}
+	return string(buf)
+}

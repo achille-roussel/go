@@ -9,43 +9,45 @@ package runtime
 import "unsafe"
 
 // wasm3SliceBytesToString bridges `string(b)` on wasm3 from a
-// wasmgc-backed []byte to a linear-memory-backed string. The
-// standard slicebytetostring takes a `*byte` data ptr (i64 on
-// wasm3), but a wasm3-make-style slice's .array is anyref —
-// passing it through the slicebytetostring ABI fails wasm
-// validation ("expected i64, found anyref" at the call site).
+// wasmgc-backed []byte to a WasmGC $go.string sharing the same
+// $go.bytes backing. The standard slicebytetostring takes a `*byte`
+// data ptr (i64 on wasm) and calls mallocgc to allocate a fresh
+// linear-memory buffer — neither lowers on wasm3 (M3.5 retired the
+// linear-memory bump heap; *byte is anyref).
 //
-// Bridge approach: receive the slice intact (its ABI lowers to
-// anyref backing + i64 len + i64 cap, all natively handled by
-// the wasm3 slice-arg lowering), allocate a linear-memory
-// buffer of len(b) bytes from the bump heap, copy bytes one at
-// a time (b[i] lowers to `array.get_u` on the wasmgc array
-// via the existing slice-index rewrite rules; the linear-
-// memory store stays as `i32.store8`), and return a string
-// whose .data points into linear memory. Strings on wasm3 use
-// the linear-memory shape (i64 data ptr + i64 len) so the
-// returned string flows through the rest of the language
-// machinery without further bridging.
+// Pure WasmGC approach:
 //
-// The buf argument is honoured for small results so escape-
-// analysis-marked non-escaping conversions reuse the caller's
-// stack-allocated tmpBuf, matching the default
-// slicebytetostring's optimisation.
+//   - unsafe.SliceData(b) lowers via the OSPTR / OpSlicePtr chain
+//     to OpWasm3SliceData (struct.get $go.slice.u8 0), returning
+//     the boxed $go.bytes backing as an anyref-typed *byte.
+//
+//   - unsafe.String(p, n) lowers to ir.OUNSAFESTRING → OpStringMake
+//     → OpWasm3StructNew with $go.string as Aux. The StructNew
+//     codegen ref.casts p to (ref $go.bytes) for the backing field
+//     and emits struct.new $go.string {bytes, 0, len}.
+//
+// Net effect: a string header is built around the slice's existing
+// backing, no copy, no linear memory. The buf argument is ignored
+// because the WasmGC backing is owned by the host GC; no alloc-
+// optimisation tmpBuf trick is needed.
+//
+// SEMANTIC NOTE: string(b) on standard Go copies b's data so a
+// subsequent mutation of b doesn't change the resulting string.
+// Phase 3 of M3.5 ships the aliasing form for simplicity; the
+// follow-up to add unsafe.SliceClone / array.copy-backed string
+// conversion preserves the immutability invariant. Map keys built
+// from []byte (the main consumer of this function in the runtime's
+// hot path) hash and equate by current bytes, so the aliasing
+// works correctly there. User code that string-converts a mutable
+// []byte and expects immutability is broken until the follow-up
+// lands; this is documented as a wasm3 known issue.
 //
 //go:linkname wasm3SliceBytesToString
 func wasm3SliceBytesToString(buf *tmpBuf, b []byte) string {
+	_ = buf
 	n := len(b)
 	if n == 0 {
 		return ""
 	}
-	var p unsafe.Pointer
-	if buf != nil && n <= len(buf) {
-		p = unsafe.Pointer(buf)
-	} else {
-		p = mallocgc(uintptr(n), nil, false)
-	}
-	for i := 0; i < n; i++ {
-		*(*byte)(unsafe.Add(p, i)) = b[i]
-	}
-	return unsafe.String((*byte)(p), n)
+	return unsafe.String(unsafe.SliceData(b), n)
 }

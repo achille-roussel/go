@@ -62,24 +62,20 @@ func wasm3Float64Hash(f float64, h uintptr) uintptr {
 	}
 }
 
-// wasm3StringHashImport is the //go:wasmimport bridge to the
-// go_runtime module's stringHash primitive — a wat function that
-// owns the byte loop directly over the boxed prelude types and
-// uses the same `(x ^ byte) * wasm3HashMul` mixer as the Go-side
-// fallback below. Engine-validated against runtime/wasm/
-// go_runtime_smoke.wat on wasmtime 44; the algorithm must stay
-// byte-for-byte equivalent to preserve map invariants (equal
-// values must hash equal — both ends use the same mixer).
-//
-//go:wasmimport go_runtime stringHash
-func wasm3StringHashImport(s string, h int64) int64
-
-// wasm3StringHash mixes a string's bytes into h, routing through the
-// go_runtime wat primitive that walks the boxed (ref $go.bytes)
-// backing directly via array.get_u rather than going through the
-// compiler's slice-index rewrite chain per iteration.
+// wasm3StringHash mixes a string's bytes into h. Plain Go: `s[i]`
+// lowers via OpWasm3StringByte (Phase 2 of M3.5) to
+// `array.get_u $go.bytes` on the $go.string backing, so the byte
+// loop compiles cleanly without any wat primitive. The mixer
+// matches wasm3Uint64Hash's `(x ^ byte) * wasm3HashMul` shape, so
+// map invariants — equal values must hash equal — hold across
+// the byte and aggregate-value paths.
 //
 //go:nosplit
 func wasm3StringHash(s string, h uintptr) uintptr {
-	return uintptr(wasm3StringHashImport(s, int64(h)))
+	x := uint64(h)
+	n := len(s)
+	for i := 0; i < n; i++ {
+		x = (x ^ uint64(s[i])) * wasm3HashMul
+	}
+	return uintptr(x)
 }

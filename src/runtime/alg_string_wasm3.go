@@ -16,38 +16,28 @@ package runtime
 // (ref $go.bytes) array — there is no linear pointer to hand to
 // memequal.
 //
-// The leaf byte loops live in the dynamically-linked go_runtime wat
-// module (runtime/wasm/go_runtime.wat): stringEqual implements the
-// equality fast path (length-first, then array.get_u byte loop), and
-// strcmp implements lexicographic ordering. The Go-side helpers below
-// are thin //go:wasmimport bridges that the compiler redirects string
-// equality and ordering to (see cmd/compile/internal/walk/compare.go).
-// See doc/wasm3-slice-boxing.md and [[wasm3-boxed-bulkops]] for the
-// architecture; the wat primitives are engine-validated against the
-// runtime/wasm/go_runtime_smoke.wat harness on wasmtime 44.
-
-// wasm3StringEqualImport is the //go:wasmimport bridge to the
-// go_runtime module's stringEqual primitive. The boxed-string ABI
-// for //go:wasmimport (gated to module="go_runtime") passes each
-// string as a single (ref null $go.string), matching the wat side.
-//
-//go:wasmimport go_runtime stringEqual
-func wasm3StringEqualImport(a, b string) int32
+// These helpers are plain Go: `a[i]` lowers via OpWasm3StringByte
+// (Phase 2 of M3.5) to `array.get_u $go.bytes` on the $go.string
+// backing at the right offset, so the byte loops below compile
+// cleanly without any wat primitives. The compiler redirects
+// string equality and ordering to these (see
+// cmd/compile/internal/walk/compare.go).
 
 // wasm3StringEqual reports whether a and b are equal.
 //
 //go:nosplit
 func wasm3StringEqual(a, b string) bool {
-	return wasm3StringEqualImport(a, b) != 0
+	la := len(a)
+	if la != len(b) {
+		return false
+	}
+	for i := 0; i < la; i++ {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
-
-// wasm3StringCompareImport is the //go:wasmimport bridge to the
-// go_runtime module's strcmp primitive (a wat function returning
-// negative/0/positive in i32 — the boxed-string analog of
-// runtime.cmpstring).
-//
-//go:wasmimport go_runtime strcmp
-func wasm3StringCompareImport(a, b string) int32
 
 // wasm3StringCompare returns -1, 0, or +1 according to whether a sorts
 // before, equal to, or after b (lexicographic by unsigned bytes). It is
@@ -55,11 +45,26 @@ func wasm3StringCompareImport(a, b string) int32
 //
 //go:nosplit
 func wasm3StringCompare(a, b string) int {
-	c := wasm3StringCompareImport(a, b)
-	switch {
-	case c < 0:
+	la := len(a)
+	lb := len(b)
+	n := la
+	if lb < n {
+		n = lb
+	}
+	for i := 0; i < n; i++ {
+		ca := a[i]
+		cb := b[i]
+		if ca < cb {
+			return -1
+		}
+		if ca > cb {
+			return +1
+		}
+	}
+	if la < lb {
 		return -1
-	case c > 0:
+	}
+	if la > lb {
 		return +1
 	}
 	return 0

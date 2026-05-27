@@ -1367,6 +1367,21 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 				pf.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(len(inlineBytes))}
 				continue
 			}
+			if i == 0 && castIdx >= 0 && (a.Op == ssa.OpWasm3RefNullAny || a.Op == ssa.OpWasm3RefNull) {
+				// Null backing for a zero string/slice ($go.string.bytes
+				// and $go.slice.<T>.data are non-nullable refs): a
+				// ref.cast on null would trap at runtime, so consume the
+				// null and substitute a freshly allocated zero-length
+				// array. This is the canonical zero value for these
+				// aggregates — every empty "" or nil slice still owns a
+				// real (possibly empty) backing.
+				getValue64(s, a)
+				s.Prog(wasm.ADrop)
+				i32Const(s, 0)
+				pf := s.Prog(wasm.AArrayNewDefault)
+				pf.From = obj.Addr{Type: obj.TYPE_CONST, Offset: castIdx}
+				continue
+			}
 			getValue64(s, a)
 			if i == 0 && castIdx >= 0 {
 				pc := s.Prog(wasm.ARefCast)

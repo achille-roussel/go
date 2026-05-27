@@ -34,6 +34,7 @@ const (
 	opStruct    = 0x5F // struct composite type
 	opArray     = 0x5E // array composite type
 	opFunc      = 0x60 // func composite type
+	opCont      = 0x5D // cont composite type (Wasm 3.0 stack-switching)
 	opRefNull   = 0x63 // (ref null ht)
 	opRef       = 0x64 // (ref ht)
 	opExactHeap = 0x62 // exact heaptype prefix; (exact $T)
@@ -174,6 +175,12 @@ func (table Table) EncodeTypeSection() []byte {
 			for _, r := range t.Results {
 				b = storage(b, r)
 			}
+		case KindCont:
+			// (cont $T) — single typeidx body. The body must already be
+			// declared (KindFunc), or be in the same recursion group (so
+			// the typeidx resolves). RecGroups handles that.
+			b = append(b, opCont)
+			b = AppendSleb(b, int64(wasmIndex[t.ContBody]))
 		default:
 			panic("wasmgc: unknown wasm type kind")
 		}
@@ -186,7 +193,10 @@ func (table Table) EncodeTypeSection() []byte {
 		// matches against host import signatures (declared as plain
 		// `func`). Struct/array types stay non-final so the
 		// $go.object subtype hierarchy works.
-		if t.Kind == KindFunc {
+		if t.Kind == KindFunc || t.Kind == KindCont {
+			// Function and continuation types don't participate in
+			// subtyping in our model — emit them as `sub final` so
+			// wasmtime accepts them as exact matches.
 			b = append(b, opSubFinal)
 		} else {
 			b = append(b, opSub)

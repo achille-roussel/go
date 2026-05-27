@@ -79,6 +79,8 @@ func (table Table) Write(w *bytes.Buffer) {
 		for _, r := range t.Results {
 			writeStorage(r)
 		}
+
+		writeInt64(int64(t.ContBody))
 	}
 }
 
@@ -148,6 +150,8 @@ func ReadTable(b []byte) Table {
 		if len(t.Results) == 0 {
 			t.Results = nil
 		}
+
+		t.ContBody = int(readInt64())
 	}
 	return table
 }

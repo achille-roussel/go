@@ -67,14 +67,17 @@ func TestAppendLeb128(t *testing.T) {
 func TestEncodePreludeTypeSection(t *testing.T) {
 	payload := Table(PreludeTypes()).EncodeTypeSection()
 
-	// Prelude: 23 singleton rec groups in table order: object, bytes,
+	// Prelude: 25 singleton rec groups in table order: object, bytes,
 	// string, the seven go.iptr.<class> fat-pointer wrappers
-	// (i8, i16, i32, i64, f32, f64, ref), go.iface, then the
+	// (i8, i16, i32, i64, f32, f64, ref), go.iface, the
 	// getter/setter/ptr accessor-pair triples for the i64, ref, f64, and
-	// f32 classes. Pin the exact bytes — this is the module preamble every
-	// wasm3 binary starts with.
+	// f32 classes, and the M4 stack-switching pair go.goroutine.entry +
+	// go.cont. All typed-ref heap references emit the exact-heap-type
+	// prefix (opExactHeap=0x62) so wasmtime accepts them without leaning
+	// on exact->inexact subtyping. Pin the exact bytes — this is the
+	// module preamble every wasm3 binary starts with.
 	want := []byte{
-		0x17, // 23 rec groups
+		0x19, // 25 rec groups
 
 		// rec { go.object }: sub, 0 supertypes, struct with 0 fields.
 		opRec, 0x01,
@@ -85,14 +88,13 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 		opSub, 0x00, opArray, packedI8, fieldVar,
 
 		// rec { go.string }: sub, supertype go.object (index 0), struct
-		// of { (ref go.bytes)=index 1 const, i64 const, i64 const }.
-		// offset/length are i64 (matching $go.slice and the wasm3 i64
-		// Go-int locals; see doc/wasm3-slice-boxing.md). The standalone
-		// go.string is immutable; its backing is a non-null reference.
+		// of { (ref (exact go.bytes))=index 1 const, i64 const, i64
+		// const }. The standalone go.string is immutable; its backing is
+		// a non-null exact reference.
 		opRec, 0x01,
 		opSub, 0x01, 0x00, // 1 supertype: index 0
 		opStruct, 0x03,
-		opRef, 0x01, fieldConst, // (ref 1) const
+		opRef, opExactHeap, 0x01, fieldConst, // (ref (exact 1)) const
 		valI64, fieldConst,
 		valI64, fieldConst,
 
@@ -111,62 +113,65 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 		// { anyref itab const, anyref data const } — a boxed interface.
 		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02, valAnyref, fieldConst, valAnyref, fieldConst,
 
-		// rec { go.getter.i64 }: final func type (anyref, i32) -> i64 —
-		// the reader half of an i64-class interior-pointer accessor pair
-		// (doc/wasm3-fat-pointer-derisk.wat).
+		// rec { go.getter.i64 }: final func type (anyref, i32) -> i64.
 		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x02, valAnyref, valI32, 0x01, valI64,
-
-		// rec { go.setter.i64 }: final func type (anyref, i32, i64) -> ()
-		// — the writer half.
+		// rec { go.setter.i64 }: final func type (anyref, i32, i64) -> ().
 		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x03, valAnyref, valI32, valI64, 0x00,
-
-		// rec { go.ptr.i64 }: sub, supertype go.object (index 0), struct of
-		// { anyref base, i32 offset, (ref go.getter.i64)=index 11,
-		// (ref go.setter.i64)=index 12 } — the accessor-pair fat pointer
-		// for an i64-class interior pointer.
+		// rec { go.ptr.i64 }: struct { anyref base, i32 offset,
+		// (ref (exact go.getter.i64))=index 11,
+		// (ref (exact go.setter.i64))=index 12 }.
 		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x04,
 		valAnyref, fieldConst,
 		valI32, fieldConst,
-		opRef, 0x0b, fieldConst,
-		opRef, 0x0c, fieldConst,
+		opRef, opExactHeap, 0x0b, fieldConst,
+		opRef, opExactHeap, 0x0c, fieldConst,
 
 		// rec { go.getter.ref }: final func type (anyref, i32) -> anyref.
 		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x02, valAnyref, valI32, 0x01, valAnyref,
 		// rec { go.setter.ref }: final func type (anyref, i32, anyref) -> ().
 		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x03, valAnyref, valI32, valAnyref, 0x00,
 		// rec { go.ptr.ref }: struct { anyref base, i32 offset,
-		// (ref go.getter.ref)=index 14, (ref go.setter.ref)=index 15 }.
+		// (ref (exact go.getter.ref))=index 14,
+		// (ref (exact go.setter.ref))=index 15 }.
 		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x04,
 		valAnyref, fieldConst,
 		valI32, fieldConst,
-		opRef, 0x0e, fieldConst,
-		opRef, 0x0f, fieldConst,
+		opRef, opExactHeap, 0x0e, fieldConst,
+		opRef, opExactHeap, 0x0f, fieldConst,
 
-		// rec { go.getter.f64 }: final func type (anyref, i32) -> f64 —
-		// the reader half of an f64-class interior-pointer accessor pair.
-		// The float classes carry the value untouched (no int reinterpret).
+		// rec { go.getter.f64 }: final func type (anyref, i32) -> f64.
 		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x02, valAnyref, valI32, 0x01, valF64,
 		// rec { go.setter.f64 }: final func type (anyref, i32, f64) -> ().
 		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x03, valAnyref, valI32, valF64, 0x00,
 		// rec { go.ptr.f64 }: struct { anyref base, i32 offset,
-		// (ref go.getter.f64)=index 17, (ref go.setter.f64)=index 18 }.
+		// (ref (exact go.getter.f64))=index 17,
+		// (ref (exact go.setter.f64))=index 18 }.
 		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x04,
 		valAnyref, fieldConst,
 		valI32, fieldConst,
-		opRef, 0x11, fieldConst,
-		opRef, 0x12, fieldConst,
+		opRef, opExactHeap, 0x11, fieldConst,
+		opRef, opExactHeap, 0x12, fieldConst,
 
 		// rec { go.getter.f32 }: final func type (anyref, i32) -> f32.
 		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x02, valAnyref, valI32, 0x01, valF32,
 		// rec { go.setter.f32 }: final func type (anyref, i32, f32) -> ().
 		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x03, valAnyref, valI32, valF32, 0x00,
 		// rec { go.ptr.f32 }: struct { anyref base, i32 offset,
-		// (ref go.getter.f32)=index 20, (ref go.setter.f32)=index 21 }.
+		// (ref (exact go.getter.f32))=index 20,
+		// (ref (exact go.setter.f32))=index 21 }.
 		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x04,
 		valAnyref, fieldConst,
 		valI32, fieldConst,
-		opRef, 0x14, fieldConst,
-		opRef, 0x15, fieldConst,
+		opRef, opExactHeap, 0x14, fieldConst,
+		opRef, opExactHeap, 0x15, fieldConst,
+
+		// rec { go.goroutine.entry }: final func type (anyref) -> anyref —
+		// the universal M4 goroutine entry shape.
+		opRec, 0x01, opSubFinal, 0x00, opFunc, 0x01, valAnyref, 0x01, valAnyref,
+
+		// rec { go.cont }: final cont type wrapping go.goroutine.entry
+		// (table index 23 → wasm index 23).
+		opRec, 0x01, opSubFinal, 0x00, opCont, 0x17,
 	}
 	if !bytes.Equal(payload, want) {
 		t.Fatalf("prelude type section mismatch:\n got % x\nwant % x", payload, want)
@@ -187,7 +192,10 @@ func ValidateModule(t *testing.T, name string, mod []byte) {
 	if err := os.WriteFile(path, mod, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command(tool, "validate", "--features", "gc", path).CombinedOutput()
+	// "all" covers the GC, custom-descriptors, and stack-switching
+	// extensions wasm3 uses. The default feature set is "stable proposals
+	// at phase 4+", which excludes stack-switching.
+	out, err := exec.Command(tool, "validate", "--features", "all", path).CombinedOutput()
 	if err != nil {
 		t.Fatalf("wasm-tools validate failed: %v\n%s\nmodule bytes: % x", err, out, mod)
 	}

@@ -27,6 +27,7 @@ const (
 	KindStruct Kind = iota // (struct ...)
 	KindArray              // (array ...)
 	KindFunc               // (func ...)
+	KindCont               // (cont $funcType) — WebAssembly 3.0 stack-switching
 )
 
 // Prim is a primitive WebAssembly storage type. I8 and I16 are packed
@@ -110,6 +111,8 @@ type Type struct {
 
 	Params  []Storage // set when Kind == KindFunc
 	Results []Storage // set when Kind == KindFunc
+
+	ContBody int // set when Kind == KindCont: the wrapped function type's table index
 }
 
 // Fixed type-table indices for the prelude types. These are emitted by
@@ -138,6 +141,14 @@ const (
 	TypeGoGetterF32      // go.getter.f32: func(anyref base, i32 off) -> f32 — interior-pointer reader (f32 pointee class)
 	TypeGoSetterF32      // go.setter.f32: func(anyref base, i32 off, f32 v) — interior-pointer writer (f32 pointee class)
 	TypeGoPtrF32         // go.ptr.f32: {base anyref, off i32, get, set} accessor-pair fat pointer (f32 pointee class)
+
+	// M4: WebAssembly 3.0 stack-switching machinery. Every goroutine on
+	// GOARCH=wasm3 runs as a continuation whose entry has the same shape
+	// (anyref→anyref); one cont type wraps that entry shape and is shared
+	// across all goroutines. See doc/wasm3-design.md §8 and the M4 plan.
+	TypeGoGoroutineEntry // go.goroutine.entry: func(anyref) -> anyref — the universal goroutine entry
+	TypeGoCont           // go.cont: (cont $TypeGoGoroutineEntry) — the universal continuation type
+
 	NumPreludeTypes
 )
 
@@ -342,6 +353,26 @@ func PreludeTypes() []Type {
 		},
 	}
 
+	// M4: (func (param anyref) (result anyref)). One shape every goroutine
+	// entry conforms to: the param is the goroutine's closure payload, the
+	// result is a sentinel returned at goexit (ignored by the scheduler).
+	t[TypeGoGoroutineEntry] = Type{
+		Name:    "go.goroutine.entry",
+		Kind:    KindFunc,
+		Super:   -1,
+		Params:  []Storage{AnyRefStorage()},
+		Results: []Storage{AnyRefStorage()},
+	}
+
+	// M4: (cont $go.goroutine.entry). Single cont type shared by every
+	// goroutine — see doc/wasm3-design.md §8 and the M4 plan.
+	t[TypeGoCont] = Type{
+		Name:     "go.cont",
+		Kind:     KindCont,
+		Super:    -1,
+		ContBody: TypeGoGoroutineEntry,
+	}
+
 	return t
 }
 
@@ -377,6 +408,9 @@ func (t Type) DependsOn() []int {
 				deps = append(deps, r.RefType)
 			}
 		}
+	case KindCont:
+		// A continuation type depends on its wrapped function type.
+		deps = append(deps, t.ContBody)
 	}
 	return deps
 }

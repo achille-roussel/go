@@ -127,8 +127,15 @@
 // the LoadInterior/StoreInterior rules below (matching I64Load/I64Store),
 // so it is excluded here and falls through to the generic Load/Store
 // lowering that produces those I64Load/I64Store nodes.
-(Load <t> ptr mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && wasm3IsScalarPtr(ptr.Type) => (PtrLoad ptr)
-(Store {t} ptr val mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && wasm3IsScalarPtr(ptr.Type) => (PtrStore ptr val mem)
+// OpWasm3LoweredAddr is also excluded: it materialises a linear-memory
+// i64 (sym/SP-relative) address, not a $go.ptr.i64 fat-pointer ref.
+// Package-level scalar globals and stack-allocated scalars are still
+// addressed by linear i64 throughout the wasm3 runtime (linear memory
+// remains for primitives — only heap-managed Go values are exiled to
+// WasmGC). Loads/stores through them fall through to the generic
+// I64Load/I64Store lowering.
+(Load <t> ptr mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && ptr.Op != OpWasm3LoweredAddr && wasm3IsScalarPtr(ptr.Type) => (PtrLoad ptr)
+(Store {t} ptr val mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && ptr.Op != OpWasm3LoweredAddr && wasm3IsScalarPtr(ptr.Type) => (PtrStore ptr val mem)
 
 // wasm3: a Go array is a single (ref (array T)) and *[N]T IS that ref, so
 // dereferencing an array pointer is the identity — the loaded array value

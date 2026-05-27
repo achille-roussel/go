@@ -1028,18 +1028,22 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		pCap.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
 		pCap.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
 		// keys = null
+		keyArrIdx := int64(wasm3RegisterArrayBacking(s.FuncInfo(), mapType.Key()))
 		getValue64(s, v.Args[0])
 		pCast3 := s.Prog(wasm.ARefCast)
 		pCast3.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
-		s.Prog(wasm.ARefNull)
+		pNullK := s.Prog(wasm.ARefNull)
+		pNullK.From = obj.Addr{Type: obj.TYPE_CONST, Offset: keyArrIdx}
 		pKeys := s.Prog(wasm.AStructSet)
 		pKeys.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
 		pKeys.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 2}
 		// values = null
+		valArrIdx := int64(wasm3RegisterArrayBacking(s.FuncInfo(), mapType.Elem()))
 		getValue64(s, v.Args[0])
 		pCast4 := s.Prog(wasm.ARefCast)
 		pCast4.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
-		s.Prog(wasm.ARefNull)
+		pNullV := s.Prog(wasm.ARefNull)
+		pNullV.From = obj.Addr{Type: obj.TYPE_CONST, Offset: valArrIdx}
 		pVals := s.Prog(wasm.AStructSet)
 		pVals.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
 		pVals.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 3}

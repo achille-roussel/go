@@ -30,7 +30,9 @@ import (
 	"cmd/internal/obj"
 	"cmd/internal/objabi"
 	"encoding/binary"
+	"fmt"
 	"math"
+	"os"
 	"sort"
 	"sync"
 )
@@ -237,6 +239,12 @@ func assemble3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 	if body, ok := encodeWasm3Body(ctxt, s); ok {
 		s.P = body
 		return
+	}
+
+	// Debug: report which function falls back to stub. Remove after
+	// the wasm3 op coverage is complete.
+	if os.Getenv("WASM3STUBDBG") != "" {
+		fmt.Fprintf(os.Stderr, "wasm3: stubbing function %s\n", s.Name)
 	}
 
 	// Not yet encodable at this rung: emit the degenerate stub. The
@@ -464,7 +472,18 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 	sawRet := false
 	seenBoundary := 0
 	nextTargetIdx := 0
+	var lastP *obj.Prog
+	defer func() {
+		if !ok && os.Getenv("WASM3STUBDBG") != "" {
+			if lastP != nil {
+				fmt.Fprintf(os.Stderr, "wasm3: bail in %s at op %s (from=%+v to=%+v)\n", s.Name, lastP.As, lastP.From, lastP.To)
+			} else {
+				fmt.Fprintf(os.Stderr, "wasm3: bail in %s (before body loop)\n", s.Name)
+			}
+		}
+	}()
 	for p := s.Func().Text; p != nil; p = p.Link {
+		lastP = p
 		switch p.As {
 		case obj.ATEXT, obj.AFUNCDATA, obj.APCDATA, obj.ANOP, ANop:
 			// No body contribution: ATEXT carries the signature,
@@ -858,6 +877,9 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 				// not encodable. The post-ALast range (exception
 				// handling + GC opcodes) IS allowed: writeOpcode
 				// handles the 0xFB / 0xD0+ / 0x08+0x0A+0x1F prefixes.
+				if os.Getenv("WASM3STUBDBG") != "" {
+					fmt.Fprintf(os.Stderr, "wasm3: bail at pseudo-op %s in %s\n", p.As, s.Name)
+				}
 				return nil, false
 			}
 			switch p.As {
@@ -973,14 +995,17 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 
 			case ARefNull:
 				// ref.null heaptype — single byte heap-type immediate
-				// for abstract heap types, or a sleb128 typeidx for
-				// typed refs. The wasm3 backend only emits ref.null
-				// against typed refs today, so route through
-				// R_WASMTYPE the way StructNew does.
+				// for abstract heap types, or an exact-prefixed typeidx
+				// for typed refs. The wasm3 backend uses exact reference
+				// types everywhere (Go has no struct-subtype inheritance
+				// — see wasmgc/typesec.go's heaptype helper); emit 0x62
+				// before the relocated typeidx so the produced null
+				// matches the exact field types this backend declares.
 				if p.From.Type != obj.TYPE_CONST {
 					return nil, false
 				}
 				writeOpcode(w, p.As)
+				w.WriteByte(0x62) // exact heaptype prefix
 				relocs = append(relocs, obj.Reloc{
 					Type: objabi.R_WASMTYPE,
 					Off:  int32(w.Len()),

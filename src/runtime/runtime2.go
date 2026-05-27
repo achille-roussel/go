@@ -593,6 +593,20 @@ type g struct {
 	// valgrindStackID is used to track what memory is used for stacks when a program is
 	// built with the "valgrind" build tag, otherwise it is unused.
 	valgrindStackID uintptr
+
+	// wasm3Cont holds this goroutine's WebAssembly 3.0 continuation
+	// reference on GOARCH=wasm3 — the cont produced by the most recent
+	// suspend, or the initial cont created by cont.new at goroutine
+	// spawn. gogo resumes it; gopark replaces it with the cont suspend
+	// returns. The field type is unsafe.Pointer because Go's type
+	// system has no syntax for wasm-anyref; the wasm3 backend treats
+	// it as a typed `(ref null $go.cont)` slot at codegen.
+	//
+	// Reserved on every arch (zero-cost on non-wasm3 — one word per g)
+	// so the runtime's stock scheduler files don't have to be
+	// arch-conditioned. See [[wasm3-bag-of-stacks]] in
+	// .claude/plans/goroutines-continuations-bag-of-stacks.md.
+	wasm3Cont unsafe.Pointer
 }
 
 // gTrackingPeriod is the number of transitions out of _Grunning between

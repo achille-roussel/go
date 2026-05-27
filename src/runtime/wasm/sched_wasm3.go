@@ -49,3 +49,26 @@ func RunInCont(fn func()) {
 func Suspend() {
 	panic("runtime/wasm: Suspend intrinsic not registered (ssagen.intrinsics, sys.ArchWasm3)")
 }
+
+// RunInContCatchSuspend is the suspend-catching variant of RunInCont.
+// It runs fn inside a fresh continuation with a handler installed for
+// the M4 park tag (Wasm3TagIndexPark), so any wasm.Suspend that fn
+// executes is caught at the resume site instead of escaping up the
+// call stack. The suspended cont is discarded today; Phase 5 will
+// instead stash it into the calling goroutine's g.wasm3Cont so the
+// scheduler can resume it later.
+//
+// Same restriction as RunInCont: fn must be a bare top-level function
+// name (PFUNC) so the intrinsic can lower it to ref.func directly.
+//
+// Engine viability: V8 December 2025 fatals "unimplemented code" in
+// GetContinuationResumeDescriptor when it executes a resume with a
+// handler that catches a suspend, and wasmtime 44 has no stack-
+// switching at all. The toolchain emits the correct wire bytes (see
+// doc/wasm3-m4-status.md) and wasm-tools validates them, but actually
+// invoking this function on either engine traps at module-instantiate
+// or function-call time. The full Phase 4 scheduler that this hook
+// plugs into is gated on engine maturity.
+func RunInContCatchSuspend(fn func()) {
+	panic("runtime/wasm: RunInContCatchSuspend intrinsic not registered (ssagen.intrinsics, sys.ArchWasm3)")
+}

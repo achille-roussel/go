@@ -345,6 +345,36 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		return nil
 	}, sys.ArchWasm3)
 
+	// M4 Phase 4: runtime/wasm.RunInContCatchSuspend(fn) wraps a bare
+	// top-level function in a continuation and resumes it with a park-
+	// tag handler installed — the catch-suspend variant of RunInCont.
+	// If fn calls wasm.Suspend inside, the handler catches it; if fn
+	// completes normally, control falls through after the block. Phase
+	// 5 will extend the codegen to stash the suspended cont in
+	// gp.wasm3Cont instead of dropping it. Same PFUNC-argument
+	// restriction as RunInCont.
+	add("runtime/wasm", "RunInContCatchSuspend", func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		if len(n.Args) != 1 {
+			s.Fatalf("runtime/wasm.RunInContCatchSuspend: expected 1 arg, got %d", len(n.Args))
+		}
+		nameNode := n.Args[0]
+		for {
+			conv, ok := nameNode.(*ir.ConvExpr)
+			if !ok {
+				break
+			}
+			nameNode = conv.X
+		}
+		nm, ok := nameNode.(*ir.Name)
+		if !ok || nm.Class != ir.PFUNC {
+			s.Fatalf("runtime/wasm.RunInContCatchSuspend: argument must be a bare top-level function name, got %T %v", nameNode, nameNode)
+		}
+		v := s.newValue1A(ssa.OpWasm3RunInContCatchSuspend, types.TypeMem, nm.Linksym(), s.mem())
+		v.AuxInt = wasm3NextAllocID()
+		s.vars[memVar] = v
+		return nil
+	}, sys.ArchWasm3)
+
 	// M4 Phase 3: runtime/wasm.Suspend() emits a wasm `suspend
 	// $Wasm3TagIndexPark` instruction. The current cont yields back to
 	// the most recent enclosing resume with a park-tag handler. Mem-

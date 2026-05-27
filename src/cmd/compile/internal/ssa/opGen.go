@@ -5922,6 +5922,7 @@ const (
 	OpWasm3SubString
 	OpWasm3StringOffset
 	OpWasm3RunInCont
+	OpWasm3RunInContCatchSuspend
 	OpWasm3ContNew
 	OpWasm3ContBind
 	OpWasm3Suspend
@@ -89370,6 +89371,14 @@ var opcodeTable = [...]opInfo{
 	},
 	{
 		name:           "RunInCont",
+		auxType:        auxSym,
+		argLen:         1,
+		hasSideEffects: true,
+		symEffect:      SymNone,
+		reg:            regInfo{},
+	},
+	{
+		name:           "RunInContCatchSuspend",
 		auxType:        auxSym,
 		argLen:         1,
 		hasSideEffects: true,

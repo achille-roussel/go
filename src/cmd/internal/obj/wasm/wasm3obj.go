@@ -1240,9 +1240,32 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 					// Empty handler vec.
 					writeUleb128(w, uint64(p.To.Offset))
 				case obj.TYPE_BRANCH:
-					// One-handler vec: count=1, clause=0x00 (on), tag=park, label=depth.
+					// One-handler vec: count=1, clause kind, tag=park,
+					// label=depth.
+					//
+					// Clause kind:
+					//   0x00 — (on $tag $label): handler receives
+					//          [tag-payloads, cont] at $label.
+					//   0x01 — (on $tag switch $label): handler receives
+					//          [tag-payloads] only; the cont is consumed
+					//          by an implicit cont.bind-or-switch.
+					//
+					// V8 25.9 / December 2025 only implements 0x01
+					// (kHandlerSwitch); requesting 0x00 fails with
+					// "handler generates 0 operands, target block returns
+					// 1" at compile time (the cont is not actually pushed,
+					// even though the spec says it should be). We pick the
+					// engine-accepted shape — 0x01 — and document the
+					// trade-off: the SSA op caller must NOT consume a
+					// cont at the handler label, so RunInContCatchSuspend
+					// drops the suspended cont implicitly via cont.bind
+					// rather than via an explicit stack-drop.
+					//
+					// When V8 implements 0x00 properly, switch back to
+					// the spec-accurate cont-pushed shape; the SSA caller
+					// will then have access to the suspended cont.
 					writeUleb128(w, 1)
-					w.WriteByte(0x00) // (on $tag $label) clause
+					w.WriteByte(0x01) // (on $tag switch $label) — engine-compatible
 					writeUleb128(w, uint64(Wasm3TagIndexPark))
 					writeUleb128(w, uint64(p.To.Offset))
 				default:

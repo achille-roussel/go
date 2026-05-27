@@ -836,6 +836,42 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		ps := s.Prog(wasm.ASuspend)
 		ps.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm.Wasm3TagIndexPark)}
 
+	case ssa.OpWasm3RunInContCatchSuspend:
+		// M4 Phase 4: wrap Aux's function in a cont, resume it with
+		// a (on $park switch 0) handler that catches a wasm.Suspend
+		// inside the body. Because V8 only implements the "switch"
+		// clause kind (kHandlerSwitch=0x01) — the spec-accurate
+		// "catch" kind (kHandlerCatch=0x00) fails compile with
+		// "handler generates 0 operands, target block returns 1" —
+		// the handler doesn't push the suspended cont onto the
+		// operand stack at the block label. The enclosing block has
+		// no result type; both completed-normally and suspended-and-
+		// caught paths converge at the block end with an empty stack.
+		// Phase 5's gp.wasm3Cont stash will need cont.bind or
+		// explicit-stack-drop encoding once V8 supports it.
+		sym, ok := v.Aux.(*obj.LSym)
+		if !ok {
+			v.Fatalf("OpWasm3RunInContCatchSuspend: v.Aux is not *obj.LSym: %T", v.Aux)
+		}
+		wasm3EnsureCollector(s.FuncInfo())
+		// block — void result type (V8 (on $tag switch $label)
+		// semantics: handler pushes only tag payloads, which is empty
+		// for our park tag).
+		s.Prog(wasm.ABlock)
+		// ref.func $sym
+		pf := s.Prog(wasm.ARefFunc)
+		pf.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: sym}
+		// cont.new $go.cont
+		pn := s.Prog(wasm.AContNew)
+		pn.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoCont)}
+		// resume $go.cont (on $park switch 0)
+		pr := s.Prog(wasm.AResume)
+		pr.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoCont)}
+		pr.To = obj.Addr{Type: obj.TYPE_BRANCH, Offset: 0}
+		// end — both completed-normally and suspended-and-caught
+		// converge here with empty stack.
+		s.Prog(wasm.AEnd)
+
 	case ssa.OpWasm3RunInCont:
 		// M4 Phase 2: wrap Aux's function in a cont, resume it. The
 		// cont's body type is (func) — no params, no results — so

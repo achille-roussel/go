@@ -742,6 +742,13 @@ func init() {
 		// keeps it in the side-effect chain).
 		{name: "RunInCont", argLength: 1, reg: regInfo{}, aux: "Sym", symEffect: "None", typ: "Mem", hasSideEffects: true},
 
+		// RunInContCatchSuspend (M4 Phase 4): create a cont running
+		// Aux, resume it with a (on $park 0) handler installed. The
+		// suspended cont (if the body suspends) is dropped — Phase 5
+		// adds the gp.wasm3Cont stash. Composite op like RunInCont;
+		// Aux holds the entry symbol; mem-chained.
+		{name: "RunInContCatchSuspend", argLength: 1, reg: regInfo{}, aux: "Sym", symEffect: "None", typ: "Mem", hasSideEffects: true},
+
 		// ContNew: cont.new $typ. arg0 = entry funcref (anyref). Result
 		// is a fresh continuation ref (anyref). Aux = cont type sym.
 		{name: "ContNew", argLength: 1, reg: gp11, aux: "Sym", symEffect: "None", typ: "BytePtr", hasSideEffects: true},

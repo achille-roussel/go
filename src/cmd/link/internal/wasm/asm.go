@@ -465,11 +465,29 @@ func writeExportSec(ctxt *ld.Link, ldr *loader.Loader, lenHostImports int) {
 		ctxt.Out.WriteByte(0x02)      // mem export
 		writeUleb128(ctxt.Out, 0)     // memidx
 	case "js":
-		writeUleb128(ctxt.Out, uint64(4+len(ldr.WasmExports))) // number of exports
-		for _, name := range []string{"run", "resume", "getsp"} {
-			s := ldr.Lookup("wasm_export_"+name, 0)
+		// GOARCH=wasm exports run/resume/getsp for the wasm_exec.js
+		// trampoline (linear-memory-stack scheduler). GOARCH=wasm3
+		// uses a JSPI promising export instead — Phase 0 starts with
+		// just `run` (entry); resume/getsp are wasm-specific
+		// continuation-passing machinery wasm3 doesn't need.
+		jsExports := []string{"run", "resume", "getsp"}
+		if buildcfg.GOARCH == "wasm3" {
+			jsExports = []string{"run"}
+		}
+		writeUleb128(ctxt.Out, uint64(1+len(jsExports)+len(ldr.WasmExports))) // +memory
+		for _, name := range jsExports {
+			entrySym := "wasm_export_" + name
+			entryVer := 0
+			if buildcfg.GOARCH == "wasm3" && name == "run" {
+				// wasm3/js entry is a Go function (runtime._rt0_wasm3_js)
+				// looked up at ABI internal — mirrors the wasip1/wasm3
+				// entry-symbol lookup above.
+				entrySym = "runtime._rt0_wasm3_js"
+				entryVer = sym.SymVerABIInternal
+			}
+			s := ldr.Lookup(entrySym, entryVer)
 			if s == 0 {
-				ld.Errorf("export symbol %s not defined", "wasm_export_"+name)
+				ld.Errorf("export symbol %s not defined", entrySym)
 			}
 			idx := uint32(lenHostImports) + uint32(ldr.SymValue(s)>>16) - funcValueOffset
 			writeName(ctxt.Out, name)           // inst.exports.run/resume/getsp in wasm_exec.js

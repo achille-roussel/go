@@ -6,39 +6,17 @@
 
 package runtime
 
-import "unsafe"
+import "runtime/wasm"
 
 // printuint / printint for GOARCH=wasm3 compose the decimal digits
 // in a Stage-D wasmgc stack array (`var buf [21]byte` lowers to
-// `(ref (array i8))`), then copy the run of digits, one byte at a
-// time, into a package-global linear-memory scratch region and hand
-// that pointer to WASI fd_write. The copy loop is the wasmgc <->
-// linear-memory bridge — there is no wasm opcode that copies from a
-// wasmgc array directly into linear memory, so we do it in Go.
-//
-// Why we can't take `unsafe.Pointer(&buf[i])` directly: a wasmgc
-// array element is not addressable as a linear-memory pointer; the
-// host cannot dereference a wasmgc ref. A package-global byte array
-// lives in the data section, which IS linear memory, so
-// `&printnumScratch[0]` materialises a real i32 pointer fd_write
-// can consume.
-//
-// The bridge is inlined into each caller rather than factored into
-// a helper because the wasm3 backend does not yet bridge a wasmgc
-// ref across a function-call boundary — passing `*[21]byte` lowers
-// the parameter to i64, and the caller-side push of an anyref local
-// would fail wasm validation. Stage I (wasmexport composite
-// marshalling) sketches the ref-typed-parameter ABI that would
-// retire the manual inlining.
-//
-// Single-goroutine wasm3 lets us share one global scratch buffer
-// across both print routines. When the goroutine machinery's own
-// milestone (M4) brings up real parking, a per-M scratch will be
-// needed.
+// `(ref (array i8))`), stage the digit run in the linear-memory
+// bridge arena, and call wasm3WriteBytes with the resulting
+// offset. No package-global scratch buffer needed; the bridge
+// arena owns the temporary storage and the reset rewinds the
+// whole sequence.
 
 const printnumScratchSize = 21 // -9223372036854775808 is 20 chars
-
-var printnumScratch [printnumScratchSize]byte
 
 //go:nosplit
 func printuint(v uint64) {
@@ -52,11 +30,9 @@ func printuint(v uint64) {
 			break
 		}
 	}
-	n := int32(printnumScratchSize-1) - i
-	for j := int32(0); j < n; j++ {
-		printnumScratch[j] = buf[i+j]
-	}
-	write1(2, unsafe.Pointer(&printnumScratch[0]), n)
+	off := wasm.WriteLinearMemory(0, buf[i:])
+	wasm3WriteBytes(2, off, uint32(printnumScratchSize-1-int(i)))
+	wasm.ResetLinearMemory(0, off)
 }
 
 //go:nosplit
@@ -80,9 +56,7 @@ func printint(v int64) {
 		i--
 		buf[i] = '-'
 	}
-	n := int32(printnumScratchSize-1) - i
-	for j := int32(0); j < n; j++ {
-		printnumScratch[j] = buf[i+j]
-	}
-	write1(2, unsafe.Pointer(&printnumScratch[0]), n)
+	off := wasm.WriteLinearMemory(0, buf[i:])
+	wasm3WriteBytes(2, off, uint32(printnumScratchSize-1-int(i)))
+	wasm.ResetLinearMemory(0, off)
 }

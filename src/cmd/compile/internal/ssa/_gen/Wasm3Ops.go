@@ -685,6 +685,18 @@ func init() {
 		// ResetLinearMemory: rewind the bump pointer. arg0=off (i32),
 		// arg1=mem. Emits a single global.set $bump.
 		{name: "ResetLinearMemory", argLength: 2, reg: regInfo{inputs: []regMask{gp}}, typ: "Mem", hasSideEffects: true},
+
+		// StringByte: byte-indexed read of a wasm3 string. Used by the
+		// `s[i]` pattern which the SSA layer lowers (via the AddPtr →
+		// I64Add and Load → PtrLoad passes) to
+		// `PtrLoad (I64Add (StringData s) i)`. PtrLoad on the i64-add
+		// of a $go.bytes ref + i64 would try to call_ref a getter on
+		// an invalid base. A dedicated op cracks the $go.string into
+		// bytes + offset and emits `array.get_u $go.bytes <bytes>
+		// (s.off + idx)`.
+		// arg0=string ref (anyref), arg1=index (i64).
+		// Result is byte (i64-extended for the per-value local).
+		{name: "StringByte", argLength: 2, reg: regInfo{inputs: []regMask{gp, gp}, outputs: []regMask{gp}}, typ: "UInt8"},
 	}
 
 	archs = append(archs, arch{

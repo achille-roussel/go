@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build wasip1 && !wasm3
+//go:build wasip1 && wasm3
 
 package runtime
 
@@ -69,9 +69,16 @@ func environ_get(environ *uintptr32, environBuf *byte) errno
 //go:noescape
 func environ_sizes_get(environCount, environBufLen *size) errno
 
+// fd_write on wasm3 takes uint32-typed offsets into the linear-memory
+// scratch arena (filled by runtime/wasm.WriteLinearMemory) rather
+// than unsafe.Pointer. Under the WasmGC-only memory ABI,
+// unsafe.Pointer lowers to anyref in the wasm function signature
+// — which doesn't match WASI's i32-typed host expectation. uint32
+// produces the same `(param i32 i32 i32 i32)` shape WASI requires.
+//
 //go:wasmimport wasi_snapshot_preview1 fd_write
 //go:noescape
-func fd_write(fd int32, iovs unsafe.Pointer, iovsLen size, nwritten *size) errno
+func fd_write(fd int32, iovs uint32, iovsLen size, nwritten uint32) errno
 
 //go:wasmimport wasi_snapshot_preview1 random_get
 //go:noescape

@@ -700,6 +700,8 @@ func rewriteValueWasm3(v *Value) bool {
 		return rewriteValueWasm3_OpWasm3I64Sub(v)
 	case OpWasm3I64Xor:
 		return rewriteValueWasm3_OpWasm3I64Xor(v)
+	case OpWasm3PtrLoad:
+		return rewriteValueWasm3_OpWasm3PtrLoad(v)
 	case OpXor16:
 		v.Op = OpWasm3I64Xor
 		return true
@@ -8684,6 +8686,52 @@ func rewriteValueWasm3_OpWasm3I64Xor(v *Value) bool {
 		v0 := b.NewValue0(v.Pos, OpWasm3I64Const, typ.Int64)
 		v0.AuxInt = int64ToAuxInt(x)
 		v.AddArg2(y, v0)
+		return true
+	}
+	return false
+}
+func rewriteValueWasm3_OpWasm3PtrLoad(v *Value) bool {
+	v_0 := v.Args[0]
+	b := v.Block
+	config := b.Func.Config
+	typ := &b.Func.Config.Types
+	// match: (PtrLoad <t> (I64Add (StringData <_> s) idx))
+	// cond: config.arch == "wasm3" && t.Size() == 1
+	// result: (StringByte s idx)
+	for {
+		t := v.Type
+		if v_0.Op != OpWasm3I64Add {
+			break
+		}
+		idx := v_0.Args[1]
+		v_0_0 := v_0.Args[0]
+		if v_0_0.Op != OpWasm3StringData {
+			break
+		}
+		s := v_0_0.Args[0]
+		if !(config.arch == "wasm3" && t.Size() == 1) {
+			break
+		}
+		v.reset(OpWasm3StringByte)
+		v.AddArg2(s, idx)
+		return true
+	}
+	// match: (PtrLoad <t> (StringData <_> s))
+	// cond: config.arch == "wasm3" && t.Size() == 1
+	// result: (StringByte s (Const64 <typ.Int64> [0]))
+	for {
+		t := v.Type
+		if v_0.Op != OpWasm3StringData {
+			break
+		}
+		s := v_0.Args[0]
+		if !(config.arch == "wasm3" && t.Size() == 1) {
+			break
+		}
+		v.reset(OpWasm3StringByte)
+		v0 := b.NewValue0(v.Pos, OpConst64, typ.Int64)
+		v0.AuxInt = int64ToAuxInt(0)
+		v.AddArg2(s, v0)
 		return true
 	}
 	return false

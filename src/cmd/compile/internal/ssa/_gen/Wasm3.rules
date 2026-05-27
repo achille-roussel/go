@@ -116,6 +116,19 @@
 (Load <t> (LoweredAddr {sym} [0] (SB)) _) && config.arch == "wasm3" && wasm3IsBoxedType(t) => (GlobalGet <t> {sym})
 (Store {t} (LoweredAddr {sym} [0] (SB)) val mem) && config.arch == "wasm3" && wasm3IsBoxedType(t) => (GlobalSet {sym} val mem)
 
+// String byte indexing on wasm3: ssagen lowers `s[i]` to
+// `Load <byte> (AddPtr (StringPtr s) i)`, which the AddPtr→I64Add
+// and Load→PtrLoad lowering passes rewrite to
+// `PtrLoad (I64Add (StringData s) i)` before our late lowering
+// fires. PtrLoad on a (ref $go.bytes)+i64 base would call_ref a
+// getter on an invalid argument, so funnel the pattern into
+// OpWasm3StringByte, which cracks the $go.string into bytes +
+// offset and emits array.get_u at (s.off + idx). Match both the
+// I64Add form (variable index) and the bare StringData form
+// (constant zero index — `s[0]` after const-fold drops the add).
+(PtrLoad <t> (I64Add (StringData <_> s) idx)) && config.arch == "wasm3" && t.Size() == 1 => (StringByte s idx)
+(PtrLoad <t> (StringData <_> s)) && config.arch == "wasm3" && t.Size() == 1 => (StringByte s (Const64 <typ.Int64> [0]))
+
 // Dereference of an i64-class interior pointer ($go.ptr.i64 accessor-pair
 // fat pointer): a Load/Store through a *i64-scalar value that is NOT a
 // &struct.field OffPtr — those fold to FieldGet/FieldSet above — i.e. a

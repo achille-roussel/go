@@ -897,11 +897,37 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 			switch p.As {
 			case ABlock, ALoop:
 				// Inline structured-CF opener emitted by a single SSA
-				// op's codegen (M3.5 linear-memory bridge byte loops).
-				// Block-type is void (0x40). The matching AEnd at the
-				// same depth pops a wasm3CFInline frame.
+				// op's codegen. Two block-type shapes:
+				//
+				//   p.From = TYPE_NONE    -> void (block type 0x40)
+				//   p.From = TYPE_CONST T -> single-result (ref null T)
+				//     encoded as 0x63 (ref-null prefix) 0x62 (exact-heap
+				//     prefix) <typeidx-R_WASMTYPE-reloc>
+				//
+				// The typed-result form is the M4 Phase 4 piece that
+				// lets a resume's park-tag handler push the suspended
+				// cont at the enclosing block's label without the block
+				// needing a separate prelude func type — the enclosing
+				// SSA op's codegen sets p.From.Offset to TypeGoCont and
+				// the linker remaps it via the per-function wasmgc.Table
+				// merge result.
 				writeOpcode(w, p.As)
-				w.WriteByte(0x40)
+				switch p.From.Type {
+				case obj.TYPE_NONE:
+					w.WriteByte(0x40) // void block type
+				case obj.TYPE_CONST:
+					// (ref null \$T) = 0x63 0x62 <typeidx>
+					w.WriteByte(0x63) // ref null prefix
+					w.WriteByte(0x62) // exact-heap-type prefix
+					relocs = append(relocs, obj.Reloc{
+						Type: objabi.R_WASMTYPE,
+						Off:  int32(w.Len()),
+						Siz:  1,
+						Add:  p.From.Offset,
+					})
+				default:
+					return nil, false
+				}
 				stack = append([]wasm3CFFrame{{kind: wasm3CFInline}}, stack...)
 				continue
 

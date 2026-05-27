@@ -414,11 +414,19 @@ func libinit(ctxt *Link) {
 	}
 
 	if *flagEntrySymbol == "" {
+		// On GOARCH=wasm3 the wasip1 entry symbol is a plain Go function in
+		// runtime/rt0_wasip1_wasm3.go (no .s file), so the symbol is package-
+		// qualified. Other arches define the entry in assembly under a bare
+		// _rt0_<GOARCH>_<GOOS>{,_lib} name.
+		entryPrefix := ""
+		if buildcfg.GOARCH == "wasm3" {
+			entryPrefix = "runtime."
+		}
 		switch ctxt.BuildMode {
 		case BuildModeCShared, BuildModeCArchive:
-			*flagEntrySymbol = fmt.Sprintf("_rt0_%s_%s_lib", buildcfg.GOARCH, buildcfg.GOOS)
+			*flagEntrySymbol = fmt.Sprintf("%s_rt0_%s_%s_lib", entryPrefix, buildcfg.GOARCH, buildcfg.GOOS)
 		case BuildModeExe, BuildModePIE:
-			*flagEntrySymbol = fmt.Sprintf("_rt0_%s_%s", buildcfg.GOARCH, buildcfg.GOOS)
+			*flagEntrySymbol = fmt.Sprintf("%s_rt0_%s_%s", entryPrefix, buildcfg.GOARCH, buildcfg.GOOS)
 		case BuildModeShared, BuildModePlugin:
 			// No *flagEntrySymbol for -buildmode=shared and plugin
 		default:

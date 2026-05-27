@@ -225,14 +225,11 @@ func preprocess3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 // attaches typed signatures, so both the stub and a trivial walked
 // body validate against the declared type.
 //
-// The entry symbol is the one exception (Stage B): it is given a real
-// body that calls main.main, so an empty Go program runs end to end.
+// The wasip1 entry symbol (runtime._rt0_wasm3_wasip1) is a plain Go
+// function defined in src/runtime/rt0_wasip1_wasm3.go and assembled
+// via the same encodeWasm3Body path as every other Go function — no
+// obj-level substitution.
 func assemble3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
-	if s.Name == entrySym {
-		assembleWasm3Entry(ctxt, s)
-		return
-	}
-
 	if we := s.Func().WasmExport; we != nil && we.WrappedSym != nil {
 		assembleWasm3ExportWrapper(ctxt, s, we)
 		return
@@ -1636,36 +1633,3 @@ func assembleWasm3ImportWrapper(ctxt *obj.Link, s *obj.LSym, wi *obj.WasmImport)
 	})
 }
 
-// entrySym is the wasip1 entry symbol; cmd/link exports it as "_start".
-// The name follows the _rt0_<GOARCH>_<GOOS> convention.
-const entrySym = "_rt0_wasm3_wasip1"
-
-// assembleWasm3Entry gives the entry symbol a degenerate bootstrap body
-// for Stage B of the cutover: call main.main, then return. WASI treats
-// a normal return from _start as a clean (exit 0) termination, and an
-// empty main.main needs no runtime initialization, so the whole
-// schedinit/scheduler/allocator bootstrap is skipped for now. It is
-// reintroduced incrementally as the runtime fork lands (Stage B proper).
-//
-// The body is:
-//
-//	local declaration count: 0
-//	call <main.main>          ; operand filled in by the R_CALL reloc
-//	end
-//
-// The call operand is variable-length and written by the linker, so the
-// obj backend emits only the 0x10 opcode and records an R_CALL reloc at
-// the byte that follows it — the same scheme assemble uses for calls.
-func assembleWasm3Entry(ctxt *obj.Link, s *obj.LSym) {
-	s.P = []byte{
-		0x00, // local declaration count: 0
-		0x10, // call
-		0x0b, // end
-	}
-	s.AddRel(ctxt, obj.Reloc{
-		Type: objabi.R_CALL,
-		Off:  2, // immediately after the 0x10 call opcode
-		Siz:  1, // variable-sized; the linker writes the function index
-		Sym:  ctxt.LookupABI("main.main", obj.ABIInternal),
-	})
-}

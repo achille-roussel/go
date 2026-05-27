@@ -69,9 +69,9 @@ var wasmFuncTypes = map[string]*wasmFuncType{
 	"_rt0_wasm_js":            {Params: []byte{}},                                         //
 	"_rt0_wasm_wasip1":        {Params: []byte{}},                                         //
 	"_rt0_wasm_wasip1_lib":    {Params: []byte{}},                                         //
-	"_rt0_wasm3_js":           {Params: []byte{}},                                         // M0: wasm3 entry, see doc/wasm3-design.md
-	"_rt0_wasm3_wasip1":       {Params: []byte{}},                                         //
-	"_rt0_wasm3_wasip1_lib":   {Params: []byte{}},                                         //
+	"_rt0_wasm3_js":                  {Params: []byte{}},                                  // M0: wasm3 entry, see doc/wasm3-design.md
+	"runtime._rt0_wasm3_wasip1":      {Params: []byte{}},                                  // pure-Go entry, runtime/rt0_wasip1_wasm3.go
+	"runtime._rt0_wasm3_wasip1_lib":  {Params: []byte{}},                                  // pure-Go cshared entry
 	"wasm_export__start":      {},                                                         //
 	"wasm_export_run":         {Params: []byte{I32, I32}},                                 // argc, argv
 	"wasm_export_resume":      {Params: []byte{}},                                         //
@@ -424,16 +424,29 @@ func writeExportSec(ctxt *ld.Link, ldr *loader.Loader, lenHostImports int) {
 		writeUleb128(ctxt.Out, uint64(2+len(ldr.WasmExports))) // number of exports
 		var entry, entryExpName string
 		// The entry symbol follows the _rt0_<GOARCH>_<GOOS> convention used by
-		// cmd/link/internal/ld/lib.go, so it is "_rt0_wasm3_wasip1" for wasm3.
+		// cmd/link/internal/ld/lib.go. For GOARCH=wasm the entry is defined in
+		// runtime/rt0_wasip1_wasm.s under the bare name. For GOARCH=wasm3 the
+		// entry is a plain Go function in runtime/rt0_wasip1_wasm3.go, so the
+		// symbol is package-qualified.
+		entryPrefix := ""
+		if buildcfg.GOARCH == "wasm3" {
+			entryPrefix = "runtime."
+		}
 		switch ctxt.BuildMode {
 		case ld.BuildModeExe:
-			entry = "_rt0_" + buildcfg.GOARCH + "_wasip1"
+			entry = entryPrefix + "_rt0_" + buildcfg.GOARCH + "_wasip1"
 			entryExpName = "_start"
 		case ld.BuildModeCShared:
-			entry = "_rt0_" + buildcfg.GOARCH + "_wasip1_lib"
+			entry = entryPrefix + "_rt0_" + buildcfg.GOARCH + "_wasip1_lib"
 			entryExpName = "_initialize"
 		}
-		s := ldr.Lookup(entry, 0)
+		// On GOARCH=wasm the entry is an .s symbol (ABI 0); on GOARCH=wasm3 it
+		// is a plain Go function (ABIInternal).
+		entryVer := 0
+		if buildcfg.GOARCH == "wasm3" {
+			entryVer = sym.SymVerABIInternal
+		}
+		s := ldr.Lookup(entry, entryVer)
 		if s == 0 {
 			ld.Errorf("export symbol %s not defined", entry)
 		}

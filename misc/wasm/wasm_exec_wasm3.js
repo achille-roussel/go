@@ -127,6 +127,28 @@ async function main() {
         },
     };
 
+    // Phase 4 spawn machinery: SpawnGoroutine(id) tells the host
+    // to schedule a fresh promising-wrapped goroutine_run(id) call
+    // on the next microtask. Each such call is its own JSPI
+    // suspender — concurrent independently-suspendable wasm
+    // activations.
+    //
+    // promisingGoroutineRun is created after instantiation because
+    // it references the export.
+    let promisingGoroutineRun = null;
+    importObject.gojs["runtime.SpawnGoroutine"] = (id) => {
+        // Use queueMicrotask so the spawning call returns before
+        // the new goroutine starts. The new goroutine runs on its
+        // own JSPI suspender via the promising wrapper.
+        queueMicrotask(() => {
+            if (promisingGoroutineRun) {
+                promisingGoroutineRun(Number(id)).catch((e) => {
+                    console.error("goroutine_run failed:", e);
+                });
+            }
+        });
+    };
+
     const { module: mod, instance } = await WebAssembly.instantiate(wasmBytes, importObject);
     const rawRun = instance.exports.run;
     if (typeof rawRun !== "function") {
@@ -140,6 +162,12 @@ async function main() {
     // WebAssembly.promising`. Returns a Promise that resolves when
     // wasm `run` returns.
     const run = WebAssembly.promising(rawRun);
+
+    // Phase 4: wrap goroutine_run as promising for the spawn path.
+    if (typeof instance.exports.goroutine_run === "function") {
+        promisingGoroutineRun = WebAssembly.promising(instance.exports.goroutine_run);
+    }
+
     await run();
 }
 

@@ -715,6 +715,52 @@ func init() {
 		// produce a slice that aliases s's BYTES from s.off, not 0.
 		// arg0=string ref. Result is i64 (the offset field).
 		{name: "StringOffset", argLength: 1, reg: gp11, typ: "Int64"},
+
+		// Stack-switching SSA ops (Wasm 3.0 stack-switching proposal).
+		// Placeholders for M4 Phase 1: declared so the SSA framework
+		// generates the constants, but no rewrite rule emits them yet.
+		// Phase 3 wires them into runtime.contNew / contResume /
+		// contSuspend / contSwitch and refines the signatures (in
+		// particular, Resume / Switch will likely return a tuple of
+		// (suspended-cont, suspend-arg) decomposed via SelectN).
+		//
+		// hasSideEffects on all: each call materially changes the
+		// goroutine-scheduler state and must never be CSE'd or DCE'd.
+		// The wasm-typeidx (cont type) and tagidx are carried in Aux
+		// as a *obj.LSym referencing the linker-generated declaration;
+		// the exact aux shape may evolve in Phase 3.
+
+		// ContNew: cont.new $typ. arg0 = entry funcref (anyref). Result
+		// is a fresh continuation ref (anyref). Aux = cont type sym.
+		{name: "ContNew", argLength: 1, reg: gp11, aux: "Sym", symEffect: "None", typ: "BytePtr", hasSideEffects: true},
+
+		// ContBind: cont.bind $src $dst. Declared for completeness; M4
+		// does not emit it (the one-shot cont discipline replaces the
+		// cont ref on every suspend rather than partial-applying).
+		// arg0 = source cont. Result is the bound cont. Aux = dst type sym.
+		{name: "ContBind", argLength: 1, reg: gp11, aux: "Sym", symEffect: "None", typ: "BytePtr", hasSideEffects: true},
+
+		// Suspend: suspend $tag. arg0 = tag payload (anyref). Result is
+		// the resume argument (anyref). Aux = tag sym.
+		{name: "Suspend", argLength: 1, reg: gp11, aux: "Sym", symEffect: "None", typ: "BytePtr", hasSideEffects: true},
+
+		// Resume: resume $typ {handler-table}. arg0 = cont, arg1 = arg.
+		// Result is the value returned by the cont (or the value
+		// carried by a suspend handled here, in Phase 3 once the
+		// handler-vec encoding lands). Aux = cont type sym.
+		{name: "Resume", argLength: 2, reg: gp21, aux: "Sym", symEffect: "None", typ: "BytePtr", hasSideEffects: true},
+
+		// ResumeThrow: resume_throw $typ $tag {handler-table}. Declared
+		// for M5 (cross-goroutine panic propagation); no M4 caller.
+		// arg0 = cont, arg1 = exception payload. Aux = cont type sym;
+		// tag sym is held alongside (Phase 3+ extension).
+		{name: "ResumeThrow", argLength: 2, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "Sym", symEffect: "None", typ: "Mem", hasSideEffects: true},
+
+		// Switch: switch $typ $tag. Direct goroutine handoff for the
+		// channel sender→parked-receiver fast path. arg0 = destination
+		// cont, arg1 = arg. Result is the value received from the next
+		// suspend on the switched-to cont. Aux = cont type sym.
+		{name: "Switch", argLength: 2, reg: gp21, aux: "Sym", symEffect: "None", typ: "BytePtr", hasSideEffects: true},
 	}
 
 	archs = append(archs, arch{

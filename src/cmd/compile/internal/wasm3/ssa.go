@@ -2785,6 +2785,18 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		localGetIdx(s, offLocal)
 		s.Prog(wasm.AI64ExtendI32U)
 
+	case ssa.OpWasm3ContNew, ssa.OpWasm3ContBind, ssa.OpWasm3Suspend, ssa.OpWasm3Resume, ssa.OpWasm3ResumeThrow, ssa.OpWasm3Switch:
+		// M4 Phase 1: the stack-switching SSA ops are declared so the
+		// SSA framework generates the constants and the assembler
+		// recognises their opcode bytes (cmd/internal/obj/wasm). No
+		// rewrite rule emits them yet; Phase 3 wires runtime.contNew /
+		// contSuspend / contResume / contSwitch through ssagen
+		// intrinsics and lands the real lowering here (handler-vec
+		// encoding, typeidx / tagidx Aux unpacking, multi-result
+		// SelectN decomposition for Resume / Switch). Any value
+		// landing here today is a bug.
+		v.Fatalf("wasm3 stack-switching SSA op %s reached codegen before Phase 3 lowering exists", v.Op)
+
 	default:
 		v.Fatalf("unexpected op: %s", v.Op)
 

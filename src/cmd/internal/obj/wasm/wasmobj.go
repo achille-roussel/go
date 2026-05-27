@@ -1450,6 +1450,19 @@ func writeOpcode(w *bytes.Buffer, as obj.As) {
 		w.WriteByte(0xD5)
 	case as == ABrOnNonNull:
 		w.WriteByte(0xD6)
+	case as == AContNew:
+		w.WriteByte(0xE0)
+	case as == AContBind:
+		w.WriteByte(0xE1)
+	case as == ASuspend:
+		w.WriteByte(0xE2)
+	case as == AResume:
+		w.WriteByte(0xE3)
+	case as == AResumeThrow:
+		w.WriteByte(0xE4)
+	case as == ASwitch:
+		// 0xE5 is reserved in the stack-switching proposal; switch is 0xE6.
+		w.WriteByte(0xE6)
 	default:
 		panic(fmt.Sprintf("unexpected assembler op: %s", as))
 	}

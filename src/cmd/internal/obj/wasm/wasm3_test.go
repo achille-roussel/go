@@ -68,6 +68,18 @@ func TestWasm3Opcodes(t *testing.T) {
 		{ARefI31, []byte{0xfb, 0x1c}},
 		{AI31GetS, []byte{0xfb, 0x1d}},
 		{AI31GetU, []byte{0xfb, 0x1e}},
+
+		// Stack switching. Top-level single-byte opcodes 0xE0-0xE6 (0xE5
+		// reserved). Operand encoding (typeidx / tagidx / handler-vec) is
+		// the caller's responsibility — writeOpcode emits only the opcode
+		// byte. Byte values pinned against wasm-tools / V8 December 2025.
+		// See doc/wasm3-design.md and the M4 plan.
+		{AContNew, []byte{0xe0}},
+		{AContBind, []byte{0xe1}},
+		{ASuspend, []byte{0xe2}},
+		{AResume, []byte{0xe3}},
+		{AResumeThrow, []byte{0xe4}},
+		{ASwitch, []byte{0xe6}},
 	}
 	for _, tt := range tests {
 		var w bytes.Buffer

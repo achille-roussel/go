@@ -316,6 +316,21 @@ const (
 	AI31GetS          // opcode 0xFB 0x1D
 	AI31GetU          // opcode 0xFB 0x1E
 
+	// Stack-switching (Wasm 3.0). Top-level single-byte opcodes in
+	// the 0xE0–0xE6 range (note 0xE5 is reserved in the current
+	// proposal, so ASwitch is 0xE6). Grouped here because they ship
+	// with the other Wasm 3.0 proposals (GC/EH); the encoding is not
+	// 0xFB-prefixed and does not participate in the AStructNew..AI31GetU
+	// sub-opcode-by-subtraction trick. AResumeThrow is declared for
+	// milestone M5 but encoded here so the assembler is uniform.
+	// See doc/wasm3-design.md and the M4 plan.
+	AContNew     // opcode 0xE0 typeidx
+	AContBind    // opcode 0xE1 typeidx-src typeidx-dst
+	ASuspend     // opcode 0xE2 tagidx
+	AResume      // opcode 0xE3 typeidx handlertable
+	AResumeThrow // opcode 0xE4 typeidx tagidx handlertable
+	ASwitch      // opcode 0xE6 typeidx tagidx
+
 	// Abstract-heap-type variants of ref.cast. The wasmgc binary
 	// format reuses the same opcode bytes as ARefCast / ARefCastNull
 	// (0xFB 0x16 / 0xFB 0x17) followed by a one-byte abstract heap

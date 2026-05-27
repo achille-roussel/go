@@ -20,6 +20,21 @@ import (
 
 var intrinsics intrinsicBuilders
 
+// wasm3AllocIDCounter assigns a monotonically increasing AuxInt to
+// each allocation-style wasm3 intrinsic call site so generic CSE
+// doesn't collapse two structurally identical make() calls into a
+// single allocation. The collapse silently aliased the keys and
+// values backings of a map[K]V where K==V (typeof(makeKeys) ==
+// typeof(makeVals) AND identical len/cap args), making every
+// stored value overwrite its sibling. AuxInt isn't otherwise used
+// by the codegen for these ops.
+var wasm3AllocIDCounter int64
+
+func wasm3NextAllocID() int64 {
+	wasm3AllocIDCounter++
+	return wasm3AllocIDCounter
+}
+
 // An intrinsicBuilder converts a call node n into an ssa value that
 // implements that call as an intrinsic. args is a list of arguments to the func.
 type intrinsicBuilder func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value
@@ -162,9 +177,13 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		// array; we use the slice type so the helper resolves to the
 		// elem's backing via t.Elem(). args[0] is the rtype (discard);
 		// args[1] is len, args[2] is cap.
+		// AuxInt carries a unique per-call-site identifier so generic
+		// CSE doesn't collapse two distinct make([]int, n) calls into
+		// one allocation (which would alias the keys/values backings
+		// in mapassignfull when K==V).
 		sliceType := types.NewSlice(elem)
-		v := s.newValue3(ssa.OpWasm3MakeSlice, types.Types[types.TUNSAFEPTR], args[1], args[2], s.mem())
-		v.Aux = sliceType
+		v := s.newValue3A(ssa.OpWasm3MakeSlice, types.Types[types.TUNSAFEPTR], sliceType, args[1], args[2], s.mem())
+		v.AuxInt = wasm3NextAllocID()
 		return v
 	}
 	add("runtime", "makeslice", wasm3MakeSliceIntrinsic, sys.ArchWasm3)
@@ -186,7 +205,11 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		// argument-less struct.new_default with the map type as aux.
 		// The size hint (args[1] for makemap*, none for makemap_small)
 		// is currently ignored — the linear-seek impl grows on demand.
+		// AuxInt carries a unique per-call-site identifier so generic
+		// CSE doesn't collapse two distinct make(map[K]V) calls into
+		// one allocation.
 		v := s.newValue0A(ssa.OpWasm3MakeMap, types.Types[types.TUNSAFEPTR], mapType)
+		v.AuxInt = wasm3NextAllocID()
 		return v
 	}
 	add("runtime", "makemap", wasm3MakeMapIntrinsic, sys.ArchWasm3)

@@ -385,7 +385,7 @@ func init() {
 		// wasm3RegisterArrayBacking. arg0=len, arg1=cap, arg2=mem.
 		// Indexing on a Wasm3MakeSlice-derived OpSlicePtr lowers via
 		// Wasm3.rules to ArrayGet / ArraySet on the ref.
-		{name: "MakeSlice", argLength: 3, reg: gp21, aux: "Typ", typ: "BytePtr"},
+		{name: "MakeSlice", argLength: 3, reg: gp21, aux: "TypInt", typ: "BytePtr", hasSideEffects: true},
 
 		// M3 per-type maps: `make(map[K]V[, hint])` allocates a fresh
 		// $go.map.<K,V> WasmGC struct with cap=0, used=0, keys=null,
@@ -397,7 +397,7 @@ func init() {
 		// args (mirroring OpWasm3StructNewDefault). Result is the
 		// freshly-allocated map ref, wasm-typed as anyref so the per-
 		// value local holds the actual ref.
-		{name: "MakeMap", argLength: 0, reg: gp01, aux: "Typ", typ: "BytePtr"},
+		{name: "MakeMap", argLength: 0, reg: gp01, aux: "TypInt", typ: "BytePtr", hasSideEffects: true},
 
 		// M3 per-type maps: `clear(m)` resets a $go.map.<K,V> back to
 		// empty — used=0, cap=0, keys=null, values=null. Nulling the

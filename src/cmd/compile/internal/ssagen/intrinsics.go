@@ -345,6 +345,17 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		return nil
 	}, sys.ArchWasm3)
 
+	// M4 Phase 3: runtime/wasm.Suspend() emits a wasm `suspend
+	// $Wasm3TagIndexPark` instruction. The current cont yields back to
+	// the most recent enclosing resume with a park-tag handler. Mem-
+	// chained so the suspend point participates in the memory order.
+	add("runtime/wasm", "Suspend", func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		v := s.newValue1(ssa.OpWasm3Suspend, types.TypeMem, s.mem())
+		v.AuxInt = wasm3NextAllocID()
+		s.vars[memVar] = v
+		return nil
+	}, sys.ArchWasm3)
+
 	add("runtime", "wasm3MapUsed", wasm3MapFieldGetter(ssa.OpWasm3MapUsed, types.Types[types.TUINTPTR]), sys.ArchWasm3)
 	add("runtime", "wasm3MapCap", wasm3MapFieldGetter(ssa.OpWasm3MapCap, types.Types[types.TUINTPTR]), sys.ArchWasm3)
 	add("runtime", "wasm3MapKeys", wasm3MapFieldGetter(ssa.OpWasm3MapKeys, nil), sys.ArchWasm3)

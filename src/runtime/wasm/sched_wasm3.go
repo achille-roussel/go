@@ -33,3 +33,19 @@ package wasm
 func RunInCont(fn func()) {
 	panic("runtime/wasm: RunInCont intrinsic not registered (ssagen.intrinsics, sys.ArchWasm3)")
 }
+
+// Suspend yields control back to the most recent enclosing resume that
+// installed a handler for the M4 "goroutine park" tag (the singleton
+// declared by cmd/link/internal/wasm/asm3.go writeTagSec3 at
+// Wasm3TagIndexPark=0). When the suspended continuation is later
+// resumed, Suspend returns.
+//
+// Calling Suspend outside of a cont resumed with a park-tag handler
+// installed traps with "uncaught tag" — Phase 3 callers run inside a
+// resume that catches the tag, so this is correct by construction.
+//
+// The tag carries no payload today; values flow through wasm globals
+// or runtime side channels in the meantime (see [wasm3sched-anyref-shape]).
+func Suspend() {
+	panic("runtime/wasm: Suspend intrinsic not registered (ssagen.intrinsics, sys.ArchWasm3)")
+}

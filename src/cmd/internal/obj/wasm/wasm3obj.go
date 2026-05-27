@@ -73,6 +73,12 @@ func wasm3GlobalIndex(reg int16) (uint64, bool) {
 // placeholder; repurposed here).
 const Wasm3GlobalIndexLinearBumpPtr = 0
 
+// Wasm3TagIndexPark is the wasm tag index of the M4 "goroutine park"
+// tag declared by cmd/link/internal/wasm/asm3.go writeTagSec3. Every
+// suspend that yields back to the cont-running resume references this
+// index. The tag is currently typed (param) — no payload.
+const Wasm3TagIndexPark = 0
+
 // Wasm3GlobalIndexCtxRef is the index of the CTXT_REF anyref module
 // global (see writeGlobalSec3). Exposed so the compile-side codegen
 // for OpWasm3LoweredGetClosureRef can emit `global.get 2` without
@@ -1147,6 +1153,19 @@ func encodeWasm3Body(ctxt *obj.Link, s *obj.LSym) (body []byte, ok bool) {
 					Add:  p.From.Offset,
 				})
 				writeUleb128(w, uint64(p.To.Offset))
+				continue
+
+			case ASuspend:
+				// suspend $tagidx — single tagidx operand, encoded as
+				// a ULEB128 immediate after the opcode byte. The wasm3
+				// backend currently only emits the M4 park tag (idx 0,
+				// see Wasm3TagIndexPark); the wasm-link side has only
+				// one tag declared, so the literal byte is always 0x00.
+				if p.From.Type != obj.TYPE_CONST {
+					return nil, false
+				}
+				writeOpcode(w, p.As)
+				writeUleb128(w, uint64(p.From.Offset))
 				continue
 
 			case AContNew:

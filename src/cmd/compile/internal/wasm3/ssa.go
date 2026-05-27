@@ -830,6 +830,12 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		p := s.Prog(wasm.AGlobalSet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm.Wasm3GlobalIndexLinearBumpPtr)}
 
+	case ssa.OpWasm3Suspend:
+		// M4 Phase 3: suspend $Wasm3TagIndexPark — yield to the
+		// enclosing resume with a park-tag handler installed.
+		ps := s.Prog(wasm.ASuspend)
+		ps.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm.Wasm3TagIndexPark)}
+
 	case ssa.OpWasm3RunInCont:
 		// M4 Phase 2: wrap Aux's function in a cont, resume it. The
 		// cont's body type is (func) — no params, no results — so
@@ -2807,7 +2813,7 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		localGetIdx(s, offLocal)
 		s.Prog(wasm.AI64ExtendI32U)
 
-	case ssa.OpWasm3ContNew, ssa.OpWasm3ContBind, ssa.OpWasm3Suspend, ssa.OpWasm3Resume, ssa.OpWasm3ResumeThrow, ssa.OpWasm3Switch:
+	case ssa.OpWasm3ContNew, ssa.OpWasm3ContBind, ssa.OpWasm3Resume, ssa.OpWasm3ResumeThrow, ssa.OpWasm3Switch:
 		// M4 Phase 1: the stack-switching SSA ops are declared so the
 		// SSA framework generates the constants and the assembler
 		// recognises their opcode bytes (cmd/internal/obj/wasm). No

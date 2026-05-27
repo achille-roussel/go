@@ -534,6 +534,7 @@ func asmb2_3(ctxt *ld.Link, ldr *loader.Loader) {
 	// unreachable stub. See doc/wasm3-m3-stage-f-interfaces.md.
 	writeTableSec3(ctxt, len(m.imports), len(m.funcs))
 	writeMemorySec(ctxt, ldr)
+	writeTagSec3(ctxt)
 	writeGlobalSec3(ctxt, ldr, m, hostImportMap)
 	writeExportSec(ctxt, ldr, len(m.imports))
 	refFns := collectWasm3RefFuncs(ctxt, ldr, len(m.imports))
@@ -745,6 +746,35 @@ func writeWasm3FuncBody(ctxt *ld.Link, ldr *loader.Loader, fn loader.Sym, wfn *b
 		}
 	}
 	wfn.Write(P[off:])
+}
+
+// Wasm3TagIndexPark is the tag index of the single M4 "goroutine park"
+// tag declared by writeTagSec3. Every suspend that hands control back to
+// the goroutine scheduler uses this tag; every cont-running resume site
+// installs a handler for it.
+const Wasm3TagIndexPark = 0
+
+// writeTagSec3 writes the WebAssembly 3.0 tag section for GOARCH=wasm3.
+// One tag is declared today (Wasm3TagIndexPark), typed `(tag (param))`
+// — i.e. carrying no payload. M4 Phase 3 uses it for gopark/goready;
+// M5 (panic) will add an exception tag carrying the panic value alongside.
+//
+// Wasm tag declaration:
+//
+//	tagsec := vec(tag)
+//	tag    := byte typeidx   ; byte=0 (exception attribute)
+//
+// The typeidx points at a (func) type — for stack-switching tags, the
+// "function" describes the tag's payload shape. We reuse
+// TypeGoGoroutineEntry, which is the prelude (func) — no params,
+// matching our zero-payload tag.
+func writeTagSec3(ctxt *ld.Link) {
+	sizeOffset := writeSecHeader(ctxt, sectionTag)
+	writeUleb128(ctxt.Out, 1) // tag count
+	// tag 0 (Wasm3TagIndexPark): attribute=0 (exception), typeidx=TypeGoGoroutineEntry.
+	ctxt.Out.WriteByte(0x00)
+	writeUleb128(ctxt.Out, uint64(wasmgc.TypeGoGoroutineEntry))
+	writeSecSize(ctxt, sizeOffset)
 }
 
 // writeTypeSec3 writes the WebAssembly 3.0 type section: a single

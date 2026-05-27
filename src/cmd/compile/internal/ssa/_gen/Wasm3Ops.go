@@ -752,9 +752,13 @@ func init() {
 		// arg0 = source cont. Result is the bound cont. Aux = dst type sym.
 		{name: "ContBind", argLength: 1, reg: gp11, aux: "Sym", symEffect: "None", typ: "BytePtr", hasSideEffects: true},
 
-		// Suspend: suspend $tag. arg0 = tag payload (anyref). Result is
-		// the resume argument (anyref). Aux = tag sym.
-		{name: "Suspend", argLength: 1, reg: gp11, aux: "Sym", symEffect: "None", typ: "BytePtr", hasSideEffects: true},
+		// Suspend: suspend $Wasm3TagIndexPark. No payload (the park tag
+		// is typed as the prelude's (func), i.e. zero params); when the
+		// containing cont is later resumed, control returns here. Mem-
+		// chained so the suspend point participates in the memory order
+		// alongside the resume that catches it. argLength: 1 (mem); no
+		// result; AuxInt unused.
+		{name: "Suspend", argLength: 1, reg: regInfo{}, typ: "Mem", hasSideEffects: true},
 
 		// Resume: resume $typ {handler-table}. arg0 = cont, arg1 = arg.
 		// Result is the value returned by the cont (or the value

@@ -39,6 +39,7 @@ const (
 	sectionElement  = 9
 	sectionCode     = 10
 	sectionData     = 11
+	sectionTag      = 13 // Wasm 3.0 exception handling & stack switching
 )
 
 // funcValueOffset is the offset between the PC_F value of a function and the index of the function in WebAssembly

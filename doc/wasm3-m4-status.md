@@ -113,18 +113,53 @@ and refuses to instantiate any module declaring a continuation type.
 
 ## Engine path forward
 
-The wasmfx-style host runtime for V8 is under active development
-upstream; track [v8.dev wasm stack-switching status]. Wasmtime's
-implementation is gated on the proposal stabilising (`-W
-stack-switching=y` is not yet wired to compiler support as of 44.0.1).
-For our purposes:
+Three options for unblocking M4 runtime validation, ordered by
+near-term viability:
 
-- Re-test quarterly: a `wasm.RunInCont(body)` where body calls
-  `wasm.Suspend()` is the canary. If that program runs (and the
-  suspend is caught by the enclosing resume), the rest of M4 unblocks.
-- Until then, **GOARCH=wasm3 single-goroutine programs ship** —
-  print, maps, slices, strings, the bridge — and produce the full
-  binary-size win the milestone targets.
+1. **wasmfxtime** (github.com/wasmfx/wasmfxtime) — a wasmtime fork by
+   the WasmFX team that implements the full `cont.new`/`resume`/
+   `suspend`/`switch` runtime. Recommended reference engine for wasm3
+   M4 validation today. Last push 2026-04-02, actively maintained.
+   Requires Rust + ~15-minute build from source; no prebuilt binaries.
+   Once installed, all Phase 4-7 work can validate end-to-end against
+   it; V8 / wasmtime mainline catch up over time.
+
+2. **V8 mainline wasmfx executor** — under active development by
+   Francis McCabe / Thibaud Michaud at Google. The "[wasmfx] Plumb
+   switch handler through to code gen" CL landed Feb 2026; the actual
+   `resume` dispatch CLs are still in flight. Tracking bug:
+   [crbug 42202153](https://issues.chromium.org/issues/42202153).
+   No public target milestone. Re-check quarterly via the canary
+   `wasm.RunInContCatchSuspend(body)` where body calls
+   `wasm.Suspend()` — when that program runs end-to-end on a stock
+   Node (or chrome with `chrome://flags/#enable-experimental-
+   webassembly-wasmfx`), the rest of M4 unblocks for free.
+
+3. **Wasmtime mainline** — `-W stack-switching=y` is recognised but
+   gated on "compiler configuration" (as of 44.0.1). Upstream is
+   tracking the WasmFX team's wasmfxtime work; expect this to merge
+   incrementally over the next release cycles.
+
+NOT viable for wasm3 M4:
+
+- **Wasmer 7.x** — does NOT support the wasmfx instruction set
+  (`cont.new`/`resume`/`suspend`). Their 7.0 release shipped a host-
+  side "Stack Switching" feature, but it's actually WASIX
+  green-threads via a host API — different mechanism, same name.
+  Wasmer 7.1 doesn't even support WasmGC (no `--enable-gc` flag),
+  which is a prerequisite for wasm3 binaries.
+- **JSPI (`--experimental-wasm-stack-switching`)** — a different
+  proposal that conflicts with the same-name "stack switching"
+  label. JSPI uses JavaScript Promise integration; it is production-
+  ready in V8 today but only useful for a JS-host environment
+  (browser or Node script), not for `wasip1`. See
+  [wasm3-bag-of-stacks plan](../.claude/plans/goroutines-continuations-bag-of-stacks.md)
+  "js/wasm3 goroutines via JSPI" for the future-work track that
+  uses JSPI on `GOOS=js`.
+
+Meanwhile, **GOARCH=wasm3 single-goroutine programs ship** — print,
+maps, slices, strings, the bridge — and produce the full binary-size
+win the milestone targets.
 
 ## Toolchain primitives added since first status (December 2025)
 

@@ -410,8 +410,7 @@ func (c *typeCollector) collectMapStruct(t *types.Type) int {
 // elem typing — neither of which the wasm3 backend can marshal at
 // the runtime-call boundary).
 //
-// Shape (minimum viable allocation; per-T send/recv ops are
-// follow-up work that will read/write these fields):
+// Shape:
 //
 //	(type go.chan.<T> (struct
 //	    (field (mut i64))                    ;; qcount  (live buffered count; field 0 — len() convention)
@@ -419,14 +418,18 @@ func (c *typeCollector) collectMapStruct(t *types.Type) int {
 //	    (field (mut i64))                    ;; sendx
 //	    (field (mut i64))                    ;; recvx
 //	    (field (mut (ref null (array T))))   ;; buf (nil for unbuffered)
-//	    (field (mut i8))))                   ;; closed
+//	    (field (mut i8))                     ;; closed
+//	    (field (mut i32))                    ;; sendParkID — single waiting sender (0 = none)
+//	    (field (mut i32))))                  ;; recvParkID — single waiting receiver (0 = none)
 //
-// `qcount` is field 0 to match the standard chan's len() lowering
-// (which reads at byte offset 0 of the chan pointer). sendq/recvq
-// (sudog queues) are deferred to the send/recv ops follow-up —
-// blocking goroutine handoff goes through wasm3PreparePark /
-// wasm3Goready (see runtime/sched_jswasm3.go) using the sudog
-// allocator the standard runtime already provides.
+// `qcount` is field 0 to match the standard chan's len() lowering.
+// sendParkID/recvParkID are single-slot wait registers — Phase 4
+// minimum, parallel to runtime/wasm.spawn's original single-slot
+// design. Multiple waiters per side need a sudog queue (next
+// milestone). Goroutine handoff uses these IDs with the JSPI
+// WasmPark/WasmReady primitives directly (see
+// runtime/sched_jswasm3.go), not the standard sudog scheduler glue
+// since the per-T chan ops bypass runtime.chansend/chanrecv.
 func (c *typeCollector) collectChanStruct(t *types.Type) int {
 	if !t.IsChan() {
 		panic("wasm3: collectChanStruct on non-chan type " + t.Kind().String())
@@ -442,12 +445,14 @@ func (c *typeCollector) collectChanStruct(t *types.Type) int {
 		Kind:  wasmgc.KindStruct,
 		Super: wasmgc.TypeGoObject,
 		Fields: []wasmgc.Field{
-			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // qcount (field 0)
-			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // dataqsiz
-			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // sendx
-			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // recvx
-			{Storage: wasmgc.RefStorage(bufArrIdx, true), Mutable: true}, // buf
-			{Storage: wasmgc.PrimStorage(wasmgc.I8), Mutable: true},      // closed
+			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // 0: qcount
+			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // 1: dataqsiz
+			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // 2: sendx
+			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // 3: recvx
+			{Storage: wasmgc.RefStorage(bufArrIdx, true), Mutable: true}, // 4: buf
+			{Storage: wasmgc.PrimStorage(wasmgc.I8), Mutable: true},      // 5: closed
+			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},     // 6: sendParkID
+			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},     // 7: recvParkID
 		},
 	})
 	return idx

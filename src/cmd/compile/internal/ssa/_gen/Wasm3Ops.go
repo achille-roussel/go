@@ -403,13 +403,9 @@ func init() {
 		// WasmGC struct on js/wasm3, bypassing runtime.makechan.
 		// v.Aux is the chan *types.Type; the obj backend resolves
 		// it to the wasm $go.chan.<T> struct index via
-		// wasm3RegisterChanStruct. The size hint is recorded on
-		// AuxInt so codegen can decide to allocate a buffer
-		// (size > 0) or leave it nil. Per-T send/recv ops are
-		// follow-up work — for now allocation alone unblocks the
-		// `make(chan T)` compile error from the standard
-		// runtime.makechan call site whose *chantype arg the
-		// wasm3 backend can't marshal as anyref.
+		// wasm3RegisterChanStruct. The size hint is currently
+		// ignored — codegen leaves dataqsiz=0 and buf=null. Per-T
+		// send/recv ops + buffer init are follow-up work.
 		{name: "MakeChan", argLength: 0, reg: gp01, aux: "TypInt", typ: "BytePtr", hasSideEffects: true},
 
 		// M3 per-type maps: `clear(m)` resets a $go.map.<K,V> back to

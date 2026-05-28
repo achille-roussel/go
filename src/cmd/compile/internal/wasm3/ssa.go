@@ -3488,10 +3488,16 @@ func wasm3FieldValueNeedsRefCast(t *types.Type) bool {
 	case types.TFUNC, types.TMAP, types.TCHAN:
 		return true
 	}
-	// String/slice/interface field-value stores go through different
-	// SSA paths (BoxStore for *string/*slice/*iface cells, the boxed-
-	// component path for slice header fields). The simple FieldSet
-	// path here covers the scalar-ish ref cases above.
+	// String / slice / interface fields lower to a typed ref (the
+	// boxed header struct) per lowerFieldsImpl. The SSA value lives
+	// in an anyref local, so a ref.cast to the typed slot is
+	// required when a struct literal or direct field assignment hits
+	// the simple FieldSet path (not the boxed-component path). The
+	// boxed-component path in FieldSet uses its own cast — this
+	// covers the whole-field assignment.
+	if t.IsString() || t.IsSlice() || t.IsInterface() {
+		return true
+	}
 	return false
 }
 
@@ -3514,6 +3520,17 @@ func wasm3RefSlotTypeIdx(fi *obj.FuncInfo, t *types.Type) uint32 {
 		if elem.IsArray() {
 			return wasm3RegisterArrayBacking(fi, elem.Elem())
 		}
+	}
+	if t.IsString() {
+		wasm3EnsureCollector(fi)
+		return uint32(wasmgc.TypeGoString)
+	}
+	if t.IsSlice() {
+		return wasm3RegisterSliceStruct(fi, t)
+	}
+	if t.IsInterface() {
+		wasm3EnsureCollector(fi)
+		return uint32(wasmgc.TypeGoIface)
 	}
 	return uint32(wasmgc.TypeGoObject)
 }

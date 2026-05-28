@@ -56,42 +56,86 @@ to `unreachable` because there is no codegen yet for the
 The chan struct fields (`qcount`, `dataqsiz`, `sendx`, `recvx`,
 `buf`, `closed`) are declared but no op reads or writes them.
 
-## Next milestone: per-T chan ops
+## Architecture revision: runtime/wasm.Chan[T], not per-T SSA ops
 
-Per-T `OpWasm3ChanSend` and `OpWasm3ChanRecv` SSA ops that
-manipulate the `$go.chan.<T>` struct directly. Intrinsified at
-the same layer the makechan intrinsic now lives, with side-
-channel recording in `walkSend` / `walkRecv` to pass the chan
-`*types.Type`. The codegen:
+After a session of attempting per-T `OpWasm3ChanSend`/
+`OpWasm3ChanRecv` SSA codegen, the verdict is: **don't**. The
+per-op codegen surface is huge (each op ~100 lines of careful
+SSA construction), every iteration is gated on the wasm3
+backend's `OnWasmStackSkipped` tracker (subtle — "bad stack"
+panics that need multi-step diagnosis), and the whole tower has
+to be built before any tests run. Map ops landed via this path
+in M3 Stage E/F, but that took weeks of focused work.
 
-  - **Buffered fast path:** read `qcount`, compare against
-    `dataqsiz`. If room, read `sendx` / `buf`, array.set the
-    value, increment `sendx` and `qcount`, check `recvq` head
-    and call `WasmReady(sg.wasm3ParkID)` if non-nil. Mirror
-    for recv.
-  - **Blocking slow path:** `acquireSudog`, populate
-    `sg.wasm3ParkID = wasm3NextParkID++`, enqueue on the
-    chan's `sendq` / `recvq`, call `wasm.WasmPark(parkID)`.
-    On wake, re-check buffer state. The sudog allocator is
-    already wasm3-friendly (sudog struct lowers cleanly to
-    WasmGC).
-  - **Direct handoff optimisation:** skip the buffer when
-    `sendq`/`recvq` already has a waiter — copy directly to
-    the waiter's elem slot, wake them.
+**Better:** a generic `runtime/wasm.Chan[T]` struct + methods.
+Plain Go, testable on the host, single file, no new SSA ops.
+The walk-layer substitution for `make(chan T)` /
+`c <- v` / `<-c` becomes the only compiler-side work — much
+smaller surface than per-T intrinsics.
 
-Two missing fields need to be added to `collectChanStruct`:
-`sendq` and `recvq` (`(ref null $sudog)` each). Both need
-`collectStruct(types.RuntimeSudog)` to register the sudog
-WasmGC struct on first use.
+The slice/string/interface field-cast fix (commit `c1451c4f91`,
+this session) was the first blocker for this approach — without
+it any struct with a slice field hit
+`struct.set[1] expected (ref null $T), found anyref`. With that
+fixed, a non-generic `struct { buf []int32 }` compiles cleanly.
 
-`select` is a separate, larger milestone — needs a
-`selectgo`-equivalent driver and per-case glue. The chan ops
-above are the prerequisite.
+## Remaining blocker: generic dictionary calling convention
 
-Scope: each op is ~50-100 lines of SSA construction in
-`wasm3/ssa.go` plus an intrinsic dispatch. ~half a day per op
-for send and recv (buffered + blocking + handoff). close is
-smaller. Total: probably 2-3 focused sessions.
+Generic functions on wasm3 currently fail with the same
+type-descriptor calling-convention mismatch as the original
+makechan call:
+
+```
+CompileError: call[0] expected type anyref, found i64.const of type i64
+```
+
+Minimal repro:
+
+```go
+type box[T any] struct{ v T }
+func makeBox[T any](v T) *box[T] { return &box[T]{v: v} }
+
+func main() {
+    b := makeBox[int32](42)  // fails at instantiation
+    ...
+}
+```
+
+Cause: Go generics use GC-shape stenciling (per-shape, not
+per-instantiation). The first arg to an instantiated generic
+function is a runtime *dictionary* pointing at a type
+descriptor. The wasm3 backend lowers `*runtime.<dictionary>` as
+anyref in the callee's signature but the call site marshals
+the dictionary address as raw i64 — identical to the
+`*chantype` issue we sidestepped by intrinsifying `makechan`.
+
+Until this is fixed, `runtime/wasm.Chan[T]` is not callable.
+The fix is in the wasm3 SSA backend's calling-convention
+lowering — specifically, recognising that any `*T` arg whose
+`T` is a runtime type descriptor should marshal as a typed ref
+(via the descriptor's WasmGC ref global from M3 Stage G), not
+as a linear-memory address. Same root cause as the original
+makechan blocker; fixing it once unblocks both the chan
+integration *and* generic functions in general on wasm3.
+
+## Path forward
+
+1. **Fix the wasm3 generic-dictionary calling-convention mismatch**
+   in `cmd/compile/internal/wasm3/wasmabi.go` (or wherever the
+   call-site arg marshaling happens). One focused session of
+   wasm3 backend work.
+
+2. **Implement `runtime/wasm.Chan[T]`** as a generic struct with
+   `Send` / `Recv` / `Close` methods using `WasmPark` /
+   `WasmReady` directly. ~100 lines of plain Go, testable.
+
+3. **Walk-layer substitution** on js/wasm3: rewrite OMAKECHAN /
+   OSEND / ORECV to call `runtime/wasm.MakeChan` /
+   `.Send` / `.Recv`. The `chan T` source type maps to
+   `*wasm.Chan[T]` via the walk transformation.
+
+Without step 1 we cannot use generics in any user-facing
+chan-like API on js/wasm3, so it's the gating change.
 
 For now, programs that need concurrency on js/wasm3 can use the
 `runtime/wasm` primitives directly:

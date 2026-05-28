@@ -1,11 +1,16 @@
 # GOARCH=wasm3 GOOS=js — `chan` integration status
 
-## Status: half-done — scheduler integrated, allocation blocked
+## Status: scheduler + allocation done — per-T send/recv ops still TBD
 
-The scheduler glue (gopark/goready ↔ WasmPark/WasmReady) is
-complete and verified non-breaking. The remaining blocker is
-wasm3-backend allocation support for `make(chan T)` — a
-substantial parallel of the existing map intrinsic infrastructure.
+Two halves of the integration shipped:
+
+  1. Scheduler glue (gopark/goready ↔ WasmPark/WasmReady) —
+     commit `ab524d90cf`.
+  2. `make(chan T[, n])` allocation via `wasm3MakeChanIntrinsic`
+     + per-T `$go.chan.<T>` WasmGC struct — commit `a81818d2de`.
+
+The remaining piece is per-T `chansend` / `chanrecv` / `closechan`
+codegen that operates on the new `$go.chan.<T>` struct.
 
 ## What works
 
@@ -37,103 +42,56 @@ Verified non-breaking:
 
 ## What's blocked
 
-Stock `make(chan T, n)` fails at instantiation on js/wasm3:
+Stock `chan T` send/receive trap — programs like
 
-```
-CompileError: WebAssembly.instantiate(): Compiling function
-              "main.main" failed: call[0] expected type anyref,
-              found local.get of type i64
-```
-
-Root cause: the wasm3 backend declares `runtime.makechan`'s
-wasm-level signature with `anyref` for the `*chantype` argument
-(correct, per the M2 pointer-rep cutover — `*T` is a typed ref),
-but the call site in `main.main` marshals the type-descriptor
-arg as a raw `i64` linear-memory address:
-
-```
-;; main.main SSA → wasm:
-Get $type:chan int32(SB)     ;; loads i64 (descriptor address)
-LocalSet $1                  ;; into i64 local
-...
-LocalGet $1                  ;; i64
-I64Const $1                  ;; size i64
-CALL runtime.makechan        ;; expects (anyref, i64) — MISMATCH
+```go
+done := make(chan int32, 1)
+go func() { done <- 42 }()
+v := <-done
 ```
 
-The caller hasn't been taught that the chan type-descriptor arg
-needs to be a typed ref / anyref descriptor at this call boundary.
+compile + instantiate (allocation is done) but `main.main` lowers
+to `unreachable` because there is no codegen yet for the
+`OSEND` / `ORECV` SSA shapes operating on a `$go.chan.<T>` ref.
+The chan struct fields (`qcount`, `dataqsiz`, `sendx`, `recvx`,
+`buf`, `closed`) are declared but no op reads or writes them.
 
-## Two paths to resolution
+## Next milestone: per-T chan ops
 
-### Option A — Intrinsify `runtime.makechan` (mirror the map path)
+Per-T `OpWasm3ChanSend` and `OpWasm3ChanRecv` SSA ops that
+manipulate the `$go.chan.<T>` struct directly. Intrinsified at
+the same layer the makechan intrinsic now lives, with side-
+channel recording in `walkSend` / `walkRecv` to pass the chan
+`*types.Type`. The codegen:
 
-The existing pattern for maps:
+  - **Buffered fast path:** read `qcount`, compare against
+    `dataqsiz`. If room, read `sendx` / `buf`, array.set the
+    value, increment `sendx` and `qcount`, check `recvq` head
+    and call `WasmReady(sg.wasm3ParkID)` if non-nil. Mirror
+    for recv.
+  - **Blocking slow path:** `acquireSudog`, populate
+    `sg.wasm3ParkID = wasm3NextParkID++`, enqueue on the
+    chan's `sendq` / `recvq`, call `wasm.WasmPark(parkID)`.
+    On wake, re-check buffer state. The sudog allocator is
+    already wasm3-friendly (sudog struct lowers cleanly to
+    WasmGC).
+  - **Direct handoff optimisation:** skip the buffer when
+    `sendq`/`recvq` already has a waiter — copy directly to
+    the waiter's elem slot, wake them.
 
-  - `walkMakeMap` records the map `*types.Type` on a side channel
-    (`ir.Wasm3MakeMapTypes`).
-  - `wasm3MakeMapIntrinsic` in `ssagen/intrinsics.go` replaces
-    the call with `OpWasm3MakeMap`.
-  - `OpWasm3MakeMap` codegen in `wasm3/ssa.go` emits
-    `struct.new_default $go.map.<K,V>`.
-  - The runtime map type is bypassed entirely — wasm3 uses its
-    own simplified `$go.map.<K,V>` struct, with per-(K,V) wasm3-
-    native map operations (16 intrinsics in
-    `ssagen/intrinsics.go`).
+Two missing fields need to be added to `collectChanStruct`:
+`sendq` and `recvq` (`(ref null $sudog)` each). Both need
+`collectStruct(types.RuntimeSudog)` to register the sudog
+WasmGC struct on first use.
 
-For chan, the parallel work:
+`select` is a separate, larger milestone — needs a
+`selectgo`-equivalent driver and per-case glue. The chan ops
+above are the prerequisite.
 
-  1. Add `ir.Wasm3MakeChanTypes sync.Map`.
-  2. Modify `walkMakeChan` to record the chan `*types.Type` on
-     wasm3.
-  3. Add `OpWasm3MakeChan` SSA op declaration in
-     `ssa/_gen/Wasm3Ops.go`, regenerate.
-  4. Add `wasm3MakeChanIntrinsic` for `runtime.makechan` /
-     `runtime.makechan64`.
-  5. Define a `$go.chan.<T>` wasm3-native struct. Minimal fields:
-     `qcount`, `dataqsiz`, `buf (ref (array T))`, `sendx`,
-     `recvx`, `sendq (ref null $go.sudog)`,
-     `recvq (ref null $go.sudog)`, `closed bool`. No `elemtype`
-     pointer (the element type is encoded structurally), no
-     `lock` (single-threaded under JSPI).
-  6. Codegen for `OpWasm3MakeChan`: `struct.new_default
-     $go.chan.<T>`, then `struct.set dataqsiz`, then for n > 0
-     also `array.new_default` + `struct.set buf`.
-  7. Per-(T) wasm3-native chan operations to replace
-     `runtime.chansend` / `runtime.chanrecv` / `runtime.closechan`
-     / `runtime.chanlen` / `runtime.chancap`. Each routes
-     through `wasm3PreparePark` + WasmPark for blocking and
-     `wasm3Goready` for waking.
-  8. `select.go` parallel — `runtime.selectgo` driver paired
-     with per-case chan ops.
-
-Scope estimate: comparable to the M3 map work (~1600 lines of
-chan+select runtime to parallel; 16+ intrinsics; substantial
-codegen). Multi-day project.
-
-### Option B — Fix the calling convention for `*runtime.<type>` args
-
-Generic fix at the wasm3 SSA backend: when a runtime call's
-signature has a `*T` argument whose `T` is a runtime type
-descriptor (`chantype`, `maptype`, etc.), marshal the arg as
-the typed ref / anyref the callee expects.
-
-The needed change is in the wasm3 call lowering — specifically
-where `Get $type:foo(SB)` produces an i64 instead of a ref. The
-"descriptors as WasmGC refs" mechanism from M3 Stage G already
-materialises type descriptors as `(ref $go.object)` globals; the
-fix is to route runtime-type symbol references through that
-global rather than emitting a linear-memory address.
-
-This is more general (would fix every `*type` arg, not just
-chan), but the audit + retrofit is non-trivial.
-
-## Recommendation
-
-Option A is the cleaner mirror of existing wasm3-native patterns
-and contains less risk to other paths. Option B fixes a wider
-class of issues but requires careful audit. Both are real M4
-follow-up projects, not single-session work.
+Scope: each op is ~50-100 lines of SSA construction in
+`wasm3/ssa.go` plus an intrinsic dispatch. ~half a day per op
+for send and recv (buffered + blocking + handoff). close is
+smaller. Total: probably 2-3 focused sessions.
 
 For now, programs that need concurrency on js/wasm3 can use the
 `runtime/wasm` primitives directly:

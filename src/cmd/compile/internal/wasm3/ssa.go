@@ -2180,6 +2180,23 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p := s.Prog(wasm.AStructNewDefault)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterMapStruct(s.FuncInfo(), mapType))}
 
+	case ssa.OpWasm3MakeChan:
+		// M4: `make(chan T[, n])` allocates a fresh $go.chan.<T>
+		// WasmGC struct via struct.new_default $go.chan.<T>.
+		// v.Aux is the chan *types.Type; wasm3RegisterChanStruct
+		// resolves it to the wasm type index. The result is a
+		// zero-init chan ref. Per-T send/recv ops are follow-up
+		// work — for now this just gets the allocation past the
+		// runtime.makechan calling-convention mismatch (which the
+		// wasm3 backend can't currently marshal because the
+		// *chantype arg lowers as raw i64 instead of anyref).
+		chanType, ok := v.Aux.(*types.Type)
+		if !ok || !chanType.IsChan() {
+			v.Fatalf("OpWasm3MakeChan: v.Aux is not a chan type: %v", v.Aux)
+		}
+		p := s.Prog(wasm.AStructNewDefault)
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterChanStruct(s.FuncInfo(), chanType))}
+
 	case ssa.OpWasm3MakeSlice:
 		// M3 Stage E phase 2: replacement for the bump-heap
 		// runtime.makeslice. v.Aux is the slice's *types.Type

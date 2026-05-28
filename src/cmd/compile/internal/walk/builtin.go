@@ -377,7 +377,15 @@ func walkMakeChan(n *ir.MakeExpr, init *ir.Nodes) ir.Node {
 		argtype = types.Types[types.TINT]
 	}
 
-	return mkcall1(chanfn(fnname, 1, n.Type()), n.Type(), init, reflectdata.MakeChanRType(base.Pos, n), typecheck.Conv(size, argtype))
+	call := mkcall1(chanfn(fnname, 1, n.Type()), n.Type(), init, reflectdata.MakeChanRType(base.Pos, n), typecheck.Conv(size, argtype))
+	if buildcfg.GOARCH == "wasm3" {
+		// Record the chan *types.Type so the SSA-time
+		// wasm3MakeChanIntrinsic can emit OpWasm3MakeChan with
+		// the chan struct keyed on T. The intrinsic bypasses
+		// runtime.makechan entirely — see ir.Wasm3MakeChanTypes.
+		ir.Wasm3MakeChanTypes.Store(call, n.Type())
+	}
+	return call
 }
 
 // walkMakeMap walks an OMAKEMAP node.

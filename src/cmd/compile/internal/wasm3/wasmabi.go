@@ -833,6 +833,30 @@ func wasm3RegisterMapStruct(fi *obj.FuncInfo, t *types.Type) uint32 {
 	return uint32(idx)
 }
 
+// wasm3RegisterChanStruct is the chan counterpart of
+// wasm3RegisterMapStruct. Returns the wasm type index of the per-T
+// $go.chan.<T> WasmGC struct for a Go chan type t. See
+// collectChanStruct for shape.
+func wasm3RegisterChanStruct(fi *obj.FuncInfo, t *types.Type) uint32 {
+	if fi == nil {
+		base.Fatalf("wasm3RegisterChanStruct: fi is nil")
+	}
+	cAny, ok := wasm3LiveCollector.Load(fi)
+	var c *typeCollector
+	if ok {
+		c = cAny.(*typeCollector)
+	} else {
+		c = newTypeCollector()
+		wasm3LiveCollector.Store(fi, c)
+		if fi.WasmType == nil {
+			fi.WasmType = &obj.WasmType{}
+		}
+	}
+	idx := c.collectChanStruct(t)
+	c.writeTable(fi)
+	return uint32(idx)
+}
+
 // wasm3EnsureCollector lazily initialises the function's
 // typeCollector (and the WasmType.Table the linker reads for the
 // per-package -> module-global type-index remap) without registering

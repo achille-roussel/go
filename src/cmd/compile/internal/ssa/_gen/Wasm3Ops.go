@@ -399,6 +399,19 @@ func init() {
 		// value local holds the actual ref.
 		{name: "MakeMap", argLength: 0, reg: gp01, aux: "TypInt", typ: "BytePtr", hasSideEffects: true},
 
+		// M4: `make(chan T[, n])` allocates a fresh $go.chan.<T>
+		// WasmGC struct on js/wasm3, bypassing runtime.makechan.
+		// v.Aux is the chan *types.Type; the obj backend resolves
+		// it to the wasm $go.chan.<T> struct index via
+		// wasm3RegisterChanStruct. The size hint is recorded on
+		// AuxInt so codegen can decide to allocate a buffer
+		// (size > 0) or leave it nil. Per-T send/recv ops are
+		// follow-up work — for now allocation alone unblocks the
+		// `make(chan T)` compile error from the standard
+		// runtime.makechan call site whose *chantype arg the
+		// wasm3 backend can't marshal as anyref.
+		{name: "MakeChan", argLength: 0, reg: gp01, aux: "TypInt", typ: "BytePtr", hasSideEffects: true},
+
 		// M3 per-type maps: `clear(m)` resets a $go.map.<K,V> back to
 		// empty — used=0, cap=0, keys=null, values=null. Nulling the
 		// backings releases all key/value references for host-GC; the

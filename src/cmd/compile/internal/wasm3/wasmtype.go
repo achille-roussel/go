@@ -37,6 +37,7 @@ type typeCollector struct {
 	backing        map[*types.Type]int // slice/array element type -> backing array index
 	slices         map[*types.Type]int // Go slice type -> boxed slice-header struct index (doc/wasm3-slice-boxing.md)
 	maps           map[*types.Type]int // Go map type -> $go.map.<K,V> struct index (per-type map storage)
+	chans          map[*types.Type]int // Go chan type -> $go.chan.<T> struct index (per-T chan storage)
 	boxed          map[wasmgc.Prim]int // primitive -> boxed-scalar struct index
 	funcs          map[*types.Type]int // Go func type -> func-type table index
 	closureCtxs    map[*types.Type]int // Go func type -> per-signature closure-struct table index
@@ -52,6 +53,7 @@ func newTypeCollector() *typeCollector {
 		backing:        make(map[*types.Type]int),
 		slices:         make(map[*types.Type]int),
 		maps:           make(map[*types.Type]int),
+		chans:          make(map[*types.Type]int),
 		boxed:          make(map[wasmgc.Prim]int),
 		funcs:          make(map[*types.Type]int),
 		closureCtxs:    make(map[*types.Type]int),
@@ -395,6 +397,57 @@ func (c *typeCollector) collectMapStruct(t *types.Type) int {
 			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // cap
 			{Storage: wasmgc.RefStorage(keyArrIdx, true), Mutable: true}, // keys
 			{Storage: wasmgc.RefStorage(valArrIdx, true), Mutable: true}, // values
+		},
+	})
+	return idx
+}
+
+// collectChanStruct reserves and returns the table index of the
+// per-T chan struct $go.chan.<T> for a Go chan type t. This is the
+// M4 parallel of $go.map.<K,V> — each chan element type gets its
+// own typed buffer rather than going through the standard
+// runtime.hchan layout (which uses *_type / unsafe.Pointer for
+// elem typing — neither of which the wasm3 backend can marshal at
+// the runtime-call boundary).
+//
+// Shape (minimum viable allocation; per-T send/recv ops are
+// follow-up work that will read/write these fields):
+//
+//	(type go.chan.<T> (struct
+//	    (field (mut i64))                    ;; qcount  (live buffered count; field 0 — len() convention)
+//	    (field (mut i64))                    ;; dataqsiz (buffer capacity)
+//	    (field (mut i64))                    ;; sendx
+//	    (field (mut i64))                    ;; recvx
+//	    (field (mut (ref null (array T))))   ;; buf (nil for unbuffered)
+//	    (field (mut i8))))                   ;; closed
+//
+// `qcount` is field 0 to match the standard chan's len() lowering
+// (which reads at byte offset 0 of the chan pointer). sendq/recvq
+// (sudog queues) are deferred to the send/recv ops follow-up —
+// blocking goroutine handoff goes through wasm3PreparePark /
+// wasm3Goready (see runtime/sched_jswasm3.go) using the sudog
+// allocator the standard runtime already provides.
+func (c *typeCollector) collectChanStruct(t *types.Type) int {
+	if !t.IsChan() {
+		panic("wasm3: collectChanStruct on non-chan type " + t.Kind().String())
+	}
+	if idx, ok := c.chans[t]; ok {
+		return idx
+	}
+	bufArrIdx := c.collectBacking(t.Elem())
+	idx := len(c.table)
+	c.chans[t] = idx
+	c.table = append(c.table, wasmgc.Type{
+		Name:  "go.chan." + typeName(t.Elem()),
+		Kind:  wasmgc.KindStruct,
+		Super: wasmgc.TypeGoObject,
+		Fields: []wasmgc.Field{
+			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // qcount (field 0)
+			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // dataqsiz
+			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // sendx
+			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // recvx
+			{Storage: wasmgc.RefStorage(bufArrIdx, true), Mutable: true}, // buf
+			{Storage: wasmgc.PrimStorage(wasmgc.I8), Mutable: true},      // closed
 		},
 	})
 	return idx

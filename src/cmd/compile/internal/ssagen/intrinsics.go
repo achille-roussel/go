@@ -216,6 +216,29 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	add("runtime", "makemap64", wasm3MakeMapIntrinsic, sys.ArchWasm3)
 	add("runtime", "makemap_small", wasm3MakeMapIntrinsic, sys.ArchWasm3)
 
+	// M4 (wasm3): replace runtime.makechan / runtime.makechan64
+	// with OpWasm3MakeChan, which emits struct.new_default
+	// $go.chan.<T>. The intrinsic bypasses the runtime call
+	// entirely so the *chantype arg's i64-vs-anyref calling-
+	// convention mismatch (wasm3 backend lowers it as a raw i64
+	// linear-memory address while makechan's wasm-level signature
+	// expects anyref) never arises. The chan *types.Type comes
+	// from ir.Wasm3MakeChanTypes — same side-channel pattern as
+	// wasm3MakeMapIntrinsic. Per-T chansend/chanrecv/closechan
+	// ops are follow-up work.
+	wasm3MakeChanIntrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		entry, ok := ir.Wasm3MakeChanTypes.LoadAndDelete(n)
+		if !ok {
+			s.Fatalf("wasm3 makechan intrinsic: no recorded chan type for call %v", n)
+		}
+		chanType := entry.(*types.Type)
+		v := s.newValue0A(ssa.OpWasm3MakeChan, types.Types[types.TUNSAFEPTR], chanType)
+		v.AuxInt = wasm3NextAllocID()
+		return v
+	}
+	add("runtime", "makechan", wasm3MakeChanIntrinsic, sys.ArchWasm3)
+	add("runtime", "makechan64", wasm3MakeChanIntrinsic, sys.ArchWasm3)
+
 	// M3 per-type maps (wasm3): replace runtime.mapclear with
 	// OpWasm3MapClear, which emits struct.set on the $go.map.<K,V>'s
 	// used/cap/keys/values fields directly (no runtime call).
@@ -2800,6 +2823,20 @@ func IsIntrinsicCall(n *ir.CallExpr) bool {
 		sym := name.Sym()
 		if sym.Pkg != nil && sym.Pkg.Path == "runtime" && (sym.Name == "makeslice" || sym.Name == "makeslice64") {
 			if _, ok := ir.Wasm3MakeSliceElemTypes.Load(n); !ok {
+				return false
+			}
+		}
+		// M4: chan allocation intrinsic only fires for user-make()
+		// calls walkMakeChan recorded via ir.Wasm3MakeChanTypes.
+		// Direct in-runtime calls (e.g. makechan64 → makechan in
+		// runtime/chan.go) have no recorded entry; let them fall
+		// through to the standard call. They won't actually run on
+		// js/wasm3 because user code never reaches them — every
+		// make(chan T) goes through walkMakeChan which intrinsifies
+		// to OpWasm3MakeChan — but they must still compile cleanly
+		// when the runtime itself is built.
+		if sym.Pkg != nil && sym.Pkg.Path == "runtime" && (sym.Name == "makechan" || sym.Name == "makechan64") {
+			if _, ok := ir.Wasm3MakeChanTypes.Load(n); !ok {
 				return false
 			}
 		}

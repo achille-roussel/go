@@ -280,6 +280,7 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	if c.bubble != nil {
 		reason = waitReasonSynctestChanSend
 	}
+	wasm3PreparePark(mysg) // no-op outside js/wasm3
 	gopark(chanparkcommit, unsafe.Pointer(&c.lock), reason, traceBlockChanSend, 2)
 	// Ensure the value being sent is kept alive until the
 	// receiver copies it out. The sudog has a pointer to the
@@ -347,7 +348,8 @@ func send(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 	if sg.releasetime != 0 {
 		sg.releasetime = cputicks()
 	}
-	goready(gp, skip+1)
+	wasm3Goready(sg) // forwards to goready(gp, skip+1) outside js/wasm3
+	_ = gp
 }
 
 // timerchandrain removes all elements in channel c's buffer.
@@ -664,6 +666,7 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 	if c.bubble != nil {
 		reason = waitReasonSynctestChanReceive
 	}
+	wasm3PreparePark(mysg) // no-op outside js/wasm3
 	gopark(chanparkcommit, unsafe.Pointer(&c.lock), reason, traceBlockChanRecv, 2)
 
 	// someone woke us up
@@ -742,7 +745,8 @@ func recv(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 	if sg.releasetime != 0 {
 		sg.releasetime = cputicks()
 	}
-	goready(gp, skip+1)
+	wasm3Goready(sg) // forwards to goready(gp, skip+1) outside js/wasm3
+	_ = gp
 }
 
 func chanparkcommit(gp *g, chanLock unsafe.Pointer) bool {

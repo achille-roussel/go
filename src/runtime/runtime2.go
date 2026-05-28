@@ -443,6 +443,14 @@ type sudog struct {
 	waitlink *sudog             // g.waiting list or semaRoot
 	waittail *sudog             // semaRoot
 	c        maybeTraceableChan // channel
+
+	// wasm3ParkID is the WasmPark/WasmReady identifier on
+	// GOOS=js GOARCH=wasm3 — the parking goroutine stashes it
+	// here so the waker (which sees the sudog from chan/select's
+	// queue) can call WasmReady with the right id. Zero on every
+	// other build; the scheduler-replacement code in
+	// sched_jswasm3.go is the only writer/reader.
+	wasm3ParkID int32
 }
 
 type libcall struct {

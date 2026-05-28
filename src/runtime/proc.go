@@ -448,6 +448,15 @@ func goschedIfBusy() {
 //
 //go:linkname gopark
 func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason waitReason, traceReason traceBlockReason, traceskip int) {
+	if goos.IsJs == 1 && goarch.IsWasm3 == 1 {
+		// js/wasm3 has no scheduler — route to the WasmPark JSPI
+		// suspend primitive. The parkID is tracked on the sudog
+		// the caller stashed via wasm3PreparePark (chan/select)
+		// or, for sudog-less waits (nil chan, forever), is
+		// allocated and never woken.
+		wasm3Park(unlockf, lock)
+		return
+	}
 	if reason != waitReasonSleep {
 		checkTimeouts() // timeouts may expire while two goroutines keep the scheduler busy
 	}
@@ -484,6 +493,15 @@ func goparkunlock(lock *mutex, reason waitReason, traceReason traceBlockReason, 
 //
 //go:linkname goready
 func goready(gp *g, traceskip int) {
+	if goos.IsJs == 1 && goarch.IsWasm3 == 1 {
+		// js/wasm3: goready(gp, ...) reaches us only from non-
+		// chan/select paths (chan and select call wasm3Goready
+		// directly with the sudog). gp.wasm3ParkID is set by the
+		// per-g scheduler scaffolding once that lands; until
+		// then, this path is unreachable for the working chan/
+		// select cases and traps to surface unexpected callers.
+		throw("goready: unexpected non-chan/select caller on js/wasm3")
+	}
 	systemstack(func() {
 		ready(gp, traceskip, true)
 	})

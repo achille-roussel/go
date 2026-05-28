@@ -9,16 +9,24 @@
 // `wasm.Spawn(fn)` creates a JSPI suspender that runs fn
 // concurrently with the calling activation.
 //
-// Mechanism: Spawn enqueues fn onto a FIFO of pending spawns, then
-// asks the JS host (via the SpawnGoroutine import) to schedule a
-// new promising-wrapped call to the goroutine_run wasm export. JS
-// calls `WebAssembly.promising(instance.exports.goroutine_run)(0)`;
-// each such call is its own JSPI suspender stack. goroutine_run
+// Mechanism: Spawn enqueues fn onto a FIFO of pending spawns,
+// then asks the JS host (via the SpawnGoroutine import) to
+// schedule a new promising-wrapped call to the _run_wasm3_js
+// wasm export. JS calls
+// `WebAssembly.promising(instance.exports._run_wasm3_js)(0)`;
+// each such call is its own JSPI suspender stack. _run_wasm3_js
 // dequeues the next pending fn and invokes it.
 //
+// Name parallel: `_rt0_wasm3_js` is the program entry point
+// (exported as `run`); `_run_wasm3_js` is the per-goroutine
+// entry point (exported under its own name). Same family
+// (initial wasm activation) — the `_rt0` flavor runs main,
+// the `_run` flavor runs one Spawned fn.
+//
 // The queue lets a tight `for { go worker() }` loop spawn N
-// goroutines before any of them runs — every spawn lands on the
-// queue, every queueMicrotask'd goroutine_run consumes one.
+// goroutines before any of them runs — every spawn lands on
+// the queue, every queueMicrotask'd _run_wasm3_js consumes
+// one.
 
 package wasm
 
@@ -33,8 +41,9 @@ type spawnNode struct {
 // run); tail is the newest (where Spawn appends). nil = empty.
 //
 // Single-threaded: wasm is single-activation under JSPI (a
-// suspender either holds the engine or is suspended on a Promise
-// — never two at once), so Spawn and goroutineRun never race.
+// suspender either holds the engine or is suspended on a
+// Promise — never two at once), so Spawn and _run_wasm3_js
+// never race.
 var (
 	spawnHead *spawnNode
 	spawnTail *spawnNode
@@ -42,12 +51,18 @@ var (
 
 // Spawn schedules fn to run as a new JSPI-goroutine. fn runs in
 // its own suspender stack the next time the JS event loop runs
-// the queued promising call to goroutine_run.
+// the queued promising call to _run_wasm3_js.
 //
-// //go:noinline so the queue mutations and the wasmSpawn host call
-// survive inlining as a coherent block — the only reader is
-// goroutineRun via the //go:wasmexport entry, which the inliner
-// doesn't see as a use of the FIFO.
+// Lifetime is bounded by the program: when main returns, the JS
+// host exits immediately, dropping any pending or in-flight
+// spawns along with the rest of the process state (matching Go
+// semantics — `go fn()` does not keep the program alive past
+// main).
+//
+// //go:noinline so the queue mutations and the wasmSpawn host
+// call survive inlining as a coherent block — the only reader
+// is _run_wasm3_js via the //go:wasmexport entry, which the
+// inliner doesn't see as a use of the FIFO.
 //
 //go:noinline
 func Spawn(fn func()) {
@@ -61,23 +76,23 @@ func Spawn(fn func()) {
 	wasmSpawn(0)
 }
 
-// wasmSpawn tells the JS host to schedule a new promising call to
-// goroutine_run(id). Non-suspending — returns immediately.
+// wasmSpawn tells the JS host to schedule a new promising call
+// to _run_wasm3_js(id). Non-suspending — returns immediately.
 //
 //go:wasmimport gojs runtime.SpawnGoroutine
 //go:noescape
 func wasmSpawn(id int32)
 
-// goroutineRun is the entry point JS calls for each spawn. It
+// _run_wasm3_js is the entry point JS calls for each spawn. It
 // dequeues the next pending fn and invokes it. Exposed as a
 // promising-wrapped export by the JS shim.
 //
-// //go:noinline because the dequeue dance must survive across the
-// JSPI activation boundary as a single logical block.
+// //go:noinline because the dequeue dance must survive across
+// the JSPI activation boundary as a single logical block.
 //
-//go:wasmexport goroutine_run
+//go:wasmexport _run_wasm3_js
 //go:noinline
-func goroutineRun(id int32) {
+func _run_wasm3_js(id int32) {
 	if spawnHead == nil {
 		return
 	}

@@ -128,22 +128,33 @@ async function main() {
     };
 
     // Phase 4 spawn machinery: SpawnGoroutine(id) tells the host
-    // to schedule a fresh promising-wrapped goroutine_run(id) call
+    // to schedule a fresh promising-wrapped _run_wasm3_js(id) call
     // on the next microtask. Each such call is its own JSPI
     // suspender — concurrent independently-suspendable wasm
     // activations.
     //
-    // promisingGoroutineRun is created after instantiation because
+    // promisingRunWasm3JS is created after instantiation because
     // it references the export.
-    let promisingGoroutineRun = null;
+    let promisingRunWasm3JS = null;
     importObject.gojs["runtime.SpawnGoroutine"] = (id) => {
-        // Use queueMicrotask so the spawning call returns before
-        // the new goroutine starts. The new goroutine runs on its
-        // own JSPI suspender via the promising wrapper.
-        queueMicrotask(() => {
-            if (promisingGoroutineRun) {
-                promisingGoroutineRun(Number(id)).catch((e) => {
-                    console.error("goroutine_run failed:", e);
+        // Schedule the new goroutine at the next *task* boundary
+        // (setImmediate), not the next microtask. This is what
+        // gives "main returns => process exits immediately"
+        // semantics: when main.main returns without ever yielding,
+        // run() resolves and main()'s await-continuation + the
+        // .then(process.exit) callback are both microtasks queued
+        // after the wasm activation finishes. Microtasks drain
+        // fully before setImmediate fires, so process.exit lands
+        // first and the spawned goroutine is dropped on the floor
+        // (along with every other pending host resource). When
+        // main DOES yield (e.g. via WasmPark), it parks on a
+        // Promise; the event loop processes microtasks (none new),
+        // then immediates — the spawn fires while main is parked,
+        // which is the case we want it to.
+        setImmediate(() => {
+            if (promisingRunWasm3JS) {
+                promisingRunWasm3JS(Number(id)).catch((e) => {
+                    console.error("_run_wasm3_js failed:", e);
                 });
             }
         });
@@ -163,15 +174,24 @@ async function main() {
     // wasm `run` returns.
     const run = WebAssembly.promising(rawRun);
 
-    // Phase 4: wrap goroutine_run as promising for the spawn path.
-    if (typeof instance.exports.goroutine_run === "function") {
-        promisingGoroutineRun = WebAssembly.promising(instance.exports.goroutine_run);
+    // Phase 4: wrap _run_wasm3_js as promising for the spawn path.
+    if (typeof instance.exports._run_wasm3_js === "function") {
+        promisingRunWasm3JS = WebAssembly.promising(instance.exports._run_wasm3_js);
     }
 
     await run();
 }
 
-main().catch((err) => {
-    console.error(err);
-    process.exit(1);
-});
+// Go program semantics: when main returns, the program exits
+// immediately. Any in-flight goroutines (pending microtasks for
+// _run_wasm3_js, parked WasmPark Promises, queued timers from
+// SleepMs) are dropped along with the rest of process state.
+// `go fn()` does NOT keep the program alive past main, matching
+// the runtime behavior of every other Go target. os.Exit will
+// land here too once it's wired up.
+main()
+    .then(() => process.exit(0))
+    .catch((err) => {
+        console.error(err);
+        process.exit(1);
+    });

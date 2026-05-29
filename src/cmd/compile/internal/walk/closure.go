@@ -164,15 +164,32 @@ func walkClosure(clo *ir.ClosureExpr, init *ir.Nodes) ir.Node {
 			// Pick an intrinsic by the shape group of all
 			// captures. All same-precision floats go through
 			// the F32 / F64 multi-arity intrinsics; all integers
-			// or pointers go through the uintptr-arg InlineN.
-			// Mixed shapes (e.g. one int + one float) have no
-			// intrinsic and fall through to legacy.
+			// or pointers / chans / maps / funcs go through the
+			// uintptr-arg InlineN. Mixed shapes (e.g. one int +
+			// one float) have no intrinsic and fall through.
 			shape := wasm3CaptureShape(clofn.ClosureVars)
 			if shape != wasm3ShapeMixed {
 				fnName, ok := wasm3InlineIntrinsicName(n, shape)
 				if !ok {
 					goto wasm3LegacyClosure
 				}
+				// Publish the original Go capture types to the
+				// side channel so the SSA-time
+				// OpWasm3MakeClosureRefInline codegen builds the
+				// per-closure ctx struct with typed-ref fields
+				// (rather than fallback-i64 derived from the
+				// uintptr-coerced arg type). Same side-channel
+				// pattern the single-composite-capture path uses
+				// — see Wasm3ClosureBodyCaptures and
+				// captureClosureFields.
+				capTypes := make([]*types.Type, n)
+				for i, cv := range clofn.ClosureVars {
+					capTypes[i] = cv.Type()
+				}
+				wasm.Wasm3ClosureBodyCaptures.Store(clofn.Nname.Linksym(), &wasm.Wasm3ClosureBodyInfo{
+					FuncType: clofn.Type(),
+					Captures: capTypes,
+				})
 				fn := typecheck.LookupRuntime(fnName)
 				closureType := reflectdata.TypePtrAt(base.Pos, clo.Type())
 				fnSym := ir.NewUnaryExpr(base.Pos, ir.OCFUNC, clofn.Nname)
@@ -339,7 +356,20 @@ func wasm3ScalarByValClosureVar(v *ir.Name) bool {
 		return false
 	}
 	t := v.Type()
-	return t.IsInteger() || t.IsPtr() || t.IsUnsafePtr() || t.IsFloat()
+	// Integer / float / pointer all map to a single per-capture
+	// wasm field. Pointer / chan / map / func are ref-typed at
+	// the wasm level (per the M2 cutover); they go through the
+	// uintptr shape group and land in a typed (ref null $T) slot
+	// of the per-closure subtype via captureClosureFields. The
+	// caller-side OpWasm3MakeClosureRefInline ref.casts the
+	// anyref-typed value before struct.new.
+	if t.IsInteger() || t.IsPtr() || t.IsUnsafePtr() || t.IsFloat() {
+		return true
+	}
+	if t.IsChan() || t.IsMap() || t.Kind() == types.TFUNC {
+		return true
+	}
+	return false
 }
 
 // wasm3AllScalarByVal is wasm3ScalarByValClosureVar lifted over a
@@ -398,7 +428,7 @@ func wasm3CaptureShape(vars []*ir.Name) wasm3CapShape {
 // caller's predicate has already rejected such captures.
 func wasm3SlotShape(t *types.Type) wasm3CapShape {
 	switch {
-	case t.IsInteger(), t.IsPtr(), t.IsUnsafePtr():
+	case t.IsInteger(), t.IsPtr(), t.IsUnsafePtr(), t.IsChan(), t.IsMap(), t.Kind() == types.TFUNC:
 		return wasm3ShapeUintptr
 	case t.IsFloat() && t.Size() == 4:
 		return wasm3ShapeF32
@@ -454,6 +484,19 @@ func wasm3CaptureAsUintptr(captured ir.Node) ir.Node {
 	t := captured.Type()
 	if t.IsInteger() {
 		return typecheck.Conv(captured, types.Types[types.TUINTPTR])
+	}
+	// Chan / map / func don't accept a direct *(unsafe.Pointer)
+	// cast in Go's type system, but the runtime intrinsic's
+	// uintptr param lowers to a single i64 slot on every arch
+	// except wasm3 — on wasm3 the inline-N intrinsic's body is
+	// replaced by OpWasm3MakeClosureRefInline which reads each
+	// per-T capture type from the side channel
+	// (Wasm3ClosureBodyCaptures), so the SSA-level arg type
+	// can stay as the original chan/map/func. ConvNop preserves
+	// the anyref-typed SSA value while satisfying the call's
+	// uintptr-typed parameter slot at the typechecker.
+	if t.IsChan() || t.IsMap() || t.Kind() == types.TFUNC {
+		return typecheck.ConvNop(captured, types.Types[types.TUINTPTR])
 	}
 	via := typecheck.ConvNop(captured, types.Types[types.TUNSAFEPTR])
 	return typecheck.Conv(via, types.Types[types.TUINTPTR])

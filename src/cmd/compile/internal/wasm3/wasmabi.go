@@ -551,24 +551,41 @@ func wasm3LookupPerClosureCtx(fi *obj.FuncInfo, sym *obj.LSym) uint32 {
 // wasm-typed locals that the closure body's signature exposes.
 //
 // Mapping:
-//   - scalar int/ptr/unsafe.Pointer → 1 i64 field (the legacy
-//     uintptr-shape encoding; the closure body's pointer-deref code
-//     still emits i32.wrap + i64.load).
+//   - scalar int                    → 1 i64 field
+//   - pointer (*T)                  → 1 typed ref field
+//     (pointerStorage(T)) — wasm3 lowers Go pointers as typed
+//     WasmGC refs since the M2 cutover; the legacy i64 here lost
+//     type info and caused struct.new-with-anyref mismatches at
+//     every closure that captured a ref-typed pointer.
+//   - unsafe.Pointer                → 1 ref-to-go.object field.
+//   - chan / map / func             → 1 ref-to-go.object field
+//     (matches lowerFieldsImpl's TCHAN/TMAP/TFUNC).
 //   - float32/float64               → 1 F32 / F64 field.
 //   - slice                         → 3 fields (anyref backing, i64
 //     len, i64 cap), matching flatPrimitiveFields(TSLICE).
-//   - string                        → 2 fields (anyref bytes, i64
+//     (Legacy multi-field shape kept to avoid disturbing the
+//     existing caller-side slice-capture push.)
+//   - string                        → 2 fields (i64 data ptr, i64
 //     len), matching flatPrimitiveFields(TSTRING).
-//   - array                         → 1 anyref field; the body
-//     reads it back as a typed-ref via array.get.
+//   - array                         → N i64 fields, one per
+//     element.
 //
 // Any other type panics — composite captures beyond the above are
 // caller's responsibility to gate behind the captures-in-struct
 // predicate.
-func captureClosureFields(t *types.Type) []wasmgc.Field {
+//
+// Method on typeCollector so pointer captures can register the
+// pointee's WasmGC struct type lazily via pointerStorage.
+func (c *typeCollector) captureClosureFields(t *types.Type) []wasmgc.Field {
 	switch {
-	case t.IsInteger(), t.IsPtr(), t.IsUnsafePtr():
+	case t.IsInteger():
 		return []wasmgc.Field{{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true}}
+	case t.IsUnsafePtr():
+		return []wasmgc.Field{{Storage: wasmgc.RefStorage(wasmgc.TypeGoObject, true), Mutable: true}}
+	case t.IsPtr():
+		return []wasmgc.Field{{Storage: c.pointerStorage(t.Elem()), Mutable: true}}
+	case t.IsChan(), t.IsMap(), t.Kind() == types.TFUNC:
+		return []wasmgc.Field{{Storage: wasmgc.RefStorage(wasmgc.TypeGoObject, true), Mutable: true}}
 	case t.IsFloat() && t.Size() == 4:
 		return []wasmgc.Field{{Storage: wasmgc.PrimStorage(wasmgc.F32), Mutable: true}}
 	case t.IsFloat() && t.Size() == 8:
@@ -605,6 +622,33 @@ func captureClosureFields(t *types.Type) []wasmgc.Field {
 	}
 	base.Fatalf("wasm3: captureClosureFields: unsupported capture type %v", t)
 	return nil
+}
+
+// captureClosureFieldIsRef reports whether the single wasm field
+// captureClosureFields produces for a Go type t is a typed-ref
+// (vs. a scalar i64/f32/f64). The caller-side
+// OpWasm3MakeClosureRefInline codegen uses this to decide whether
+// the value it pushed via getValue64 (which yields anyref for refs)
+// needs a ref.cast to the field's exact type before being consumed
+// by struct.new.
+//
+// Returns the ref's wasm type index (the same one captureClosureFields
+// embedded in the Storage) when the second return is true; otherwise
+// the index is undefined.
+func (c *typeCollector) captureClosureFieldIsRef(t *types.Type) (int, bool) {
+	switch {
+	case t.IsUnsafePtr():
+		return wasmgc.TypeGoObject, true
+	case t.IsPtr():
+		st := c.pointerStorage(t.Elem())
+		if st.IsRef() {
+			return st.RefType, true
+		}
+		return 0, false
+	case t.IsChan(), t.IsMap(), t.Kind() == types.TFUNC:
+		return wasmgc.TypeGoObject, true
+	}
+	return 0, false
 }
 
 // wasm3CaptureTypesFromSide returns the Go-level capture types
@@ -1231,7 +1275,7 @@ func (c *typeCollector) collectPerClosureCtx(sym *obj.LSym, ft *types.Type, capt
 		{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: false},
 	}
 	for _, ct := range captureTypes {
-		fields = append(fields, captureClosureFields(ct)...)
+		fields = append(fields, c.captureClosureFields(ct)...)
 	}
 	idx := len(c.table)
 	c.perClosureCtxs[sym] = idx

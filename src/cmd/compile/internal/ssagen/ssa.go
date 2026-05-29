@@ -8494,7 +8494,8 @@ func wasm3ClosureUsesCapturesInStruct(fn *ir.Func) bool {
 	)
 	slotShape := func(t *types.Type) shape {
 		switch {
-		case t.IsInteger(), t.IsPtr(), t.IsUnsafePtr():
+		case t.IsInteger(), t.IsPtr(), t.IsUnsafePtr(),
+			t.IsChan(), t.IsMap(), t.Kind() == types.TFUNC:
 			return shapeUintptr
 		case t.IsFloat() && t.Size() == 4:
 			return shapeF32

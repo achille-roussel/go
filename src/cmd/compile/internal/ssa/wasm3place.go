@@ -712,6 +712,13 @@ func wasm3ValueType(v *Value) byte {
 		// per-value local, downcast to the typed ref at struct.get /
 		// array.get use sites.
 		return wasm3ValAnyref
+	} else if t.IsChan() || t.IsMap() {
+		// Chan / map values are WasmGC refs (lowerFieldsImpl's
+		// TCHAN/TMAP path emits a ref slot). Their per-value local
+		// must be anyref so closure-capture loads via
+		// OpWasm3GetClosureField and runtime ABI returns deposit
+		// into a type-compatible local.
+		return wasm3ValAnyref
 	}
 	return wasm3ValI64
 }

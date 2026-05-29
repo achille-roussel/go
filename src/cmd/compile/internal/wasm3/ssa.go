@@ -2318,9 +2318,22 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// Legacy captures-ptr slot: 0 (new-style bodies ignore it).
 		p0 := s.Prog(wasm.AI64Const)
 		p0.From = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
-		// Push captures in order.
-		for _, a := range v.Args {
+		// Push captures in order. For ref-typed captures
+		// (pointer / chan / map / func / unsafe.Pointer) the
+		// per-closureCtx field is a typed (ref null $T); the
+		// getValue64 push yields anyref (the per-value local's
+		// type), so an explicit ref.cast is needed before
+		// struct.new consumes the value — anyref isn't a
+		// subtype of (ref null $T).
+		col, _ := wasm3LiveCollector.Load(s.FuncInfo())
+		c := col.(*typeCollector)
+		for i, a := range v.Args {
 			getValue64(s, a)
+			ct := captureTypes[i]
+			if refIdx, ok := c.captureClosureFieldIsRef(ct); ok {
+				pCast := s.Prog(wasm.ARefCastNull)
+				pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(refIdx)}
+			}
 		}
 		pn := s.Prog(wasm.AStructNew)
 		pn.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(perClosureIdx)}

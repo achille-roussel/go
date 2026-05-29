@@ -425,6 +425,35 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 					wfTypeIdx = wf.Offset
 				}
 				wasmFieldIdx++
+				// Runtime type-descriptor / generic dictionary
+				// args: the SSA arg is OpWasm3LoweredAddr (a symbol
+				// address that materialises as an i64 linear-memory
+				// constant), but the wasm3-lowered callee param is
+				// a typed ref ((ref null \$T) for *struct T). Route
+				// the arg through the descriptor's WasmGC identity
+				// ref-global (R_WASMDESCRIPTOR, same mechanism the
+				// IfaceMake itab/data wiring uses). This is what
+				// makes generic stenciled functions callable: their
+				// first arg is the GC-shape dictionary pointer
+				// (*runtime.dict-shape-T), and without this
+				// conversion the call validation fails with
+				// `call[0] expected anyref, found i64.const`.
+				if a.Op == ssa.OpWasm3LoweredAddr && calleeWasmImport == nil && wasm3ParamIsRef(regTypes[ri]) {
+					if sym, ok := a.Aux.(*obj.LSym); ok && a.AuxInt == 0 {
+						// Consume the linear-address operand (only
+						// materialises the i64 symbol addr; no
+						// linear-memory read) + drop, to keep the
+						// OnWasmStack accounting balanced. Then push
+						// the descriptor's WasmGC identity ref-
+						// global. Mirrors IfaceMake's word emitter.
+						getValue64(s, a)
+						s.Prog(wasm.ADrop)
+						pGet := s.Prog(wasm.AGlobalGet)
+						pGet.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: sym}
+						pGet.Mark = wasm.Wasm3DescriptorRef
+						continue
+					}
+				}
 				if narrow {
 					getValue32(s, a)
 				} else {
@@ -3474,6 +3503,27 @@ func wasm3ArrayComponentAtOffset(s *ssagen.State, t *types.Type, off, base int64
 		widx += n
 	}
 	return
+}
+
+// wasm3ParamIsRef reports whether a Go parameter type t lowers to a
+// typed WasmGC reference at the wasm-level call ABI (vs. a primitive
+// i64/i32/f32/f64). Mirrors wasm3PointerIsRef's logic from the SSA
+// layer's local-typing — used at the call site to decide whether an
+// OpWasm3LoweredAddr arg needs the descriptor-ref-global routing.
+func wasm3ParamIsRef(t *types.Type) bool {
+	if t == nil {
+		return false
+	}
+	if t.IsPtr() && t.Elem() != nil {
+		e := t.Elem()
+		if e.IsStruct() || e.IsArray() {
+			return true
+		}
+	}
+	if t.IsUnsafePtr() {
+		return true
+	}
+	return false
 }
 
 // wasm3FieldValueNeedsRefCast reports whether a value of Go type t,

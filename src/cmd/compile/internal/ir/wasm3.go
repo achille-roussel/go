@@ -53,3 +53,12 @@ var Wasm3MapHelperTypes sync.Map
 // $go.chan.<T>) so the *chantype arg's i64-vs-anyref calling-
 // convention mismatch never arises.
 var Wasm3MakeChanTypes sync.Map
+
+// Wasm3ChanSendTypes / Wasm3ChanRecvTypes carry the chan type
+// from walkSend / walkRecv / convas to the SSA-time intrinsics
+// for runtime.chansend1 / runtime.chanrecv1. Same side-channel
+// pattern as Wasm3MakeChanTypes.
+var (
+	Wasm3ChanSendTypes sync.Map
+	Wasm3ChanRecvTypes sync.Map
+)

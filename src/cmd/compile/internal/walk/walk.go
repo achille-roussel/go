@@ -7,6 +7,7 @@ package walk
 import (
 	"fmt"
 	"internal/abi"
+	"internal/buildcfg"
 
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/ir"
@@ -60,7 +61,11 @@ func walkRecv(n *ir.UnaryExpr) ir.Node {
 	init := ir.TakeInit(n)
 
 	n.X = walkExpr(n.X, &init)
-	call := walkExpr(mkcall1(chanfn("chanrecv1", 2, n.X.Type()), nil, &init, n.X, typecheck.NodNil()), &init)
+	rawCall := mkcall1(chanfn("chanrecv1", 2, n.X.Type()), nil, &init, n.X, typecheck.NodNil())
+	if buildcfg.GOARCH == "wasm3" {
+		ir.Wasm3ChanRecvTypes.Store(rawCall, n.X.Type())
+	}
+	call := walkExpr(rawCall, &init)
 	return ir.InitExpr(init, call)
 }
 

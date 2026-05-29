@@ -106,7 +106,11 @@ func walkAssign(init *ir.Nodes, n ir.Node) ir.Node {
 
 		n1 := typecheck.NodAddr(as.X)
 		r := recv.X // the channel
-		return mkcall1(chanfn("chanrecv1", 2, r.Type()), nil, init, r, n1)
+		call := mkcall1(chanfn("chanrecv1", 2, r.Type()), nil, init, r, n1)
+		if buildcfg.GOARCH == "wasm3" {
+			ir.Wasm3ChanRecvTypes.Store(call, r.Type())
+		}
+		return call
 
 	case ir.OAPPEND:
 		// x = append(...)

@@ -1009,7 +1009,11 @@ func walkSend(n *ir.SendStmt, init *ir.Nodes) ir.Node {
 	n1 = typecheck.AssignConv(n1, n.Chan.Type().Elem(), "chan send")
 	n1 = walkExpr(n1, init)
 	n1 = typecheck.NodAddr(n1)
-	return mkcall1(chanfn("chansend1", 2, n.Chan.Type()), nil, init, n.Chan, n1)
+	call := mkcall1(chanfn("chansend1", 2, n.Chan.Type()), nil, init, n.Chan, n1)
+	if buildcfg.GOARCH == "wasm3" {
+		ir.Wasm3ChanSendTypes.Store(call, n.Chan.Type())
+	}
+	return call
 }
 
 // walkSlice walks an OSLICE, OSLICEARR, OSLICESTR, OSLICE3, or OSLICE3ARR node.

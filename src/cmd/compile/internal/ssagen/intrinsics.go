@@ -232,12 +232,66 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			s.Fatalf("wasm3 makechan intrinsic: no recorded chan type for call %v", n)
 		}
 		chanType := entry.(*types.Type)
+		// Per-T dispatch to the runtime/wasm chan substrate. For
+		// chan int32 we route to runtime.wasm3MakeChanInt32 which
+		// wraps wasm.MakeChanInt32. Other element types still
+		// emit OpWasm3MakeChan (the allocation-only path).
+		if chanType.Elem().Kind() == types.TINT32 {
+			fn := typecheck.LookupRuntimeFunc("wasm3MakeChanInt32")
+			call := s.rtcall(fn, true, []*types.Type{types.Types[types.TUNSAFEPTR]}, args[1])
+			return call[0]
+		}
 		v := s.newValue0A(ssa.OpWasm3MakeChan, types.Types[types.TUNSAFEPTR], chanType)
 		v.AuxInt = wasm3NextAllocID()
 		return v
 	}
 	add("runtime", "makechan", wasm3MakeChanIntrinsic, sys.ArchWasm3)
 	add("runtime", "makechan64", wasm3MakeChanIntrinsic, sys.ArchWasm3)
+
+	// M4 (wasm3): chansend1 / chanrecv1 dispatch to per-T runtime
+	// helpers for the supported element types (int32 only for now,
+	// pending the wasm3 generic-dictionary calling-convention fix
+	// that would collapse them into one generic Chan[T] helper).
+	wasm3ChanSendIntrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		entry, ok := ir.Wasm3ChanSendTypes.LoadAndDelete(n)
+		if !ok {
+			return nil
+		}
+		chanType := entry.(*types.Type)
+		if chanType.Elem().Kind() != types.TINT32 {
+			return nil
+		}
+		// args[0] = chan ref (anyref). args[1] = *int32 pointer.
+		// Load the int32 through the pointer; the wasm3 backend
+		// will marshal the chan anyref to *ChanInt32 at the call
+		// ABI boundary.
+		val := s.load(types.Types[types.TINT32], args[1])
+		fn := typecheck.LookupRuntimeFunc("wasm3ChanInt32Send")
+		s.rtcall(fn, true, nil, args[0], val)
+		return nil
+	}
+	add("runtime", "chansend1", wasm3ChanSendIntrinsic, sys.ArchWasm3)
+
+	wasm3ChanRecvIntrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		entry, ok := ir.Wasm3ChanRecvTypes.LoadAndDelete(n)
+		if !ok {
+			return nil
+		}
+		chanType := entry.(*types.Type)
+		if chanType.Elem().Kind() != types.TINT32 {
+			return nil
+		}
+		fn := typecheck.LookupRuntimeFunc("wasm3ChanInt32Recv")
+		call := s.rtcall(fn, true, []*types.Type{types.Types[types.TINT32]}, args[0])
+		// args[1] is the destination *int32 (or nil if the value
+		// is being discarded). Store the received value through
+		// it when non-nil.
+		if args[1] != nil && args[1].Op != ssa.OpConstNil {
+			s.store(types.Types[types.TINT32], args[1], call[0])
+		}
+		return nil
+	}
+	add("runtime", "chanrecv1", wasm3ChanRecvIntrinsic, sys.ArchWasm3)
 
 	// M3 per-type maps (wasm3): replace runtime.mapclear with
 	// OpWasm3MapClear, which emits struct.set on the $go.map.<K,V>'s

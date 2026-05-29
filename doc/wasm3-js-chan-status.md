@@ -1,16 +1,32 @@
 # GOARCH=wasm3 GOOS=js — `chan` integration status
 
-## Status: scheduler + allocation done — per-T send/recv ops still TBD
+## Status: `chan int32` works end-to-end via stock keyword + closure capture
 
-Two halves of the integration shipped:
+End-to-end stock `chan int32` keyword works on js/wasm3:
 
-  1. Scheduler glue (gopark/goready ↔ WasmPark/WasmReady) —
-     commit `ab524d90cf`.
-  2. `make(chan T[, n])` allocation via `wasm3MakeChanIntrinsic`
-     + per-T `$go.chan.<T>` WasmGC struct — commit `a81818d2de`.
+```go
+done := make(chan int32, 1)
+wasm.Spawn(func() { done <- 7 })   // ← captures done by closure
+v := <-done                         // → 7
+```
 
-The remaining piece is per-T `chansend` / `chanrecv` / `closechan`
-codegen that operates on the new `$go.chan.<T>` struct.
+Six commits landed in sequence:
+
+  1. Scheduler glue (gopark/goready ↔ WasmPark/WasmReady) — `ab524d90cf`.
+  2. `make(chan T)` allocation via wasm3MakeChanIntrinsic — `a81818d2de`.
+  3. Slice/string/iface struct-field ref.cast fix — `c1451c4f91`.
+  4. `runtime/wasm.ChanInt32` first working channel — `898ff86821`.
+  5. Walk-substitution: stock `chan int32` keyword dispatches to
+     `wasm.ChanInt32` via runtime helpers — `8b4990e7dc`.
+  6. Closure captures of WasmGC ref types (chan/map/func/*T via
+     per-closure typed-struct fields) — `c9c9a35da7`.
+  7. Generic-dictionary calling convention at runtime-call ABI
+     (`OpWasm3LoweredAddr` with anyref param → descriptor ref-
+     global via R_WASMDESCRIPTOR) — `3a84ae020e`.
+
+Each fix is small and local; together they form an end-to-end
+working chan substrate for `chan int32` with goroutine + closure
+capture working through the normal Go syntax.
 
 ## What works
 
@@ -42,21 +58,41 @@ Verified non-breaking:
 
 ## What's blocked
 
-Stock `chan T` send/receive trap — programs like
+Other element types (`chan string`, `chan int64`, `chan T` for any
+user struct) don't yet dispatch — walk-substitution is wired only
+for `chan int32`. The fix is a generic `Chan[T]` collapsing the
+per-T variants:
 
 ```go
-done := make(chan int32, 1)
-go func() { done <- 42 }()
-v := <-done
+// runtime/wasm:
+type Chan[T any] struct { ... }
+func MakeChan[T any](n int) *Chan[T] { ... }
+func (c *Chan[T]) Send(v T) { ... }
+func (c *Chan[T]) Recv() T { ... }
 ```
 
-compile + instantiate (allocation is done) but `main.main` lowers
-to `unreachable` because there is no codegen yet for the
-`OSEND` / `ORECV` SSA shapes operating on a `$go.chan.<T>` ref.
-The chan struct fields (`qcount`, `dataqsiz`, `sendx`, `recvx`,
-`buf`, `closed`) are declared but no op reads or writes them.
+Plus walk-substitution that picks the right `MakeChan[T]`
+instantiation for any chan element type.
 
-## Architecture revision: runtime/wasm.Chan[T], not per-T SSA ops
+Verified `Chan[T]` compiles. Direct call from main works —
+generic-dictionary fix `3a84ae020e` makes the outer call cleanly
+dispatch. **But the generic body itself fails** with the same
+i64-vs-anyref calling-convention mismatch on its internal
+`new(Chan[T])` and `make([]T, n)` calls. These take a runtime-
+type-descriptor pointer derived from the dictionary, which is
+materialised inside the generic body as an i64. The runtime call
+(`runtime.newobject` / `runtime.makeslice64`) wants an anyref.
+
+Same root pattern as the outer call site we just fixed, but at a
+different SSA shape — the descriptor pointer comes from a dict
+field load (`struct.get $dict 0`) rather than from
+`OpWasm3LoweredAddr` directly. The fix is structurally similar:
+detect "ref-typed param wants anyref + arg materialises as i64
+type-descriptor pointer derived from a dict-field load" and
+emit the descriptor-ref-global lookup. Smaller-scoped than the
+outer-call fix but needs the dict-field-load detector.
+
+## Architecture: runtime/wasm.Chan[T], not per-T SSA ops
 
 After a session of attempting per-T `OpWasm3ChanSend`/
 `OpWasm3ChanRecv` SSA codegen, the verdict is: **don't**. The

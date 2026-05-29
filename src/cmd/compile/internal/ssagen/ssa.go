@@ -4058,6 +4058,13 @@ func (s *state) exprCheckPtr(n ir.Node, checkPtrOK bool) *ssa.Value {
 	case ir.ONEW:
 		n := n.(*ir.UnaryExpr)
 		if x, ok := n.X.(*ir.DynamicType); ok && x.Op() == ir.ODYNAMICTYPE {
+			// wasm3 stencils per GC-shape, so the struct layout is
+			// statically known even when the rtype arg is dynamic.
+			// Skip the dict rtype load + runtime.newobject call and
+			// emit struct.new_default on the shape's struct type.
+			if buildcfg.GOARCH == "wasm3" {
+				return s.newObject(n.Type().Elem())
+			}
 			return s.newObjectNonSpecialized(n.Type().Elem(), s.expr(x.RType))
 		}
 		return s.newObject(n.Type().Elem())

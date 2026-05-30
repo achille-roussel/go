@@ -408,6 +408,38 @@ func init() {
 		// send/recv ops + buffer init are follow-up work.
 		{name: "MakeChan", argLength: 0, reg: gp01, aux: "TypInt", typ: "BytePtr", hasSideEffects: true},
 
+		// M4 per-T chan field-access ops. struct.get / struct.set on
+		// a $go.chan.<T> at the field indices laid out by
+		// collectChanStruct (qcount=0, dataqsiz=1, sendx=2, recvx=3,
+		// buf=4, closed=5, sendParkID=6, recvParkID=7). Each *Set op
+		// is memory-typed (arg0=chan ref, arg1=value, arg2=mem).
+		// v.Aux carries the chan's *types.Type for wasm3RegisterChanStruct.
+		{name: "ChanQcount", argLength: 1, reg: gp11, aux: "Typ", typ: "Int64"},
+		{name: "ChanQcountSet", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "Typ", typ: "Mem"},
+		{name: "ChanDataqsiz", argLength: 1, reg: gp11, aux: "Typ", typ: "Int64"},
+		{name: "ChanDataqsizSet", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "Typ", typ: "Mem"},
+		{name: "ChanSendx", argLength: 1, reg: gp11, aux: "Typ", typ: "Int64"},
+		{name: "ChanSendxSet", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "Typ", typ: "Mem"},
+		{name: "ChanRecvx", argLength: 1, reg: gp11, aux: "Typ", typ: "Int64"},
+		{name: "ChanRecvxSet", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "Typ", typ: "Mem"},
+		{name: "ChanSendParkID", argLength: 1, reg: gp11, aux: "Typ", typ: "Int32"},
+		{name: "ChanSendParkIDSet", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "Typ", typ: "Mem"},
+		{name: "ChanRecvParkID", argLength: 1, reg: gp11, aux: "Typ", typ: "Int32"},
+		{name: "ChanRecvParkIDSet", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "Typ", typ: "Mem"},
+
+		// ChanBufGet reads buf[i] from a $go.chan.<T>: ref.cast
+		// chan; struct.get $chan 4; array.get $arr_T i. arg0=chan,
+		// arg1=index (i64). v.Aux=chan *types.Type. Result type is T
+		// (the SSA-result type drives wasm3 backend's per-value local
+		// typing). ChanBufSet is arg0=chan, arg1=index, arg2=v, arg3=mem.
+		{name: "ChanBufGet", argLength: 2, reg: regInfo{inputs: []regMask{gp, gp}, outputs: []regMask{gp}}, aux: "Typ"},
+		{name: "ChanBufSet", argLength: 4, reg: regInfo{inputs: []regMask{gp, gp, gp}}, aux: "Typ", typ: "Mem"},
+
+		// ChanBufAlloc allocates the buf array: array.new_default
+		// $arr_T (i32.wrap cap); struct.set $chan 4. arg0=chan,
+		// arg1=cap (i64), arg2=mem. v.Aux=chan *types.Type.
+		{name: "ChanBufAlloc", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "Typ", typ: "Mem"},
+
 		// M3 per-type maps: `clear(m)` resets a $go.map.<K,V> back to
 		// empty — used=0, cap=0, keys=null, values=null. Nulling the
 		// backings releases all key/value references for host-GC; the

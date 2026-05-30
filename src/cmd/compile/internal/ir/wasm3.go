@@ -62,3 +62,10 @@ var (
 	Wasm3ChanSendTypes sync.Map
 	Wasm3ChanRecvTypes sync.Map
 )
+
+// Wasm3ChanHelperTypes carries the chan's *types.Type from the per-T
+// chan operation generators (reflectdata/wasm3_changen.go) to the SSA-
+// time intrinsics for the chan-field runtime stubs (wasm3ChanQcount /
+// wasm3ChanBufGet / ... + Set counterparts). Same side-channel pattern
+// as Wasm3MapHelperTypes.
+var Wasm3ChanHelperTypes sync.Map

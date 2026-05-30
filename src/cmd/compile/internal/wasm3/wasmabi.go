@@ -35,6 +35,9 @@ import (
 // storage types are valid only inside arrays and structs, never as a
 // function parameter or result, so they panic here.
 func objField(f wasmgc.Field) obj.WasmField {
+	if f.Storage.AnyRef {
+		return obj.WasmField{Type: obj.WasmAnyref}
+	}
 	if f.Storage.IsRef() {
 		return obj.WasmField{Type: obj.WasmRef, Offset: int64(f.Storage.RefType)}
 	}
@@ -875,6 +878,28 @@ func wasm3RegisterMapStruct(fi *obj.FuncInfo, t *types.Type) uint32 {
 	idx := c.collectMapStruct(t)
 	c.writeTable(fi)
 	return uint32(idx)
+}
+
+// wasm3ChanBufElemRefIdx returns the wasm type index of the buf
+// array's element ref type for ref-shaped chan elements (string,
+// slice, interface, chan, map, func, unsafe.Pointer). The second
+// return is false for primitive/array/struct elements where no
+// ref.cast is needed at array.set. Mirrors collectBacking's
+// per-elem storage selection.
+func wasm3ChanBufElemRefIdx(fi *obj.FuncInfo, elem *types.Type) (int64, bool) {
+	switch {
+	case elem.IsString():
+		return int64(wasmgc.TypeGoString), true
+	case elem.IsInterface():
+		return int64(wasmgc.TypeGoIface), true
+	case elem.IsSlice():
+		return int64(wasm3RegisterSliceStruct(fi, elem)), true
+	case elem.IsPtr(), elem.IsUnsafePtr(), elem.IsChan(), elem.IsMap(), elem.Kind() == types.TFUNC:
+		// Pointers/chans/maps/funcs are stored as (ref null $go.object)
+		// in the backing — see collectBacking's pointerStorage path.
+		return int64(wasmgc.TypeGoObject), true
+	}
+	return 0, false
 }
 
 // wasm3RegisterChanStruct is the chan counterpart of

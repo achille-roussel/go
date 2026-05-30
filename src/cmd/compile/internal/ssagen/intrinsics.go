@@ -487,7 +487,9 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 				// BufGet returns T — substitute the chan's element type.
 				t = chanType.Elem()
 			}
-			v := s.newValue1(op, t, args[0])
+			// Pass mem as the ordering input so the SSA scheduler can't
+			// hoist the getter past a setter that mutates the field.
+			v := s.newValue2(op, t, args[0], s.mem())
 			v.Aux = chanType
 			return v
 		}
@@ -511,7 +513,7 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			s.Fatalf("wasm3ChanBufGet: no recorded chan type for call %v", n)
 		}
 		chanType := entry.(*types.Type)
-		v := s.newValue2(ssa.OpWasm3ChanBufGet, chanType.Elem(), args[0], args[1])
+		v := s.newValue3(ssa.OpWasm3ChanBufGet, chanType.Elem(), args[0], args[1], s.mem())
 		v.Aux = chanType
 		return v
 	}

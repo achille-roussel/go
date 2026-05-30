@@ -104,12 +104,20 @@ func walkAssign(init *ir.Nodes, n ir.Node) ir.Node {
 		recv := as.Y.(*ir.UnaryExpr)
 		recv.X = walkExpr(recv.X, init)
 
-		n1 := typecheck.NodAddr(as.X)
 		r := recv.X // the channel
-		call := mkcall1(chanfn("chanrecv1", 2, r.Type()), nil, init, r, n1)
 		if buildcfg.GOARCH == "wasm3" {
-			ir.Wasm3ChanRecvTypes.Store(call, r.Type())
+			// Per-T trampoline path: call .chanrecv.w3.<T> and store
+			// its returned T into as.X. The trampoline returns T
+			// directly (no out-pointer).
+			trampoline := reflectdata.ChanRecvFuncWasm3(r.Type())
+			chanArg := ir.NewConvExpr(base.Pos, ir.OCONVNOP, types.Types[types.TUNSAFEPTR], r)
+			chanArg.SetTypecheck(1)
+			rawCall := mkcall1(trampoline.Nname, r.Type().Elem(), init, chanArg)
+			assign := ir.NewAssignStmt(base.Pos, as.X, rawCall)
+			return typecheck.Stmt(assign)
 		}
+		n1 := typecheck.NodAddr(as.X)
+		call := mkcall1(chanfn("chanrecv1", 2, r.Type()), nil, init, r, n1)
 		return call
 
 	case ir.OAPPEND:

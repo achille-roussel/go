@@ -11,6 +11,7 @@ import (
 
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/ir"
+	"cmd/compile/internal/reflectdata"
 	"cmd/compile/internal/rttype"
 	"cmd/compile/internal/ssagen"
 	"cmd/compile/internal/typecheck"
@@ -61,10 +62,18 @@ func walkRecv(n *ir.UnaryExpr) ir.Node {
 	init := ir.TakeInit(n)
 
 	n.X = walkExpr(n.X, &init)
-	rawCall := mkcall1(chanfn("chanrecv1", 2, n.X.Type()), nil, &init, n.X, typecheck.NodNil())
 	if buildcfg.GOARCH == "wasm3" {
-		ir.Wasm3ChanRecvTypes.Store(rawCall, n.X.Type())
+		// Per-T trampoline path: call the .chanrecv.w3.<T> stencil.
+		// Trampoline takes (chan as unsafe.Pointer) and returns T
+		// directly (no out-pointer like chanrecv1).
+		trampoline := reflectdata.ChanRecvFuncWasm3(n.X.Type())
+		chanArg := ir.NewConvExpr(base.Pos, ir.OCONVNOP, types.Types[types.TUNSAFEPTR], n.X)
+		chanArg.SetTypecheck(1)
+		rawCall := mkcall1(trampoline.Nname, n.X.Type().Elem(), &init, chanArg)
+		call := walkExpr(rawCall, &init)
+		return ir.InitExpr(init, call)
 	}
+	rawCall := mkcall1(chanfn("chanrecv1", 2, n.X.Type()), nil, &init, n.X, typecheck.NodNil())
 	call := walkExpr(rawCall, &init)
 	return ir.InitExpr(init, call)
 }

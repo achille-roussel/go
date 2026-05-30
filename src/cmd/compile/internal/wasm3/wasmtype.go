@@ -144,11 +144,17 @@ func (c *typeCollector) lowerFieldsImpl(t *types.Type) []wasmgc.Field {
 		return []wasmgc.Field{{Storage: c.pointerStorage(t.Elem()), Mutable: true}}
 
 	case types.TUNSAFEPTR:
-		// unsafe.Pointer has no statically known pointee; it lowers to a
-		// reference to the open base type. Pointer arithmetic through it
-		// is part of the restricted subset that does not survive (see
+		// unsafe.Pointer has no statically known pointee; it lowers to
+		// anyref (the open ref valtype) — same wire type as the
+		// primitive ABI path (primitiveOrPrimitiveFlat → WasmAnyref) and
+		// as the per-value local that wasm3ValueType assigns to
+		// UnsafePtr-typed SSA values. Using a typed (ref $go.object)
+		// here would force callers to ref.cast their anyref locals at
+		// every call boundary, which the wasm3 backend doesn't insert
+		// automatically. Pointer arithmetic through unsafe.Pointer is
+		// part of the restricted subset that does not survive (see
 		// doc/wasm3-design.md §2 goals).
-		return []wasmgc.Field{{Storage: wasmgc.RefStorage(wasmgc.TypeGoObject, true), Mutable: true}}
+		return []wasmgc.Field{{Storage: wasmgc.AnyRefStorage(), Mutable: true}}
 
 	case types.TSTRING:
 		// WasmGC memory model (doc/wasm3-slice-boxing.md): a string is a

@@ -1296,6 +1296,8 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 	case ssa.OpWasm3ChanBufSet:
 		// M4 per-T chan: c.buf[i] = v. ref.cast chan; struct.get $chan 4;
 		// ref.cast non-null; i32.wrap i; <push v>; array.set $arr_T.
+		// Packed elements (i8/i16) need the value narrowed from i64 to
+		// i32 before array.set.
 		chanType, ok := v.Aux.(*types.Type)
 		if !ok || !chanType.IsChan() {
 			v.Fatalf("OpWasm3ChanBufSet: v.Aux is not a chan type: %v", v.Aux)
@@ -1313,6 +1315,17 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		getValue64(s, v.Args[1])
 		s.Prog(wasm.AI32WrapI64)
 		getValue64(s, v.Args[2])
+		elem := chanType.Elem()
+		if elemSize := elem.Size(); elemSize == 1 || elemSize == 2 {
+			s.Prog(wasm.AI32WrapI64)
+		}
+		// Ref-typed element: anyref local must be ref.cast to the exact
+		// element ref type before array.set (mirrors collectBacking's
+		// per-elem storage choice in wasmtype.go).
+		if elemRefIdx, ok := wasm3ChanBufElemRefIdx(s.FuncInfo(), elem); ok {
+			pCastV := s.Prog(wasm.ARefCastNull)
+			pCastV.From = obj.Addr{Type: obj.TYPE_CONST, Offset: elemRefIdx}
+		}
 		pSet := s.Prog(wasm.AArraySet)
 		pSet.From = obj.Addr{Type: obj.TYPE_CONST, Offset: bufArrIdx}
 
@@ -2317,6 +2330,7 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		}
 		chanIdx := int64(wasm3RegisterChanStruct(s.FuncInfo(), chanType))
 		var field int64
+		widen := false
 		switch v.Op {
 		case ssa.OpWasm3ChanQcount:
 			field = 0
@@ -2328,8 +2342,10 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 			field = 3
 		case ssa.OpWasm3ChanSendParkID:
 			field = 6
+			widen = true
 		case ssa.OpWasm3ChanRecvParkID:
 			field = 7
+			widen = true
 		}
 		getValue64(s, v.Args[0])
 		pCast := s.Prog(wasm.ARefCast)
@@ -2337,11 +2353,16 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p := s.Prog(wasm.AStructGet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: chanIdx}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
+		if widen {
+			// i32 field → i64 local (wasm3 backend keeps int values as i64).
+			s.Prog(wasm.AI64ExtendI32U)
+		}
 
 	case ssa.OpWasm3ChanBufGet:
 		// M4 per-T chan: c.buf[i]. ref.cast chan; struct.get $chan 4
 		// (yields the typed array ref); local.get i (i64) → i32.wrap;
-		// array.get $arr_T (yields T).
+		// array.get / array.get_u $arr_T (yields T). Packed elements
+		// (i8/i16) need array.get_u; reference/i32/i64 use array.get.
 		chanType, ok := v.Aux.(*types.Type)
 		if !ok || !chanType.IsChan() {
 			v.Fatalf("OpWasm3ChanBufGet: v.Aux is not a chan type: %v", v.Aux)
@@ -2359,8 +2380,19 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		pNN.From = obj.Addr{Type: obj.TYPE_CONST, Offset: bufArrIdx}
 		getValue64(s, v.Args[1])
 		s.Prog(wasm.AI32WrapI64)
-		pGet := s.Prog(wasm.AArrayGet)
+		getOp := wasm.AArrayGet
+		packed := false
+		if elemSize := chanType.Elem().Size(); elemSize == 1 || elemSize == 2 {
+			getOp = wasm.AArrayGetU
+			packed = true
+		}
+		pGet := s.Prog(getOp)
 		pGet.From = obj.Addr{Type: obj.TYPE_CONST, Offset: bufArrIdx}
+		if packed {
+			// array.get_u of an i8/i16 yields i32; widen to i64 for the
+			// per-value local (wasm3 keeps int values in i64 locals).
+			s.Prog(wasm.AI64ExtendI32U)
+		}
 
 	case ssa.OpWasm3MakeSlice:
 		// M3 Stage E phase 2: replacement for the bump-heap

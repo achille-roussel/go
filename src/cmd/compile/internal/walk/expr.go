@@ -1008,11 +1008,19 @@ func walkSend(n *ir.SendStmt, init *ir.Nodes) ir.Node {
 	n1 := n.Value
 	n1 = typecheck.AssignConv(n1, n.Chan.Type().Elem(), "chan send")
 	n1 = walkExpr(n1, init)
+	if buildcfg.GOARCH == "wasm3" {
+		// Per-T trampoline path: call the .chansend.w3.<T> stencil
+		// (reflectdata/wasm3_changen.go). Trampoline takes (chan as
+		// unsafe.Pointer, v T); OCONVNOP-cast n.Chan to unsafe.Pointer
+		// at the call boundary. No address-of v — trampoline takes v
+		// by value.
+		trampoline := reflectdata.ChanSendFuncWasm3(n.Chan.Type())
+		chanArg := ir.NewConvExpr(base.Pos, ir.OCONVNOP, types.Types[types.TUNSAFEPTR], n.Chan)
+		chanArg.SetTypecheck(1)
+		return mkcall1(trampoline.Nname, nil, init, chanArg, n1)
+	}
 	n1 = typecheck.NodAddr(n1)
 	call := mkcall1(chanfn("chansend1", 2, n.Chan.Type()), nil, init, n.Chan, n1)
-	if buildcfg.GOARCH == "wasm3" {
-		ir.Wasm3ChanSendTypes.Store(call, n.Chan.Type())
-	}
 	return call
 }
 

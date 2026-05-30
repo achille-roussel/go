@@ -44,25 +44,6 @@ var Wasm3MapClearTypes sync.Map
 // generator builds when emitting a stub call, value is the map type.
 var Wasm3MapHelperTypes sync.Map
 
-// Wasm3MakeChanTypes carries the chan's *types.Type from
-// walkMakeChan to the SSA-time intrinsic for runtime.makechan /
-// runtime.makechan64. Same side-channel pattern as
-// Wasm3MakeMapTypes — keyed on the *ir.CallExpr the walker
-// produces, value is the chan *types.Type. The intrinsic bypasses
-// runtime.makechan entirely (emitting struct.new_default
-// $go.chan.<T>) so the *chantype arg's i64-vs-anyref calling-
-// convention mismatch never arises.
-var Wasm3MakeChanTypes sync.Map
-
-// Wasm3ChanSendTypes / Wasm3ChanRecvTypes carry the chan type
-// from walkSend / walkRecv / convas to the SSA-time intrinsics
-// for runtime.chansend1 / runtime.chanrecv1. Same side-channel
-// pattern as Wasm3MakeChanTypes.
-var (
-	Wasm3ChanSendTypes sync.Map
-	Wasm3ChanRecvTypes sync.Map
-)
-
 // Wasm3ChanHelperTypes carries the chan's *types.Type from the per-T
 // chan operation generators (reflectdata/wasm3_changen.go) to the SSA-
 // time intrinsics for the chan-field runtime stubs (wasm3ChanQcount /

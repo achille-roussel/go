@@ -4,11 +4,13 @@
 
 //go:build js && wasm3
 
-// chan_jswasm3.go is the runtime-side dispatcher for stock
-// `chan T` ops on js/wasm3. The wasm3 compiler intrinsifies
-// runtime.makechan / runtime.chansend1 / runtime.chanrecv1 to
-// emit calls to per-T helpers here, which forward to the
-// runtime/wasm.Chan[T] substrate.
+// chan_jswasm3.go holds the runtime stubs the per-T chan trampoline
+// generator (reflectdata/wasm3_changen.go) calls into. The wasm3
+// compiler intrinsifies each stub to the corresponding OpWasm3Chan*
+// SSA op, recovering the chan's *types.Type from
+// ir.Wasm3ChanHelperTypes. Stub bodies are placeholders since the
+// intrinsic replaces the call. The chan arg is the $go.chan.<T>
+// WasmGC ref typed as unsafe.Pointer at the Go level.
 
 package runtime
 
@@ -16,30 +18,6 @@ import (
 	"runtime/wasm"
 	"unsafe"
 )
-
-//go:linkname wasm3MakeChanInt32
-//go:noinline
-func wasm3MakeChanInt32(n int) *wasm.Chan[int32] {
-	return wasm.MakeChan[int32](n)
-}
-
-//go:linkname wasm3ChanInt32Send
-//go:noinline
-func wasm3ChanInt32Send(c *wasm.Chan[int32], v int32) {
-	c.Send(v)
-}
-
-//go:linkname wasm3ChanInt32Recv
-//go:noinline
-func wasm3ChanInt32Recv(c *wasm.Chan[int32]) int32 {
-	return c.Recv()
-}
-
-// Per-T chan field-access stubs intrinsified by the wasm3 backend to
-// the OpWasm3Chan* SSA ops. Bodies are placeholders — the intrinsic
-// replaces the call. Used by the per-T chan trampoline generator
-// (reflectdata/wasm3_changen.go). The unsafe.Pointer chan arg is the
-// $go.chan.<T> ref typed as a pointer at the Go level.
 
 //go:noinline
 func wasm3ChanQcount(c unsafe.Pointer) int64 { return 0 }

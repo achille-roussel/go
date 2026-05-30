@@ -216,83 +216,6 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	add("runtime", "makemap64", wasm3MakeMapIntrinsic, sys.ArchWasm3)
 	add("runtime", "makemap_small", wasm3MakeMapIntrinsic, sys.ArchWasm3)
 
-	// M4 (wasm3): replace runtime.makechan / runtime.makechan64
-	// with OpWasm3MakeChan, which emits struct.new_default
-	// $go.chan.<T>. The intrinsic bypasses the runtime call
-	// entirely so the *chantype arg's i64-vs-anyref calling-
-	// convention mismatch (wasm3 backend lowers it as a raw i64
-	// linear-memory address while makechan's wasm-level signature
-	// expects anyref) never arises. The chan *types.Type comes
-	// from ir.Wasm3MakeChanTypes — same side-channel pattern as
-	// wasm3MakeMapIntrinsic. Per-T chansend/chanrecv/closechan
-	// ops are follow-up work.
-	wasm3MakeChanIntrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
-		entry, ok := ir.Wasm3MakeChanTypes.LoadAndDelete(n)
-		if !ok {
-			s.Fatalf("wasm3 makechan intrinsic: no recorded chan type for call %v", n)
-		}
-		chanType := entry.(*types.Type)
-		// Per-T dispatch to the runtime/wasm chan substrate. For
-		// chan int32 we route to runtime.wasm3MakeChanInt32 which
-		// wraps wasm.MakeChanInt32. Other element types still
-		// emit OpWasm3MakeChan (the allocation-only path).
-		if chanType.Elem().Kind() == types.TINT32 {
-			fn := typecheck.LookupRuntimeFunc("wasm3MakeChanInt32")
-			call := s.rtcall(fn, true, []*types.Type{types.Types[types.TUNSAFEPTR]}, args[1])
-			return call[0]
-		}
-		v := s.newValue0A(ssa.OpWasm3MakeChan, types.Types[types.TUNSAFEPTR], chanType)
-		v.AuxInt = wasm3NextAllocID()
-		return v
-	}
-	add("runtime", "makechan", wasm3MakeChanIntrinsic, sys.ArchWasm3)
-	add("runtime", "makechan64", wasm3MakeChanIntrinsic, sys.ArchWasm3)
-
-	// M4 (wasm3): chansend1 / chanrecv1 dispatch to per-T runtime
-	// helpers for the supported element types (int32 only for now,
-	// pending the wasm3 generic-dictionary calling-convention fix
-	// that would collapse them into one generic Chan[T] helper).
-	wasm3ChanSendIntrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
-		entry, ok := ir.Wasm3ChanSendTypes.LoadAndDelete(n)
-		if !ok {
-			return nil
-		}
-		chanType := entry.(*types.Type)
-		if chanType.Elem().Kind() != types.TINT32 {
-			return nil
-		}
-		// args[0] = chan ref (anyref). args[1] = *int32 pointer.
-		// Load the int32 through the pointer; the wasm3 backend
-		// will marshal the chan anyref to *ChanInt32 at the call
-		// ABI boundary.
-		val := s.load(types.Types[types.TINT32], args[1])
-		fn := typecheck.LookupRuntimeFunc("wasm3ChanInt32Send")
-		s.rtcall(fn, true, nil, args[0], val)
-		return nil
-	}
-	add("runtime", "chansend1", wasm3ChanSendIntrinsic, sys.ArchWasm3)
-
-	wasm3ChanRecvIntrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
-		entry, ok := ir.Wasm3ChanRecvTypes.LoadAndDelete(n)
-		if !ok {
-			return nil
-		}
-		chanType := entry.(*types.Type)
-		if chanType.Elem().Kind() != types.TINT32 {
-			return nil
-		}
-		fn := typecheck.LookupRuntimeFunc("wasm3ChanInt32Recv")
-		call := s.rtcall(fn, true, []*types.Type{types.Types[types.TINT32]}, args[0])
-		// args[1] is the destination *int32 (or nil if the value
-		// is being discarded). Store the received value through
-		// it when non-nil.
-		if args[1] != nil && args[1].Op != ssa.OpConstNil {
-			s.store(types.Types[types.TINT32], args[1], call[0])
-		}
-		return nil
-	}
-	add("runtime", "chanrecv1", wasm3ChanRecvIntrinsic, sys.ArchWasm3)
-
 	// M3 per-type maps (wasm3): replace runtime.mapclear with
 	// OpWasm3MapClear, which emits struct.set on the $go.map.<K,V>'s
 	// used/cap/keys/values fields directly (no runtime call).
@@ -2959,20 +2882,6 @@ func IsIntrinsicCall(n *ir.CallExpr) bool {
 		sym := name.Sym()
 		if sym.Pkg != nil && sym.Pkg.Path == "runtime" && (sym.Name == "makeslice" || sym.Name == "makeslice64") {
 			if _, ok := ir.Wasm3MakeSliceElemTypes.Load(n); !ok {
-				return false
-			}
-		}
-		// M4: chan allocation intrinsic only fires for user-make()
-		// calls walkMakeChan recorded via ir.Wasm3MakeChanTypes.
-		// Direct in-runtime calls (e.g. makechan64 → makechan in
-		// runtime/chan.go) have no recorded entry; let them fall
-		// through to the standard call. They won't actually run on
-		// js/wasm3 because user code never reaches them — every
-		// make(chan T) goes through walkMakeChan which intrinsifies
-		// to OpWasm3MakeChan — but they must still compile cleanly
-		// when the runtime itself is built.
-		if sym.Pkg != nil && sym.Pkg.Path == "runtime" && (sym.Name == "makechan" || sym.Name == "makechan64") {
-			if _, ok := ir.Wasm3MakeChanTypes.Load(n); !ok {
 				return false
 			}
 		}

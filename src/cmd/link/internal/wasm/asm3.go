@@ -548,6 +548,7 @@ func asmb2_3(ctxt *ld.Link, ldr *loader.Loader) {
 	writeExportSec(ctxt, ldr, len(m.imports))
 	refFns := collectWasm3RefFuncs(ctxt, ldr, len(m.imports))
 	writeElementSec3(ctxt, refFns, len(m.imports), len(m.funcs))
+	patchWasm3RunInit(ctxt, ldr, m, len(m.imports))
 	writeCodeSec3(ctxt, m.funcs)
 	writeDataSec(ctxt)
 	writeProducerSec(ctxt)
@@ -969,4 +970,95 @@ func writeNameSec3(ctxt *ld.Link, firstFnIndex int, fns []*wasm3Func) {
 	}
 	writeSecSize(ctxt, sizeOffset2)
 	writeSecSize(ctxt, sizeOffset)
+}
+
+// patchWasm3RunInit overwrites the runtime.wasm3RunInit function body
+// with a sequence of direct `call $init` instructions, one per init
+// function the standard inittask machinery scheduled. The runtime's
+// _rt0_wasm3_js calls wasm3RunInit before main_main so package-level
+// var initialisers and explicit init() functions actually run on
+// js/wasm3.
+//
+// The standard runtime.doInit path walks initTask records and reads
+// each task's function pointers as uintptrs that get cast to func()
+// — incompatible with wasm3's WasmGC closure-ref representation of
+// func values. Materialising the call schedule statically at link
+// time as wasm `call` instructions sidesteps that mismatch.
+func patchWasm3RunInit(ctxt *ld.Link, ldr *loader.Loader, m *wasm3Module, numImports int) {
+	// Find the wasm3RunInit slot in m.funcs.
+	slot := -1
+	for i, fn := range m.funcs {
+		if fn.Name == "runtime.wasm3RunInit" {
+			slot = i
+			break
+		}
+	}
+	if slot < 0 {
+		return
+	}
+
+	// Collect init function symbols in dependency order. Walk both
+	// the runtime's own inittasks (go:runtime.inittasks) and the
+	// user's (go:main.inittasks). Both are slices of *initTask whose
+	// R_ADDR relocs point to per-package inittask records, in
+	// schedule order. Each inittask record's R_ADDR relocs then
+	// point to its init functions.
+	var initFuncs []loader.Sym
+	schedSyms := []loader.Sym{ctxt.MainInittasks()}
+	if s := ldr.Lookup("runtime.runtime_inittasks", 0); s != 0 {
+		// runtime.runtime_inittasks is a slice header (ptr,len,cap) whose
+		// first 8 bytes hold an R_ADDR reloc pointing to the schedule
+		// symbol go:runtime.inittasks. Resolve via its single relocation.
+		rt := ldr.Relocs(s)
+		for ri := 0; ri < rt.Count(); ri++ {
+			r := rt.At(ri)
+			if r.Type() == objabi.R_ADDR {
+				schedSyms = append([]loader.Sym{r.Sym()}, schedSyms...)
+				break
+			}
+		}
+	}
+	for _, schedSym := range schedSyms {
+		if schedSym == 0 {
+			continue
+		}
+		schedRelocs := ldr.Relocs(schedSym)
+		for ri := 0; ri < schedRelocs.Count(); ri++ {
+			r := schedRelocs.At(ri)
+			if r.Type() != objabi.R_ADDR {
+				continue
+			}
+			taskSym := r.Sym()
+			taskRelocs := ldr.Relocs(taskSym)
+			for tri := 0; tri < taskRelocs.Count(); tri++ {
+				tr := taskRelocs.At(tri)
+				if tr.Type() != objabi.R_ADDR {
+					continue
+				}
+				fnSym := tr.Sym()
+				// Skip elided/empty init stubs (val=0 = no body). Some
+				// runtime.init.N entries are present in the inittask
+				// list but never get a function body on wasm3 (the
+				// associated subsystem is excluded entirely or stubbed
+				// out — e.g., GC-related inits never reach a wasm
+				// function). Calling them would land on a bogus index.
+				if ldr.SymValue(fnSym) == 0 {
+					continue
+				}
+				initFuncs = append(initFuncs, fnSym)
+			}
+		}
+	}
+
+	// Emit the body: local-decl-count=0, then `call <funcidx>` per
+	// init function, then end.
+	w := new(bytes.Buffer)
+	writeUleb128(w, 0) // local declaration count
+	for _, sym := range initFuncs {
+		funcidx := uint64(int64(numImports) + ldr.SymValue(sym)>>16 - funcValueOffset)
+		w.WriteByte(0x10) // call
+		writeUleb128(w, funcidx)
+	}
+	w.WriteByte(0x0b) // end
+	m.funcs[slot].Code = w.Bytes()
 }

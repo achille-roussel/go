@@ -130,6 +130,17 @@ type ArchSyms struct {
 	mainInittasks loader.Sym
 }
 
+// MainInittasks returns the symbol containing the ordered list of
+// per-package init tasks for the main module (a *initTask slice).
+// Used by the wasm3 linker (cmd/link/internal/wasm/asm3.go) to
+// materialise direct call instructions for each scheduled init
+// function at link time — the standard runtime.doInit path that
+// walks this list at runtime is incompatible with wasm3's WasmGC
+// func representation.
+func (ctxt *Link) MainInittasks() loader.Sym {
+	return ctxt.mainInittasks
+}
+
 // mkArchSym is a helper for setArchSyms, to set up a special symbol.
 func (ctxt *Link) mkArchSym(name string, ver int, ls *loader.Sym) {
 	*ls = ctxt.loader.LookupOrCreateSym(name, ver)

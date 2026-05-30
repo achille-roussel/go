@@ -250,7 +250,15 @@ func (o *orderState) addrTemp(n ir.Node) ir.Node {
 		// Do this optimization only when enabled for this node.
 		return base.LiteralAllocHash.MatchPos(n.Pos(), nil)
 	}
-	if (v.Op() == ir.OSTRUCTLIT || v.Op() == ir.OARRAYLIT) && !base.Ctxt.IsFIPS() {
+	// On wasm3, structures and arrays don't have a linear-memory storage
+	// shape at all — they live in WasmGC heap-managed structs/arrays.
+	// Materialising the literal as a read-only-data static temp and
+	// taking its address yields a linear i64 pointer that cannot
+	// validly ref.cast to the WasmGC ref the consumer expects. Skip
+	// the static-rodata path so the literal stays a CompLitExpr and
+	// lowers later through OpWasm3StructNew / array.new with the
+	// field values materialised as a real WasmGC value.
+	if (v.Op() == ir.OSTRUCTLIT || v.Op() == ir.OARRAYLIT) && !base.Ctxt.IsFIPS() && buildcfg.GOARCH != "wasm3" {
 		if ir.IsZero(v) && 0 < v.Type().Size() && v.Type().Size() <= abi.ZeroValSize && optEnabled(n) {
 			// This zero value can be represented by the read-only zeroVal.
 			zeroVal := ir.NewLinksymExpr(v.Pos(), ir.Syms.ZeroVal, n.Type())

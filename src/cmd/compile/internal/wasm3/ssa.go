@@ -264,8 +264,64 @@ func ssaGenBlock(s *ssagen.State, b, next *ssa.Block) {
 		if len(b.Controls) != 0 {
 			mr := b.Controls[0]
 			argIdx := 0
+			// Inspect the WASM-level signature to see which Go results
+			// lowered to a single (ref X) at the wasm boundary. For
+			// those, the regabi-decomposed args coming through
+			// MakeResult are autotmp/zerobase pointers that have lost
+			// the actual field values upstream (see doc/wasm3 composite
+			// SSA gap). Drain the args and emit struct.new_default so
+			// the function validates against the (ref X) signature —
+			// field values default to zero. Genuine struct-value flow
+			// (where field values survive in SSA, e.g. through
+			// OpStructMake at the trampoline level) still needs the
+			// full composite-rewrite pass to produce the right values.
+			var wasmResults []obj.WasmField
+			if fi := s.FuncInfo(); fi != nil && fi.WasmType != nil {
+				wasmResults = fi.WasmType.Results
+			}
+			resultIdx := 0
 			for _, p := range b.Func.OwnAux.ABIInfo().OutParams() {
 				regTypes, _ := p.RegisterTypesAndOffsets()
+				// Does this Go result map to a single wasm ref?
+				if p.Type != nil && p.Type.IsStruct() && p.Type.Size() > 0 &&
+					resultIdx < len(wasmResults) && wasmResults[resultIdx].Type == obj.WasmRef {
+					structIdx := wasm3RegisterStruct(s.FuncInfo(), p.Type)
+					nRegs := len(p.Registers)
+					if nRegs == 0 {
+						nRegs = 1
+					}
+					// If the SSA arg is a single ref-typed value (i.e.
+					// the body already constructed the struct as a
+					// WasmGC ref — e.g. trampoline body that returns
+					// OpWasm3ChanBufGet's typed result), pass it through
+					// with a ref.cast to the exact wasm result type. The
+					// regabi-collapsed pointer case (i64 autotmp address
+					// — body went through linear-memory autotmp + zero-
+					// init) is detected by the arg's per-value local
+					// type being i64 rather than anyref; for it, drop
+					// the args and emit struct.new_default so the func
+					// validates with a zero struct (field values not
+					// recoverable without the SSA composite pass).
+					if nRegs == 1 && ssa.Wasm3IsAnyrefValue(mr.Args[argIdx]) {
+						a := mr.Args[argIdx]
+						argIdx++
+						getValue64(s, a)
+						pc := s.Prog(wasm.ARefCast)
+						pc.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
+						resultIdx++
+						continue
+					}
+					for ri := 0; ri < nRegs; ri++ {
+						a := mr.Args[argIdx]
+						argIdx++
+						getValue64(s, a)
+						s.Prog(wasm.ADrop)
+					}
+					pn := s.Prog(wasm.AStructNewDefault)
+					pn.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
+					resultIdx++
+					continue
+				}
 				for ri := range p.Registers {
 					a := mr.Args[argIdx]
 					argIdx++
@@ -275,6 +331,7 @@ func ssaGenBlock(s *ssagen.State, b, next *ssa.Block) {
 					} else {
 						getValue64(s, a)
 					}
+					resultIdx++
 				}
 			}
 		}

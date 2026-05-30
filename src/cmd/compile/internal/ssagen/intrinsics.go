@@ -541,6 +541,16 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	add("runtime", "wasm3ChanBufGet", wasm3ChanBufGet, sys.ArchWasm3)
 	add("runtime", "wasm3ChanBufSet", wasm3ChanBufSet, sys.ArchWasm3)
 	add("runtime", "wasm3ChanBufAlloc", wasm3ChanFieldSetter(ssa.OpWasm3ChanBufAlloc), sys.ArchWasm3)
+	add("runtime", "wasm3ChanAlloc", func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		entry, ok := ir.Wasm3ChanHelperTypes.LoadAndDelete(n)
+		if !ok {
+			s.Fatalf("wasm3ChanAlloc: no recorded chan type for call %v", n)
+		}
+		chanType := entry.(*types.Type)
+		v := s.newValue0A(ssa.OpWasm3MakeChan, types.Types[types.TUNSAFEPTR], chanType)
+		v.AuxInt = wasm3NextAllocID()
+		return v
+	}, sys.ArchWasm3)
 
 	// M3 Stage E phase 4 (wasm3): walkCopy emits this in place of
 	// runtime.memmove for `copy(dst, src)`. The first arg is the

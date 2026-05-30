@@ -89,3 +89,32 @@ func wasm3ChanBufSet(c unsafe.Pointer, i int64, v any) {}
 
 //go:noinline
 func wasm3ChanBufAlloc(c unsafe.Pointer, cap int64) {}
+
+// wasm3ChanAlloc allocates a fresh $go.chan.<T> via OpWasm3MakeChan;
+// the chan type comes from the Wasm3ChanHelperTypes side-channel.
+// Body is a placeholder.
+//
+//go:noinline
+func wasm3ChanAlloc() unsafe.Pointer { return nil }
+
+// Park-ID generator and JSPI park/ready wrappers callable from the
+// per-T chan trampolines via typecheck.LookupRuntime. The counter is
+// process-wide; 0 is reserved (used to signal "no waiter").
+
+var wasm3NextChanParkID int32 = 1
+
+//go:nosplit
+//go:noinline
+func wasm3MintChanParkID() int32 {
+	wasm3NextChanParkID++
+	if wasm3NextChanParkID == 0 {
+		wasm3NextChanParkID = 1
+	}
+	return wasm3NextChanParkID
+}
+
+//go:noinline
+func wasm3ChanPark(id int32) { wasm.WasmPark(id) }
+
+//go:noinline
+func wasm3ChanReady(id int32) { wasm.WasmReady(id) }

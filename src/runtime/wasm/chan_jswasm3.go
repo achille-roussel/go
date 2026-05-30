@@ -4,16 +4,11 @@
 
 //go:build js && wasm3
 
-// chan_jswasm3.go is the wasm3-native chan substrate. Until the
-// wasm3 backend's generic-dictionary calling convention is fixed
-// (see doc/wasm3-js-chan-status.md), the types are non-generic
-// per-T variants (ChanInt32, ChanInt64, ...). Once generics on
-// wasm3 work, these collapse to a single generic Chan[T].
-//
-// Per-T methods use WasmPark/WasmReady directly for blocking
-// handoff — no sudog queue, no standard scheduler integration.
-// Single-slot wait registers (sendParkID/recvParkID) — Phase 4
-// minimum, multiple waiters per side need a queue (follow-up).
+// chan_jswasm3.go is the wasm3-native chan substrate. Chan[T] is
+// a generic struct allocated on the WasmGC heap; Send/Recv block
+// via WasmPark/WasmReady directly — no sudog queue. Single-slot
+// wait registers (sendParkID/recvParkID) — multiple waiters per
+// side need a queue (follow-up).
 
 package wasm
 
@@ -29,38 +24,29 @@ func mintChanParkID() int32 {
 	return nextChanParkID
 }
 
-// ChanInt32 is the wasm3-native int32 channel.
-type ChanInt32 struct {
+type Chan[T any] struct {
 	qcount     int64
 	dataqsiz   int64
 	sendx      int64
 	recvx      int64
-	buf        []int32
+	buf        []T
 	closed     bool
 	sendParkID int32
 	recvParkID int32
 }
 
-// MakeChanInt32 allocates a buffered (n > 0) or unbuffered (n == 0)
-// ChanInt32. //go:noinline forces the struct allocation through
-// a function-call boundary — the wasm3 backend mishandles inline
-// mixed-scalar+ref struct literals (memory.fill on a WasmGC ref).
-//
 //go:noinline
-func MakeChanInt32(n int) *ChanInt32 {
-	c := new(ChanInt32)
+func MakeChan[T any](n int) *Chan[T] {
+	c := new(Chan[T])
 	c.dataqsiz = int64(n)
 	if n > 0 {
-		c.buf = make([]int32, n)
+		c.buf = make([]T, n)
 	}
 	return c
 }
 
-// Send transmits v on c. Blocks until buf has space; after writing,
-// wakes any waiting receiver.
-//
 //go:noinline
-func (c *ChanInt32) Send(v int32) {
+func (c *Chan[T]) Send(v T) {
 	for c.qcount >= c.dataqsiz {
 		c.sendParkID = mintChanParkID()
 		WasmPark(c.sendParkID)
@@ -76,18 +62,16 @@ func (c *ChanInt32) Send(v int32) {
 	}
 }
 
-// Recv receives a value from c. Blocks until buf has data; after
-// reading, wakes any waiting sender.
-//
 //go:noinline
-func (c *ChanInt32) Recv() int32 {
+func (c *Chan[T]) Recv() T {
 	for c.qcount <= 0 {
 		c.recvParkID = mintChanParkID()
 		WasmPark(c.recvParkID)
 		c.recvParkID = 0
 	}
 	v := c.buf[c.recvx]
-	c.buf[c.recvx] = 0
+	var zero T
+	c.buf[c.recvx] = zero
 	c.recvx = (c.recvx + 1) % c.dataqsiz
 	c.qcount--
 	if c.sendParkID != 0 {
@@ -97,3 +81,4 @@ func (c *ChanInt32) Recv() int32 {
 	}
 	return v
 }
+

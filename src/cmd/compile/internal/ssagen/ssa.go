@@ -2648,10 +2648,23 @@ func (s *state) exit() *ssa.Block {
 	for i, f := range resultFields {
 		n := f.Nname.(*ir.Name)
 		if buildcfg.GOARCH == "wasm3" && (n.Type().IsStruct() || n.Type().IsArray()) && n.Type().Size() > 0 {
-			// wasm3: a struct or array result is one boxed ref. addr(n) is
-			// that ref (a StackStruct/StackArray); it IS the result value (no
-			// dereference/decomposition), matching the single-ref result
-			// signature.
+			// wasm3: a struct or array result is one boxed WasmGC ref at
+			// the wasm signature level. If the body explicitly assigned
+			// the named result via s.assign (e.g. `return Msg{x,y}` or
+			// `result = ...; return`), s.vars[n] holds the SSA value
+			// (typically OpStructMake with the field values). Feed it
+			// to MakeResult directly so the WasmGC ref flows through
+			// without an autotmp-address intermediate that the wasm
+			// validator can't coerce back to (ref X).
+			//
+			// Otherwise (no explicit assign — e.g. the result was
+			// written via field-stores on its addr, or never assigned
+			// at all), fall back to s.addr(n) and let the wasm3 BlockRet
+			// bridge emit struct.new_default at the boundary.
+			if v := s.vars[n]; v != nil {
+				results[i] = v
+				continue
+			}
 			results[i] = s.addr(n)
 			continue
 		}

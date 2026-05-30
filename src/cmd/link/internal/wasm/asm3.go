@@ -32,6 +32,7 @@ import (
 	"cmd/link/internal/loader"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // asmb3 collects the linear-memory data sections, exactly as asmb does
@@ -893,18 +894,50 @@ func writeGlobalSec3(ctxt *ld.Link, ldr *loader.Loader, m *wasm3Module, hostImpo
 	// (closure singletons and boxed package-level vars, interleaved).
 	for _, e := range m.globalEntries {
 		if e.boxed {
-			// Boxed package-level variable: (global (mut anyref)),
-			// initialised to ref.null any. Using anyref (not the
-			// precise (ref null $T)) keeps the linker from needing the
-			// variable's Go type: global.get yields anyref, matching
-			// the anyref per-value local OpWasm3GlobalGet lands in, and
-			// global.set accepts any subtype. The package init function
-			// constructs the real value and global.sets it (a nil
-			// boxed var simply stays ref.null).
+			// Boxed package-level variable: (global (mut anyref)).
+			// Using anyref (not the precise (ref null $T)) keeps the
+			// linker from needing the variable's Go type. The init
+			// expression depends on the variable's nature:
+			//
+			//   - String literal (go:string."<bytes>"): emit a
+			//     struct.new $go.string with array.new_fixed of the
+			//     literal bytes. No runtime init needed.
+			//   - Anything else: ref.null any; the package init
+			//     function constructs the real value at startup.
 			ctxt.Out.WriteByte(0x6E) // anyref
 			ctxt.Out.WriteByte(0x01) // mutable
-			ctxt.Out.WriteByte(0xD0) // ref.null
-			ctxt.Out.WriteByte(0x6E) // heaptype = any
+			// Recognise a string-header static temp: 16 bytes of data
+			// (data ptr + length) with a single R_ADDR reloc at offset
+			// 0 pointing to a go:string."..." symbol whose data is the
+			// raw string bytes. Emit a struct.new $go.string init
+			// expression that materialises the WasmGC string at module
+			// load time. Anything else stays ref.null any; the package
+			// init function (called from wasm3RunInit) fills it in.
+			stringBytes, isString := wasm3DecodeStringTemp(ldr, ldr.Data(e.boxSym), ldr.Relocs(e.boxSym))
+			if isString {
+				// init: <i32.const byte>...;
+				//       array.new_fixed $go.bytes <len>;
+				//       i64.const 0; i64.const <len>;
+				//       struct.new $go.string
+				for _, b := range stringBytes {
+					ctxt.Out.WriteByte(0x41) // i32.const
+					writeSleb128(ctxt.Out, int64(b))
+				}
+				ctxt.Out.WriteByte(0xFB) // GC prefix
+				ctxt.Out.WriteByte(0x08) // array.new_fixed sub-opcode
+				writeUleb128(ctxt.Out, uint64(wasmgc.TypeGoBytes))
+				writeUleb128(ctxt.Out, uint64(len(stringBytes)))
+				ctxt.Out.WriteByte(0x42) // i64.const (offset)
+				writeSleb128(ctxt.Out, 0)
+				ctxt.Out.WriteByte(0x42) // i64.const (length)
+				writeSleb128(ctxt.Out, int64(len(stringBytes)))
+				ctxt.Out.WriteByte(0xFB) // GC prefix
+				ctxt.Out.WriteByte(0x00) // struct.new sub-opcode
+				writeUleb128(ctxt.Out, uint64(wasmgc.TypeGoString))
+			} else {
+				ctxt.Out.WriteByte(0xD0) // ref.null
+				ctxt.Out.WriteByte(0x6E) // heaptype = any
+			}
 			ctxt.Out.WriteByte(0x0b) // end
 			continue
 		}
@@ -970,6 +1003,39 @@ func writeNameSec3(ctxt *ld.Link, firstFnIndex int, fns []*wasm3Func) {
 	}
 	writeSecSize(ctxt, sizeOffset2)
 	writeSecSize(ctxt, sizeOffset)
+}
+
+// wasm3DecodeStringTemp recognises a string-header static temp
+// (compiler-generated for an inline string literal that escapes to a
+// boxed global): 16 bytes of data shaped as (data ptr, length) with
+// a single R_ADDR reloc at offset 0 pointing to a go:string."..."
+// symbol whose data is the raw string bytes. If matched, returns the
+// raw bytes; otherwise returns ok=false. On wasm3 the temp's storage
+// is a WasmGC anyref global, not 16 bytes of linear memory, so the
+// header bytes never become accessible at runtime — the caller emits
+// a struct.new $go.string init expression instead.
+func wasm3DecodeStringTemp(ldr *loader.Loader, data []byte, rels loader.Relocs) ([]byte, bool) {
+	if len(data) != 16 || rels.Count() != 1 {
+		return nil, false
+	}
+	r := rels.At(0)
+	if r.Type() != objabi.R_ADDR || r.Off() != 0 {
+		return nil, false
+	}
+	bytesSym := r.Sym()
+	if !strings.HasPrefix(ldr.SymName(bytesSym), "go:string.") {
+		return nil, false
+	}
+	// length lives in bytes 8..16 (little-endian uint64).
+	var length uint64
+	for i := 0; i < 8; i++ {
+		length |= uint64(data[8+i]) << (8 * i)
+	}
+	stringBytes := ldr.Data(bytesSym)
+	if uint64(len(stringBytes)) < length {
+		return nil, false
+	}
+	return stringBytes[:length], true
 }
 
 // patchWasm3RunInit overwrites the runtime.wasm3RunInit function body

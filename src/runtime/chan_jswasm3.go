@@ -14,7 +14,7 @@ package runtime
 
 import (
 	"runtime/wasm"
-	_ "unsafe" // for go:linkname
+	"unsafe"
 )
 
 //go:linkname wasm3MakeChanInt32
@@ -34,3 +34,58 @@ func wasm3ChanInt32Send(c *wasm.Chan[int32], v int32) {
 func wasm3ChanInt32Recv(c *wasm.Chan[int32]) int32 {
 	return c.Recv()
 }
+
+// Per-T chan field-access stubs intrinsified by the wasm3 backend to
+// the OpWasm3Chan* SSA ops. Bodies are placeholders — the intrinsic
+// replaces the call. Used by the per-T chan trampoline generator
+// (reflectdata/wasm3_changen.go). The unsafe.Pointer chan arg is the
+// $go.chan.<T> ref typed as a pointer at the Go level.
+
+//go:noinline
+func wasm3ChanQcount(c unsafe.Pointer) int64 { return 0 }
+
+//go:noinline
+func wasm3ChanQcountSet(c unsafe.Pointer, v int64) {}
+
+//go:noinline
+func wasm3ChanDataqsiz(c unsafe.Pointer) int64 { return 0 }
+
+//go:noinline
+func wasm3ChanDataqsizSet(c unsafe.Pointer, v int64) {}
+
+//go:noinline
+func wasm3ChanSendx(c unsafe.Pointer) int64 { return 0 }
+
+//go:noinline
+func wasm3ChanSendxSet(c unsafe.Pointer, v int64) {}
+
+//go:noinline
+func wasm3ChanRecvx(c unsafe.Pointer) int64 { return 0 }
+
+//go:noinline
+func wasm3ChanRecvxSet(c unsafe.Pointer, v int64) {}
+
+//go:noinline
+func wasm3ChanSendParkID(c unsafe.Pointer) int32 { return 0 }
+
+//go:noinline
+func wasm3ChanSendParkIDSet(c unsafe.Pointer, v int32) {}
+
+//go:noinline
+func wasm3ChanRecvParkID(c unsafe.Pointer) int32 { return 0 }
+
+//go:noinline
+func wasm3ChanRecvParkIDSet(c unsafe.Pointer, v int32) {}
+
+// wasm3ChanBufGet / wasm3ChanBufSet take `any` for the value type;
+// LookupRuntime substitutes the chan's element type at call site so
+// the SSA value carries the right wasm-level type.
+
+//go:noinline
+func wasm3ChanBufGet(c unsafe.Pointer, i int64) any { return nil }
+
+//go:noinline
+func wasm3ChanBufSet(c unsafe.Pointer, i int64, v any) {}
+
+//go:noinline
+func wasm3ChanBufAlloc(c unsafe.Pointer, cap int64) {}

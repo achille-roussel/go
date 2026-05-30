@@ -472,6 +472,76 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	add("runtime", "wasm3MapKeysSet", wasm3MapFieldSetter(ssa.OpWasm3MapKeysSet), sys.ArchWasm3)
 	add("runtime", "wasm3MapValuesSet", wasm3MapFieldSetter(ssa.OpWasm3MapValuesSet), sys.ArchWasm3)
 
+	// M4 per-T chan field intrinsics — parallel of the map field ones.
+	// The chan helper generator (reflectdata/wasm3_changen.go) pins the
+	// chan's *types.Type on each call expression in Wasm3ChanHelperTypes.
+	wasm3ChanFieldGetter := func(op ssa.Op, resultType *types.Type) func(*state, *ir.CallExpr, []*ssa.Value) *ssa.Value {
+		return func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			entry, ok := ir.Wasm3ChanHelperTypes.LoadAndDelete(n)
+			if !ok {
+				s.Fatalf("wasm3 chan field intrinsic: no recorded chan type for call %v", n)
+			}
+			chanType := entry.(*types.Type)
+			t := resultType
+			if t == nil {
+				// BufGet returns T — substitute the chan's element type.
+				t = chanType.Elem()
+			}
+			v := s.newValue1(op, t, args[0])
+			v.Aux = chanType
+			return v
+		}
+	}
+	wasm3ChanFieldSetter := func(op ssa.Op) func(*state, *ir.CallExpr, []*ssa.Value) *ssa.Value {
+		return func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			entry, ok := ir.Wasm3ChanHelperTypes.LoadAndDelete(n)
+			if !ok {
+				s.Fatalf("wasm3 chan field intrinsic: no recorded chan type for call %v", n)
+			}
+			chanType := entry.(*types.Type)
+			v := s.newValue3(op, types.TypeMem, args[0], args[1], s.mem())
+			v.Aux = chanType
+			s.vars[memVar] = v
+			return nil
+		}
+	}
+	wasm3ChanBufGet := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		entry, ok := ir.Wasm3ChanHelperTypes.LoadAndDelete(n)
+		if !ok {
+			s.Fatalf("wasm3ChanBufGet: no recorded chan type for call %v", n)
+		}
+		chanType := entry.(*types.Type)
+		v := s.newValue2(ssa.OpWasm3ChanBufGet, chanType.Elem(), args[0], args[1])
+		v.Aux = chanType
+		return v
+	}
+	wasm3ChanBufSet := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		entry, ok := ir.Wasm3ChanHelperTypes.LoadAndDelete(n)
+		if !ok {
+			s.Fatalf("wasm3ChanBufSet: no recorded chan type for call %v", n)
+		}
+		chanType := entry.(*types.Type)
+		v := s.newValue4(ssa.OpWasm3ChanBufSet, types.TypeMem, args[0], args[1], args[2], s.mem())
+		v.Aux = chanType
+		s.vars[memVar] = v
+		return nil
+	}
+	add("runtime", "wasm3ChanQcount", wasm3ChanFieldGetter(ssa.OpWasm3ChanQcount, types.Types[types.TINT64]), sys.ArchWasm3)
+	add("runtime", "wasm3ChanQcountSet", wasm3ChanFieldSetter(ssa.OpWasm3ChanQcountSet), sys.ArchWasm3)
+	add("runtime", "wasm3ChanDataqsiz", wasm3ChanFieldGetter(ssa.OpWasm3ChanDataqsiz, types.Types[types.TINT64]), sys.ArchWasm3)
+	add("runtime", "wasm3ChanDataqsizSet", wasm3ChanFieldSetter(ssa.OpWasm3ChanDataqsizSet), sys.ArchWasm3)
+	add("runtime", "wasm3ChanSendx", wasm3ChanFieldGetter(ssa.OpWasm3ChanSendx, types.Types[types.TINT64]), sys.ArchWasm3)
+	add("runtime", "wasm3ChanSendxSet", wasm3ChanFieldSetter(ssa.OpWasm3ChanSendxSet), sys.ArchWasm3)
+	add("runtime", "wasm3ChanRecvx", wasm3ChanFieldGetter(ssa.OpWasm3ChanRecvx, types.Types[types.TINT64]), sys.ArchWasm3)
+	add("runtime", "wasm3ChanRecvxSet", wasm3ChanFieldSetter(ssa.OpWasm3ChanRecvxSet), sys.ArchWasm3)
+	add("runtime", "wasm3ChanSendParkID", wasm3ChanFieldGetter(ssa.OpWasm3ChanSendParkID, types.Types[types.TINT32]), sys.ArchWasm3)
+	add("runtime", "wasm3ChanSendParkIDSet", wasm3ChanFieldSetter(ssa.OpWasm3ChanSendParkIDSet), sys.ArchWasm3)
+	add("runtime", "wasm3ChanRecvParkID", wasm3ChanFieldGetter(ssa.OpWasm3ChanRecvParkID, types.Types[types.TINT32]), sys.ArchWasm3)
+	add("runtime", "wasm3ChanRecvParkIDSet", wasm3ChanFieldSetter(ssa.OpWasm3ChanRecvParkIDSet), sys.ArchWasm3)
+	add("runtime", "wasm3ChanBufGet", wasm3ChanBufGet, sys.ArchWasm3)
+	add("runtime", "wasm3ChanBufSet", wasm3ChanBufSet, sys.ArchWasm3)
+	add("runtime", "wasm3ChanBufAlloc", wasm3ChanFieldSetter(ssa.OpWasm3ChanBufAlloc), sys.ArchWasm3)
+
 	// M3 Stage E phase 4 (wasm3): walkCopy emits this in place of
 	// runtime.memmove for `copy(dst, src)`. The first arg is the
 	// elem rtype; args[1]=dst, args[2]=src, args[3]=n_elements.

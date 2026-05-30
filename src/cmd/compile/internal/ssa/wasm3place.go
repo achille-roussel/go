@@ -719,6 +719,14 @@ func wasm3ValueType(v *Value) byte {
 		// OpWasm3GetClosureField and runtime ABI returns deposit
 		// into a type-compatible local.
 		return wasm3ValAnyref
+	} else if t.IsStruct() && t.Size() > 0 {
+		// Struct by-value values are passed as WasmGC refs to
+		// $go.struct.T (topLevelFields lowering); their per-value
+		// local is anyref. Reached when a struct returns from a call
+		// (e.g. chan recv of a user struct type) or appears as an
+		// SSA value standalone — without this, the value defaults
+		// to an i64 local which mismatches the wasm-level ref.
+		return wasm3ValAnyref
 	}
 	return wasm3ValI64
 }

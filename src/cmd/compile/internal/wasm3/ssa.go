@@ -1688,6 +1688,17 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 				pc := s.Prog(wasm.ARefCast)
 				pc.From = obj.Addr{Type: obj.TYPE_CONST, Offset: castIdx}
 			}
+			// Sub-word integer/bool struct fields are stored as wasm
+			// i32. The arg lives in an i64 per-value local — narrow it.
+			// Only applies for true Go-struct aggregates where each Go
+			// field maps 1:1 to a struct.new arg (slice/string/iface
+			// have their own multi-slot shape and use the castIdx
+			// path above).
+			if aggT != nil && aggT.IsStruct() && i < aggT.NumFields() {
+				if wasm3FieldGetNeedsI64Extend(aggT.Field(i).Type) {
+					s.Prog(wasm.AI32WrapI64)
+				}
+			}
 		}
 		p := s.Prog(wasm.AStructNew)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterStructAux(s, v))}
@@ -1711,6 +1722,12 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p := s.Prog(wasm.AStructGet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(fieldIdx)}
+		// Sub-word integer/bool fields are stored as wasm i32 in the
+		// struct but live in i64 per-value locals; widen so the local
+		// type matches. Same treatment as OpWasm3FieldGet.
+		if wasm3FieldGetNeedsI64Extend(v.Type) {
+			s.Prog(wasm.AI64ExtendI32U)
+		}
 
 	case ssa.OpWasm3SliceData, ssa.OpWasm3SliceLength, ssa.OpWasm3SliceCapacity:
 		// Boxed slice header field reads (doc/wasm3-slice-boxing.md):

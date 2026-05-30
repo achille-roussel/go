@@ -199,20 +199,19 @@ func ChanRecvFuncWasm3(t *types.Type) *ir.Func {
 		ir.NewConvExpr(pos, ir.OCONV, int64T, ir.NewInt(pos, 0)))
 	fn.Body.Append(ir.NewForStmt(pos, nil, emptyCond, nil, parkBody, false))
 
-	// Read out.
+	// Read out. Skips zero-out of buf[recvx] — the old value lingers
+	// in the chan's buffer until the slot is overwritten by a future
+	// send (or the chan itself is GC'd). For primitive T this is just
+	// a memory-noise issue; for ref-typed T it pins the value, but
+	// emitting a typed zero across all T forms (including user
+	// structs whose IR zero materialisation interacts oddly with the
+	// inline struct.new path) is follow-up work.
 	vVar := typecheck.TempAt(pos, ir.CurFunc, T)
-	zeroV := typecheck.TempAt(pos, ir.CurFunc, T)
-	fn.Body.Append(ir.NewAssignStmt(pos, zeroV, nil))
 	fn.Body.Append(ir.NewAssignStmt(pos, vVar,
 		callChanHelper(t, "wasm3ChanBufGet", []ir.Node{
 			nc,
 			callChanHelper(t, "wasm3ChanRecvx", []ir.Node{nc}),
 		}, T)))
-	fn.Body.Append(callChanHelper(t, "wasm3ChanBufSet", []ir.Node{
-		nc,
-		callChanHelper(t, "wasm3ChanRecvx", []ir.Node{nc}),
-		zeroV,
-	}, T))
 	newRecvx := ir.NewBinaryExpr(pos, ir.OMOD,
 		ir.NewBinaryExpr(pos, ir.OADD,
 			callChanHelper(t, "wasm3ChanRecvx", []ir.Node{nc}),

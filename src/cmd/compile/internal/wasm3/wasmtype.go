@@ -268,8 +268,17 @@ func (c *typeCollector) collectBacking(elem *types.Type) int {
 	if idx, ok := c.backing[elem]; ok {
 		return idx
 	}
+	// Reserve the array's slot BEFORE running helpers that may grow
+	// the table (collectBox/collectSliceStruct/pointerStorage). The
+	// final c.table[idx] = ... rewrites this placeholder with the
+	// real array type. Without the placeholder, `idx` would still be
+	// captured early but the array would land at a later position
+	// (whatever len was after the helpers ran), and c.backing[elem]
+	// would cache the WRONG index — pointing at an intermediate type
+	// the helper appended.
 	idx := len(c.table)
 	c.backing[elem] = idx
+	c.table = append(c.table, wasmgc.Type{}) // placeholder
 
 	var st wasmgc.Storage
 	if p, ok := packedArrayPrim(elem.Kind()); ok {
@@ -299,13 +308,13 @@ func (c *typeCollector) collectBacking(elem *types.Type) int {
 		// which doc/wasm3-design.md §6.3 accepts as the M2 default.
 		st = wasmgc.RefStorage(c.collectBox(elem), true)
 	}
-	c.table = append(c.table, wasmgc.Type{
+	c.table[idx] = wasmgc.Type{
 		Name:    "go.array." + typeName(elem),
 		Kind:    wasmgc.KindArray,
 		Super:   -1,
 		Elem:    st,
 		ElemMut: true,
-	})
+	}
 	return idx
 }
 

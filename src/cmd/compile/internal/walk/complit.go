@@ -19,7 +19,15 @@ import (
 // walkCompLit walks a composite literal node:
 // OARRAYLIT, OSLICELIT, OMAPLIT, OSTRUCTLIT (all CompLitExpr), or OPTRLIT (AddrExpr).
 func walkCompLit(n ir.Node, init *ir.Nodes) ir.Node {
-	if isStaticCompositeLiteral(n) && !ssa.CanSSA(n.Type()) {
+	// On wasm3 the linear-memory-backed rodata representation is
+	// meaningless — composite values live as WasmGC heap structs/
+	// arrays and a `*Msg` / `[N]T` is a (ref $go.struct.T) /
+	// (ref $go.array.T). Materialising a static composite literal
+	// as a rodata symbol and then ref.casting its i64 address to
+	// the WasmGC ref the consumer expects is invalid at wasm
+	// validation time. Fall through to the dynamic anylit path so
+	// the value lowers later through OpWasm3StructNew / array.new.
+	if isStaticCompositeLiteral(n) && !ssa.CanSSA(n.Type()) && buildcfg.GOARCH != "wasm3" {
 		n := n.(*ir.CompLitExpr) // not OPTRLIT
 		// n can be directly represented in the read-only data section.
 		// Make direct reference to the static data. See issue 12841.

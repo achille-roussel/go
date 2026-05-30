@@ -754,7 +754,26 @@
 // with the field values; StructSelect [i] -> struct.get field i (the
 // StructGet AuxInt is the Go field index; codegen maps it to the WasmGC
 // field index via the byte offset).
-(StructMake ___) => (StructNew {v.Type} ___)
+// Boxed struct values: a wasm3 struct stays whole (one $go.struct.T ref),
+// so the generic StructMake (build a struct value) / StructSelect (read a
+// field) survive to lowering (most fold away in dec.rules; these handle
+// the rest — e.g. a uint128 struct in float ftoa). StructMake -> struct.new
+// with the field values; StructSelect [i] -> struct.get field i (the
+// StructGet AuxInt is the Go field index; codegen maps it to the WasmGC
+// field index via the byte offset).
+//
+// One rule per common arity rather than `(StructMake ___) => ...`: rulegen
+// reads `___` on the result side as a single identifier (not a variadic
+// forward) and the auto-generated rewriter silently drops everything past
+// arg[0]. Per-arity rules forward each arg explicitly.
+(StructMake x0) => (StructNew <v.Type> {v.Type} x0)
+(StructMake x0 x1) => (StructNew <v.Type> {v.Type} x0 x1)
+(StructMake x0 x1 x2) => (StructNew <v.Type> {v.Type} x0 x1 x2)
+(StructMake x0 x1 x2 x3) => (StructNew <v.Type> {v.Type} x0 x1 x2 x3)
+(StructMake x0 x1 x2 x3 x4) => (StructNew <v.Type> {v.Type} x0 x1 x2 x3 x4)
+(StructMake x0 x1 x2 x3 x4 x5) => (StructNew <v.Type> {v.Type} x0 x1 x2 x3 x4 x5)
+(StructMake x0 x1 x2 x3 x4 x5 x6) => (StructNew <v.Type> {v.Type} x0 x1 x2 x3 x4 x5 x6)
+(StructMake x0 x1 x2 x3 x4 x5 x6 x7) => (StructNew <v.Type> {v.Type} x0 x1 x2 x3 x4 x5 x6 x7)
 (StructSelect [i] x) => (StructGet <v.Type> {x.Type} [i] x)
 
 // M3 Stage E phase 2: ref-backed slice element access lowered to

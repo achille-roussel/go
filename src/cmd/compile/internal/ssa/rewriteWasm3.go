@@ -4241,15 +4241,139 @@ func rewriteValueWasm3_OpStringPtr(v *Value) bool {
 	}
 }
 func rewriteValueWasm3_OpStructMake(v *Value) bool {
-	// match: (StructMake ___)
-	// result: (StructNew {v.Type} ___)
+	// match: (StructMake x0)
+	// result: (StructNew <v.Type> {v.Type} x0)
 	for {
-		___ := v.Args[0]
+		if len(v.Args) != 1 {
+			break
+		}
+		x0 := v.Args[0]
 		v.reset(OpWasm3StructNew)
+		v.Type = v.Type
 		v.Aux = typeToAux(v.Type)
-		v.AddArg(___)
+		v.AddArg(x0)
 		return true
 	}
+	// match: (StructMake x0 x1)
+	// result: (StructNew <v.Type> {v.Type} x0 x1)
+	for {
+		if len(v.Args) != 2 {
+			break
+		}
+		x1 := v.Args[1]
+		x0 := v.Args[0]
+		v.reset(OpWasm3StructNew)
+		v.Type = v.Type
+		v.Aux = typeToAux(v.Type)
+		v.AddArg2(x0, x1)
+		return true
+	}
+	// match: (StructMake x0 x1 x2)
+	// result: (StructNew <v.Type> {v.Type} x0 x1 x2)
+	for {
+		if len(v.Args) != 3 {
+			break
+		}
+		x2 := v.Args[2]
+		x0 := v.Args[0]
+		x1 := v.Args[1]
+		v.reset(OpWasm3StructNew)
+		v.Type = v.Type
+		v.Aux = typeToAux(v.Type)
+		v.AddArg3(x0, x1, x2)
+		return true
+	}
+	// match: (StructMake x0 x1 x2 x3)
+	// result: (StructNew <v.Type> {v.Type} x0 x1 x2 x3)
+	for {
+		if len(v.Args) != 4 {
+			break
+		}
+		x3 := v.Args[3]
+		x0 := v.Args[0]
+		x1 := v.Args[1]
+		x2 := v.Args[2]
+		v.reset(OpWasm3StructNew)
+		v.Type = v.Type
+		v.Aux = typeToAux(v.Type)
+		v.AddArg4(x0, x1, x2, x3)
+		return true
+	}
+	// match: (StructMake x0 x1 x2 x3 x4)
+	// result: (StructNew <v.Type> {v.Type} x0 x1 x2 x3 x4)
+	for {
+		if len(v.Args) != 5 {
+			break
+		}
+		x4 := v.Args[4]
+		x0 := v.Args[0]
+		x1 := v.Args[1]
+		x2 := v.Args[2]
+		x3 := v.Args[3]
+		v.reset(OpWasm3StructNew)
+		v.Type = v.Type
+		v.Aux = typeToAux(v.Type)
+		v.AddArg5(x0, x1, x2, x3, x4)
+		return true
+	}
+	// match: (StructMake x0 x1 x2 x3 x4 x5)
+	// result: (StructNew <v.Type> {v.Type} x0 x1 x2 x3 x4 x5)
+	for {
+		if len(v.Args) != 6 {
+			break
+		}
+		x5 := v.Args[5]
+		x0 := v.Args[0]
+		x1 := v.Args[1]
+		x2 := v.Args[2]
+		x3 := v.Args[3]
+		x4 := v.Args[4]
+		v.reset(OpWasm3StructNew)
+		v.Type = v.Type
+		v.Aux = typeToAux(v.Type)
+		v.AddArg6(x0, x1, x2, x3, x4, x5)
+		return true
+	}
+	// match: (StructMake x0 x1 x2 x3 x4 x5 x6)
+	// result: (StructNew <v.Type> {v.Type} x0 x1 x2 x3 x4 x5 x6)
+	for {
+		if len(v.Args) != 7 {
+			break
+		}
+		x6 := v.Args[6]
+		x0 := v.Args[0]
+		x1 := v.Args[1]
+		x2 := v.Args[2]
+		x3 := v.Args[3]
+		x4 := v.Args[4]
+		x5 := v.Args[5]
+		v.reset(OpWasm3StructNew)
+		v.Type = v.Type
+		v.Aux = typeToAux(v.Type)
+		v.AddArgs(x0, x1, x2, x3, x4, x5, x6)
+		return true
+	}
+	// match: (StructMake x0 x1 x2 x3 x4 x5 x6 x7)
+	// result: (StructNew <v.Type> {v.Type} x0 x1 x2 x3 x4 x5 x6 x7)
+	for {
+		if len(v.Args) != 8 {
+			break
+		}
+		x7 := v.Args[7]
+		x0 := v.Args[0]
+		x1 := v.Args[1]
+		x2 := v.Args[2]
+		x3 := v.Args[3]
+		x4 := v.Args[4]
+		x5 := v.Args[5]
+		x6 := v.Args[6]
+		v.reset(OpWasm3StructNew)
+		v.Type = v.Type
+		v.Aux = typeToAux(v.Type)
+		v.AddArgs(x0, x1, x2, x3, x4, x5, x6, x7)
+		return true
+	}
+	return false
 }
 func rewriteValueWasm3_OpStructSelect(v *Value) bool {
 	v_0 := v.Args[0]

@@ -894,6 +894,11 @@ func wasm3ChanBufElemRefIdx(fi *obj.FuncInfo, elem *types.Type) (int64, bool) {
 		return int64(wasmgc.TypeGoIface), true
 	case elem.IsSlice():
 		return int64(wasm3RegisterSliceStruct(fi, elem)), true
+	case elem.IsStruct() && elem.Size() > 0:
+		// Composite struct element: stored as (ref null $go.struct.T)
+		// in the backing — see collectBacking's collectBox path which
+		// for a registered struct returns the struct's idx itself.
+		return int64(wasm3RegisterStruct(fi, elem)), true
 	case elem.IsPtr(), elem.IsUnsafePtr(), elem.IsChan(), elem.IsMap(), elem.Kind() == types.TFUNC:
 		// Pointers/chans/maps/funcs are stored as (ref null $go.object)
 		// in the backing — see collectBacking's pointerStorage path.

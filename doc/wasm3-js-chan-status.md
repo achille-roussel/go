@@ -1,5 +1,46 @@
 # GOARCH=wasm3 GOOS=js — `chan` integration status
 
+## Status: `Chan[T]` generic works end-to-end (closes M4 chan goal)
+
+The generic `runtime/wasm.Chan[T]` substrate compiles and runs on
+js/wasm3. The end-to-end test:
+
+```go
+var done *wasm.Chan[int32]
+func sender() { done.Send(7) }
+func main() {
+    logInt(0)
+    done = wasm.MakeChan[int32](1)
+    wasm.Spawn(sender)
+    logInt(done.Recv())   // → 7
+    logInt(1)
+}
+```
+
+prints `0 / 7 / 1` — generic Chan creation, goroutine send, main recv
+all work. Per-T variants (`ChanInt32`, future `ChanInt64`, ...) are
+no longer required; the runtime dispatcher's `wasm3ChanInt32Send/Recv`
+linkname stubs now forward to `wasm.Chan[int32]` directly.
+
+The unlocking fix: on wasm3, ONEW with a dynamic *_type (the form
+generic stencils emit) bypasses `runtime.newobject` and emits
+`struct.new_default` on the per-shape struct type directly. The
+wasm3 backend stencils per GC shape, so the struct layout is
+statically known — the dict rtype load was redundant. See commit
+`6f562773fd`.
+
+Disassembly confirms `runtime_wasm.MakeChan_go.shape.int32_` uses
+`struct.new_default 65` — no `call $runtime.newobject`, no dict
+rtype load, no linear-memory pointer materialization.
+
+The deeper "dicts in linear memory" cleanup (replacing the
+`(array i64)` dict representation with `(array (ref \$go.object))`
+wasm globals) is no longer blocking chan, though it remains a
+follow-up for other dict consumers (type assertions, reflection,
+etc.). The original status text below is preserved for context.
+
+---
+
 ## Status: `chan int32` works end-to-end via stock keyword + closure capture
 
 End-to-end stock `chan int32` keyword works on js/wasm3:

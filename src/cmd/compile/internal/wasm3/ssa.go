@@ -1337,7 +1337,12 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		s.Prog(wasm.AI32WrapI64)
 		getValue64(s, v.Args[2])
 		elem := chanType.Elem()
-		if elemSize := elem.Size(); elemSize == 1 || elemSize == 2 {
+		// Value width narrowing: a sub-i64 scalar slot (i8/i16/i32)
+		// requires i32.wrap on the i64 register value before array.set
+		// (the array's elem type is i32 / packed i8|i16 and a 64-bit
+		// stack value fails validation). i64 / f32 / f64 / ref slots
+		// match their register width and need no conversion.
+		if p, ok := scalarPrim(elem.Kind()); ok && p == wasmgc.I32 {
 			s.Prog(wasm.AI32WrapI64)
 		}
 		if elemRefIdx, ok := wasm3ChanBufElemRefIdx(s.FuncInfo(), elem); ok {
@@ -2376,16 +2381,38 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		pNN.From = obj.Addr{Type: obj.TYPE_CONST, Offset: bufArrIdx}
 		getValue64(s, v.Args[1])
 		s.Prog(wasm.AI32WrapI64)
+		// Element-kind-aware array.get + i32→i64 widening. The wasm3
+		// SSA backend uses i64 GP registers (wasm3ValueType's generic
+		// default is i64), but a (array i8/i16/i32) elem-typed
+		// array.get pushes i32. Without widening, the result slips
+		// into an i64 local and wasm validation rejects the local.set.
+		// Signedness follows the Go kind: TINT* sign-extends,
+		// TUINT*/TBOOL/etc. zero-extends.
+		elem := chanType.Elem()
+		signed := elem.IsSigned()
 		getOp := wasm.AArrayGet
-		packed := false
-		if elemSize := chanType.Elem().Size(); elemSize == 1 || elemSize == 2 {
-			getOp = wasm.AArrayGetU
-			packed = true
+		needExtend := false
+		switch elem.Size() {
+		case 1, 2:
+			if signed {
+				getOp = wasm.AArrayGetS
+			} else {
+				getOp = wasm.AArrayGetU
+			}
+			needExtend = true
+		case 4:
+			if p, ok := scalarPrim(elem.Kind()); ok && p == wasmgc.I32 {
+				needExtend = true
+			}
 		}
 		pGet := s.Prog(getOp)
 		pGet.From = obj.Addr{Type: obj.TYPE_CONST, Offset: bufArrIdx}
-		if packed {
-			s.Prog(wasm.AI64ExtendI32U)
+		if needExtend {
+			if signed {
+				s.Prog(wasm.AI64ExtendI32S)
+			} else {
+				s.Prog(wasm.AI64ExtendI32U)
+			}
 		}
 
 	case ssa.OpWasm3MakeSlice:

@@ -8884,6 +8884,29 @@ func rewriteValueWasm3_OpWasm3PtrLoad(v *Value) bool {
 		v.AddArg2(s, idx)
 		return true
 	}
+	// match: (PtrLoad <t> (I64AddConst [c] (StringData s)))
+	// cond: config.arch == "wasm3" && t.Size() == 1
+	// result: (StringByte s (Const64 <typ.Int64> [c]))
+	for {
+		t := v.Type
+		if v_0.Op != OpWasm3I64AddConst {
+			break
+		}
+		c := auxIntToInt64(v_0.AuxInt)
+		v_0_0 := v_0.Args[0]
+		if v_0_0.Op != OpWasm3StringData {
+			break
+		}
+		s := v_0_0.Args[0]
+		if !(config.arch == "wasm3" && t.Size() == 1) {
+			break
+		}
+		v.reset(OpWasm3StringByte)
+		v0 := b.NewValue0(v.Pos, OpConst64, typ.Int64)
+		v0.AuxInt = int64ToAuxInt(c)
+		v.AddArg2(s, v0)
+		return true
+	}
 	// match: (PtrLoad <t> (StringData <_> s))
 	// cond: config.arch == "wasm3" && t.Size() == 1
 	// result: (StringByte s (Const64 <typ.Int64> [0]))

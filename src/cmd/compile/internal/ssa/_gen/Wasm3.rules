@@ -127,6 +127,7 @@
 // I64Add form (variable index) and the bare StringData form
 // (constant zero index — `s[0]` after const-fold drops the add).
 (PtrLoad <t> (I64Add (StringData <_> s) idx)) && config.arch == "wasm3" && t.Size() == 1 => (StringByte s idx)
+(PtrLoad <t> (I64AddConst [c] (StringData s))) && config.arch == "wasm3" && t.Size() == 1 => (StringByte s (Const64 <typ.Int64> [c]))
 (PtrLoad <t> (StringData <_> s)) && config.arch == "wasm3" && t.Size() == 1 => (StringByte s (Const64 <typ.Int64> [0]))
 
 // Dereference of an i64-class interior pointer ($go.ptr.i64 accessor-pair

@@ -187,22 +187,34 @@ func walkSelectCases(cases []*ir.CommClause) []ir.Node {
 	}
 
 	if buildcfg.GOARCH == "wasm3" {
-		// General multi-case (and N-case-with-default for N>2) select
-		// goes through runtime.selectgo, which walks an array of
-		// runtime.scase entries that point at hchan (the legacy
-		// runtime chan). wasm3 chans are $go.chan.<T> WasmGC structs
-		// — incompatible. A wasm3 selectgo would need a per-T
-		// case-builder + a polling/parking loop coordinating across
-		// all chans via WasmPark; that's a substantial follow-up.
-		// For now, emit a runtime.throw so the rest of the program
-		// compiles cleanly (instead of hitting the SSA scase-array
-		// liveness error) and the user gets a clear runtime message.
-		// Emit a panicwrap call — its body is `runtime.throw(...)`, no
-		// args needed at the IR level and the runtime side will print
-		// a stack trace identifying the (panicwrap-named) caller. Not
-		// the prettiest diagnostic, but it lets the compile succeed
-		// and a runtime trap is the best we can do until a real
-		// wasm3 selectgo lands.
+		// Multi-case select on wasm3 is non-trivial — see
+		// doc/wasm3-select-status.md (and the abandoned attempts in
+		// walkSelectCasesWasm3Multi, kept below for reference). Two
+		// design directions both have substantial blockers:
+		//
+		//   1. Inline-poll: walk-emitted polling loop. The CFG
+		//      produced (for-loop with N if-then-break branches, each
+		//      with a trampoline call) is valid Go IR but the wasm3
+		//      obj backend's CFG analyser (wasm3AnalyzeCFG) bails on
+		//      the RESUMEPOINT shape and main.main stubs to
+		//      `unreachable`.
+		//
+		//   2. Synthesised nested 2-case-default SelectStmts: build a
+		//      fresh SelectStmt per case and walk each through the
+		//      proven 2-case-default emission path. Compiles cleanly
+		//      for handwritten equivalents in the user's source, but
+		//      the synthesised SelectStmts trip the walker's typecheck
+		//      ("unknown op RESULT" via the case body's expressions)
+		//      because the cases were already typechecked by the
+		//      outer walkSelect before they reach us.
+		//
+		// Both directions need real compiler-internals work to land.
+		// Until then, emit a runtime trap so multi-case selects build
+		// (rather than panicking the compiler at SSA-liveness or walk
+		// time) and the user gets a clear "not yet supported" signal
+		// at run time. 2-case-with-default selects (the common
+		// non-blocking poll idiom and the `close(c)` interaction) are
+		// handled by the path above and work end-to-end.
 		var init ir.Nodes
 		call := mkcall("panicwrap", nil, &init)
 		init.Append(typecheck.Stmt(call))
@@ -342,6 +354,97 @@ func walkSelectCases(cases []*ir.CommClause) []ir.Node {
 		dispatch(ir.NewBinaryExpr(base.Pos, ir.OEQ, chosen, ir.NewInt(base.Pos, int64(i))), cas)
 	}
 
+	return init
+}
+
+// walkSelectCasesWasm3Multi lowers a multi-case select on GOARCH=wasm3
+// by emitting a polling for-loop that tries each case non-blocking
+// via the per-T trampolines, falls back to a wasm.SleepMs(1) yield
+// when nothing is ready, and dispatches the matched case body inside
+// the loop (so a user's `break` inside a case body breaks the
+// for-loop = the select). Default case becomes the no-ready fallback.
+//
+// Cases are tried top-to-bottom; the first ready one wins. No
+// randomisation (real Go select randomises to prevent starvation).
+//
+// Shape (3 cases, no default):
+//
+//	for {
+//	    if wasm3SelectNbSend.T0(c0, e0) { BODY0; break }
+//	    v1, sel1, ok1 := wasm3SelectNbRecv.T1(c1)
+//	    if sel1 { user_v1 = v1; user_ok1 = ok1; BODY1; break }
+//	    if wasm3SelectNbSend.T2(c2, e2) { BODY2; break }
+//	    wasm.SleepMs(1)
+//	}
+//
+// With default:
+//
+//	for {
+//	    ... try each case ...
+//	    DEFAULT_BODY; break
+//	}
+func walkSelectCasesWasm3Multi(cases []*ir.CommClause, dflt *ir.CommClause) []ir.Node {
+	var init []ir.Node
+
+	// `done` is the "we picked a case" flag — false initially, set
+	// true at the end of any case body that fires. Each per-case
+	// nested SelectStmt is gated by `if !done { … }`, so once any
+	// case succeeds the rest short-circuit.
+	doneVar := typecheck.TempAt(base.Pos, ir.CurFunc, types.Types[types.TBOOL])
+	init = append(init, typecheck.Stmt(ir.NewAssignStmt(base.Pos, doneVar, nil)))
+
+	// Build sequential per-case attempts. Each one is a synthesised
+	// 2-case-default SelectStmt (which goes through walkSelectCases'
+	// proven 2-case-default emission path) wrapped in `if !done`.
+	var perIter ir.Nodes
+	for _, cas := range cases {
+		n := cas.Comm
+		if n == nil {
+			continue // default handled after the per-case sweep
+		}
+		// Augment the case body with `done = true` so subsequent
+		// gates short-circuit. cas.Body.Take() empties cas.Body;
+		// the caller (walkSelect) does not re-read it after we
+		// return.
+		bodyWithDone := append([]ir.Node(cas.Body.Take()),
+			typecheck.Stmt(ir.NewAssignStmt(base.Pos, doneVar, ir.NewBool(base.Pos, true))))
+
+		// Build: select { case <original-comm>: bodyWithDone; default: }
+		synthCase := ir.NewCommStmt(base.Pos, n, bodyWithDone)
+		dfltCase := ir.NewCommStmt(base.Pos, nil, nil)
+		synthSel := ir.NewSelectStmt(base.Pos, []*ir.CommClause{synthCase, dfltCase})
+
+		// Walk the synthetic select. Its Compiled is the lowered
+		// IR shape walkSelectCases' 2-case-default branch produces.
+		walkSelect(synthSel)
+
+		// if !done { synthSel.Compiled }
+		notDone := ir.NewUnaryExpr(base.Pos, ir.ONOT, doneVar)
+		perIter.Append(typecheck.Stmt(ir.NewIfStmt(base.Pos, notDone, synthSel.Compiled, nil)))
+	}
+
+	if dflt != nil {
+		init = append(init, perIter...)
+		// Final fallback: if no case fired, run the user's default.
+		dfltBody := append([]ir.Node(dflt.Body.Take()),
+			typecheck.Stmt(ir.NewAssignStmt(base.Pos, doneVar, ir.NewBool(base.Pos, true))))
+		notDone := ir.NewUnaryExpr(base.Pos, ir.ONOT, doneVar)
+		init = append(init, typecheck.Stmt(ir.NewIfStmt(base.Pos, notDone, dfltBody, nil)))
+	} else {
+		// No default — must block until some case fires. Loop with
+		// a yield in the no-progress branch so a goroutine parked
+		// on one of the chans gets a chance to run between polls.
+		yieldFn := typecheck.LookupRuntime("wasm3SelectYield")
+		var callInit ir.Nodes
+		yieldCall := mkcall1(yieldFn, nil, &callInit)
+		perIter.Append(callInit...)
+		notDoneYield := ir.NewUnaryExpr(base.Pos, ir.ONOT, doneVar)
+		perIter.Append(typecheck.Stmt(ir.NewIfStmt(base.Pos, notDoneYield,
+			[]ir.Node{typecheck.Stmt(yieldCall)}, nil)))
+		notDoneLoop := ir.NewUnaryExpr(base.Pos, ir.ONOT, doneVar)
+		loop := ir.NewForStmt(base.Pos, nil, notDoneLoop, nil, perIter, false)
+		init = append(init, typecheck.Stmt(loop))
+	}
 	return init
 }
 

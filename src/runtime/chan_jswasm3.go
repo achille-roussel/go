@@ -155,6 +155,17 @@ func wasm3ChanFinishRecv(c *channel) {
 //go:noinline
 func wasm3ChanSetDataqsiz(c *channel, n int32) { c.dataqsiz = n }
 
+// wasm3SelectYield is the no-ready-case fallback for multi-case
+// select on wasm3 (walk/select.go's walkSelectCasesWasm3Multi).
+// One round-trip through the JS event loop via SleepMs(1), so any
+// goroutine parked on one of the select's chans gets a chance to
+// run before we re-poll. 1ms is granular but caps busy-wait CPU.
+//
+//go:noinline
+func wasm3SelectYield() {
+	wasm.SleepMs(1)
+}
+
 // wasm3ChanClose implements the close(c) builtin on wasm3. Marks
 // the chan closed and wakes any parked sender / receiver so they
 // can observe the close in their re-checked loop bodies.

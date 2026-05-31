@@ -126,6 +126,7 @@ func wasm3ChanTryRecvCommit(c unsafe.Pointer)
 func wasm3ChanTrySendBegin(c unsafe.Pointer) (slot int32, ok bool)
 func wasm3ChanTrySendCommit(c unsafe.Pointer)
 func wasm3ChanClose(c unsafe.Pointer)
+func wasm3SelectYield()
 
 func intstring(*[4]byte, int64) string
 func slicebytetostring(buf *[32]byte, ptr *byte, n int) string

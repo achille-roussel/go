@@ -124,6 +124,31 @@ async function main() {
             // a JS import lands in Phase 2; until then LogInt is the
             // simplest way to observe execution.
             "runtime.LogInt": (n) => process.stdout.write(`log ${n}\n`),
+
+            // Phase 2 write path: the wasm side stages bytes via
+            // WriteLinearMemory and hands the (fd, off, n) triple to
+            // this import. fd 1 → stdout, fd 2 → stderr; anything
+            // else is rejected to match the host's runtime.write
+            // policy (os_js.go writes fd > 2 are not supported).
+            // Phase 2 write path: the wasm side stages
+            // [fd:u32 | n:u32 | data:n_bytes] starting at headerOff and
+            // hands the single offset to this import. We read the
+            // header from the instance's linear memory, then write the
+            // following n bytes to process.stdout / stderr per fd.
+            // Single-i32-param convention matches the legacy gojs ABI.
+            "runtime.writeBytes": (headerOff) => {
+                const mem = instance.exports.mem.buffer;
+                const hdr = new DataView(mem, Number(headerOff), 8);
+                const fd = hdr.getUint32(0, true);
+                const n = hdr.getUint32(4, true);
+                if (n === 0) return;
+                const view = new Uint8Array(mem, Number(headerOff) + 8, n);
+                if (fd === 1) {
+                    process.stdout.write(view);
+                } else if (fd === 2) {
+                    process.stderr.write(view);
+                }
+            },
         },
     };
 

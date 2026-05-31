@@ -11,12 +11,11 @@ import "unsafe"
 // printstring for GOARCH=wasm3 aliases the string's $go.bytes
 // backing as a []byte slice and hands it to write1Bytes. No copy:
 // the bridge's WriteLinearMemory walks the slice's backing
-// directly via array.get_u $go.bytes.
+// directly via array.get_u $go.bytes. write1Bytes early-exits on
+// len(b) == 0, so a zero-length string is a no-op without an
+// explicit guard here.
 //
 //go:nosplit
 func printstring(s string) {
-	if len(s) == 0 {
-		return
-	}
 	write1Bytes(2, unsafe.Slice(unsafe.StringData(s), len(s)))
 }

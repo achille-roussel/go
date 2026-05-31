@@ -125,6 +125,17 @@ async function main() {
             // simplest way to observe execution.
             "runtime.LogInt": (n) => process.stdout.write(`log ${n}\n`),
 
+            // Per-goroutine footprint measurement helper (M4 Phase E):
+            // emit a tagged process.memoryUsage() snapshot to stderr.
+            // Bash driver scrapes the lines to compute slope per
+            // spawned goroutine across N runs.
+            "runtime.memSnap": (label) => {
+                const m = process.memoryUsage();
+                process.stderr.write(
+                    `memsnap label=${label} rss=${m.rss} heapUsed=${m.heapUsed} heapTotal=${m.heapTotal} external=${m.external} arrayBuffers=${m.arrayBuffers}\n`,
+                );
+            },
+
             // Phase 2 write path: the wasm side stages bytes via
             // WriteLinearMemory and hands the (fd, off, n) triple to
             // this import. fd 1 → stdout, fd 2 → stderr; anything

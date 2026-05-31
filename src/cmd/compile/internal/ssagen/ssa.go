@@ -409,16 +409,6 @@ func buildssa(fn *ir.Func, worker int, isPgoHot bool) *ssa.Func {
 	switch {
 	case base.Debug.NoOpenDefer != 0:
 		s.hasOpenDefers = false
-	case buildcfg.GOARCH == "wasm3":
-		// Open-coded defers stage per-defer fired-flags in
-		// SP-relative locals and load them at the deferreturn site.
-		// GOARCH=wasm3 has no Go stack in linear memory, so the
-		// emitted Get REG_SP fails the obj backend and bails the
-		// whole function to a stub (main.main becomes
-		// `unreachable`). Fall back to the runtime defer chain
-		// (deferproc / deferreturn) which goes through plain Go
-		// allocations — no SP needed.
-		s.hasOpenDefers = false
 	case s.hasOpenDefers && (base.Ctxt.Flag_shared || base.Ctxt.Flag_dynlink) && base.Ctxt.Arch.Name == "386":
 		// Don't support open-coded defers for 386 ONLY when using shared
 		// libraries, because there is extra code (added by rewriteToUseGot())
@@ -8857,39 +8847,17 @@ func deferstruct() *types.Type {
 		return types.NewField(src.NoXPos, sym, t)
 	}
 
-	// GOARCH=wasm3: the "types don't matter" trick below relies on
-	// uintptr aliasing real pointer fields, which only holds on flat
-	// linear-memory arches where both lower to i64. wasm3 lowers
-	// uintptr to i64 but func()/*_defer to (ref $go.closure...) and
-	// (ref $go.struct._defer) respectively — storing an anyref into
-	// an i64 slot fails wasm validation ("struct.set[1] expected
-	// type i64, found local.get of type anyref"). Use the real
-	// types on wasm3 so the WasmGC struct fields are ref-typed.
-	fnT, linkT, headT := types.Types[types.TUINTPTR], types.Types[types.TUINTPTR], types.Types[types.TUINTPTR]
-	if buildcfg.GOARCH == "wasm3" {
-		fnT = types.NewSignature(nil, nil, nil) // func()
-		// Use unsafe.Pointer for the recursive *_defer and *atomic.Pointer
-		// fields: synthesising the real recursive *_defer type here would
-		// create a name-collision with the runtime._defer the linker
-		// already has, and the open-base ($go.object) ref is the same
-		// width as the typed ref the runtime expects.
-		linkT = types.Types[types.TUNSAFEPTR]
-		headT = types.Types[types.TUNSAFEPTR]
-	}
 	fields := []*types.Field{
 		makefield("heap", types.Types[types.TBOOL]),
 		makefield("rangefunc", types.Types[types.TBOOL]),
 		makefield("sp", types.Types[types.TUINTPTR]),
 		makefield("pc", types.Types[types.TUINTPTR]),
-		// Note: the types here don't really matter on flat-stack
-		// arches. Defer structures are always scanned explicitly
-		// during stack copying and GC, so we make them uintptr type
-		// even though they are real pointers. wasm3 needs the real
-		// types so its WasmGC struct fields lower to refs (see
-		// adjustment above).
-		makefield("fn", fnT),
-		makefield("link", linkT),
-		makefield("head", headT),
+		// Note: the types here don't really matter. Defer structures
+		// are always scanned explicitly during stack copying and GC,
+		// so we make them uintptr type even though they are real pointers.
+		makefield("fn", types.Types[types.TUINTPTR]),
+		makefield("link", types.Types[types.TUINTPTR]),
+		makefield("head", types.Types[types.TUINTPTR]),
 	}
 	if name := fields[deferStructFnField].Sym.Name; name != "fn" {
 		base.Fatalf("deferStructFnField is %q, not fn", name)

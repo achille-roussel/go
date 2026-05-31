@@ -22,6 +22,21 @@ func memcombine(f *Func) {
 		return
 	}
 
+	// GOARCH=wasm3 stores Go structs as WasmGC structs with per-field
+	// types — there is no linear-memory backing where two adjacent
+	// i32 fields would alias the low/high halves of one i64 cell.
+	// Combining two Store <int32> at offsets [0] and [4] into a single
+	// Store <uint64> at offset [0] makes the backend either silently
+	// drop the high half (current symptom: a `&Msg{Id:1, Value:10}`
+	// composite-literal store ends up as `struct.set $Msg 0 (i32.wrap
+	// (i64.const packed))`, leaving field 1 zero) or trap at wasm
+	// validation if the lowering tries to span fields with a single
+	// store. The whole optimization assumes a flat linear-memory
+	// layout the wasm3 backend doesn't have.
+	if f.Config.arch == "wasm3" {
+		return
+	}
+
 	memcombineLoads(f)
 	memcombineStores(f)
 }

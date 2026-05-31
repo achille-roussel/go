@@ -155,6 +155,15 @@ func walkClear(n *ir.UnaryExpr, init *ir.Nodes) ir.Node {
 
 // walkClose walks an OCLOSE node.
 func walkClose(n *ir.UnaryExpr, init *ir.Nodes) ir.Node {
+	if buildcfg.GOARCH == "wasm3" {
+		// wasm3 chans are $go.chan.<T> WasmGC structs, not hchan.
+		// Route to a single generic helper that operates on the
+		// shared *channel state; no per-T trampoline needed since
+		// close transfers no value.
+		chArg := ir.NewConvExpr(base.Pos, ir.OCONVNOP, types.Types[types.TUNSAFEPTR], n.X)
+		chArg.SetTypecheck(1)
+		return mkcall("wasm3ChanClose", nil, init, chArg)
+	}
 	return mkcall1(chanfn("closechan", 1, n.X.Type()), nil, init, n.X)
 }
 

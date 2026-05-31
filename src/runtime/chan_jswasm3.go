@@ -155,6 +155,28 @@ func wasm3ChanFinishRecv(c *channel) {
 //go:noinline
 func wasm3ChanSetDataqsiz(c *channel, n int32) { c.dataqsiz = n }
 
+// wasm3ChanClose implements the close(c) builtin on wasm3. Marks
+// the chan closed and wakes any parked sender / receiver so they
+// can observe the close in their re-checked loop bodies.
+//
+// Panics on double-close, matching the standard Go semantics.
+//
+//go:noinline
+func wasm3ChanClose(c *channel) {
+	if c.closed {
+		panic(plainError("close of closed channel"))
+	}
+	c.closed = true
+	if id := c.sendParkID; id != 0 {
+		c.sendParkID = 0
+		wasm.WasmReady(id)
+	}
+	if id := c.recvParkID; id != 0 {
+		c.recvParkID = 0
+		wasm.WasmReady(id)
+	}
+}
+
 // Non-blocking select helpers — drive the buffered/unbuffered chan
 // state machine without ever calling WasmPark, so the per-T select
 // trampolines (reflectdata/wasm3_changen.go) can implement

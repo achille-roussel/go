@@ -3319,10 +3319,20 @@ func (s *state) exprCheckPtr(n ir.Node, checkPtrOK bool) *ssa.Value {
 		n := n.(*ir.ConvExpr)
 		str := s.expr(n.X)
 		ptr := s.newValue1(ssa.OpStringPtr, s.f.Config.Types.BytePtr, str)
-		if !n.NonNil() {
+		if !n.NonNil() && buildcfg.GOARCH != "wasm3" {
 			// We need to ensure []byte("") evaluates to []byte{}, and not []byte(nil).
 			//
 			// TODO(mdempsky): Investigate using "len != 0" instead of "ptr != nil".
+			//
+			// wasm3: a string's data field has a non-nullable (ref
+			// $go.bytes) wasm type — the lowering rejects a null
+			// data ref at construction time. The runtime.zerobase
+			// fallback is an i64 linear-memory address, which is
+			// type-incompatible with the StringPtr's anyref-shaped
+			// ref and fails wasm validation at the select:
+			// "select[1] expected anyref, found i64". Skip the
+			// fallback entirely; the empty-string ptr is already a
+			// valid non-null ref to an empty $go.bytes array.
 			cond := s.newValue2(ssa.OpNeqPtr, types.Types[types.TBOOL], ptr, s.constNil(ptr.Type))
 			zerobase := s.newValue1A(ssa.OpAddr, ptr.Type, ir.Syms.Zerobase, s.sb)
 			ptr = s.ternary(cond, ptr, zerobase)

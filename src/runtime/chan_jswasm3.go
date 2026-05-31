@@ -63,6 +63,21 @@ func wasm3ChanSlotsSet(c *channel, i int32, v any) {}
 
 //go:noinline
 func wasm3ChanReserveSend(c *channel) int32 {
+	if c.dataqsiz == 0 {
+		// Unbuffered rendez-vous: park until a receiver is waiting.
+		// The receiver will be parked too (see ReserveRecv) and will
+		// have woken us — we exit when recvParkID is non-zero (the
+		// receiver's park-ID, planted before it called WasmReady on
+		// our sendParkID). Slot 0 is the transit cell allocated by
+		// MakeChan regardless of cap; the trampoline writes v there
+		// next, and FinishSend wakes the receiver.
+		for c.recvParkID == 0 {
+			c.sendParkID = wasm3MintChanParkID()
+			wasm.WasmPark(c.sendParkID)
+			c.sendParkID = 0
+		}
+		return 0
+	}
 	for c.qcount >= c.dataqsiz {
 		c.sendParkID = wasm3MintChanParkID()
 		wasm.WasmPark(c.sendParkID)
@@ -73,6 +88,16 @@ func wasm3ChanReserveSend(c *channel) int32 {
 
 //go:noinline
 func wasm3ChanFinishSend(c *channel) {
+	if c.dataqsiz == 0 {
+		// Unbuffered: receiver is parked on recvParkID (it planted
+		// the ID then waited for us to write). Wake it; no buffer
+		// bookkeeping (sendx/recvx/qcount stay 0).
+		if id := c.recvParkID; id != 0 {
+			c.recvParkID = 0
+			wasm.WasmReady(id)
+		}
+		return
+	}
 	c.sendx = (c.sendx + 1) % c.dataqsiz
 	c.qcount++
 	if id := c.recvParkID; id != 0 {
@@ -83,6 +108,26 @@ func wasm3ChanFinishSend(c *channel) {
 
 //go:noinline
 func wasm3ChanReserveRecv(c *channel) int32 {
+	if c.dataqsiz == 0 {
+		// Unbuffered rendez-vous: two scenarios depending on arrival
+		// order. We always plant our recvParkID first so the sender
+		// (whenever it arrives) can find us via the ReserveSend loop's
+		// "recvParkID != 0" exit condition.
+		c.recvParkID = wasm3MintChanParkID()
+		if c.sendParkID != 0 {
+			// Sender already arrived and parked. Wake it so it can
+			// proceed through SlotsSet (writing v to slot 0) and
+			// FinishSend (which will wake us via recvParkID).
+			id := c.sendParkID
+			c.sendParkID = 0
+			wasm.WasmReady(id)
+		}
+		// Sender (either just-woken from above or still to arrive)
+		// will write slot 0 and call FinishSend → WasmReady(recvParkID).
+		wasm.WasmPark(c.recvParkID)
+		c.recvParkID = 0
+		return 0
+	}
 	for c.qcount <= 0 {
 		c.recvParkID = wasm3MintChanParkID()
 		wasm.WasmPark(c.recvParkID)
@@ -93,6 +138,12 @@ func wasm3ChanReserveRecv(c *channel) int32 {
 
 //go:noinline
 func wasm3ChanFinishRecv(c *channel) {
+	if c.dataqsiz == 0 {
+		// Unbuffered: sender already returned from ReserveSend (we
+		// woke it earlier) and ran SlotsSet + FinishSend; no wake-up
+		// owed. sendx/recvx/qcount stay 0.
+		return
+	}
 	c.recvx = (c.recvx + 1) % c.dataqsiz
 	c.qcount--
 	if id := c.sendParkID; id != 0 {

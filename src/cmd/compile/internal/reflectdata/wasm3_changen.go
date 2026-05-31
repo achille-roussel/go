@@ -46,9 +46,16 @@ func callRuntimeHelper(name string, args []ir.Node, retTypes ...*types.Type) *ir
 // MakeChanFuncWasm3 generates the per-T `make(chan T, n)` trampoline:
 //
 //	c := wasm3ChanAlloc()
-//	wasm3ChanSetDataqsiz(c, int32(n))
-//	if n > 0 { wasm3ChanSlotsAlloc(c, int32(n)) }
+//	wasm3ChanSetDataqsiz(c, int32(n))           // user-visible cap (cap()/len())
+//	allocCap := n; if allocCap < 1 { allocCap = 1 }
+//	wasm3ChanSlotsAlloc(c, int32(allocCap))     // backing always has ≥1 slot
 //	return c
+//
+// The "always allocate ≥ 1 slot" rule keeps unbuffered chans usable —
+// the slot 0 is the rendez-vous transit cell. dataqsiz stays at 0 so
+// cap()/len() report the user's intent; the runtime state machine
+// (chan_jswasm3.go) keys on dataqsiz == 0 to take the rendez-vous
+// path instead of the buffered-FIFO path.
 func MakeChanFuncWasm3(t *types.Type) *ir.Func {
 	if !t.IsChan() {
 		base.Fatalf("MakeChanFuncWasm3: not a chan type: %v", t)
@@ -78,15 +85,19 @@ func MakeChanFuncWasm3(t *types.Type) *ir.Func {
 	// c := wasm3ChanAlloc()
 	fn.Body.Append(ir.NewAssignStmt(pos, cVar,
 		callChanHelper(t, "wasm3ChanAlloc", nil)))
-	// wasm3ChanSetDataqsiz(c, int32(n))
+	// wasm3ChanSetDataqsiz(c, int32(n))   // user cap
 	fn.Body.Append(callRuntimeHelper("wasm3ChanSetDataqsiz",
 		[]ir.Node{cVar, ir.NewConvExpr(pos, ir.OCONV, int32T, nn)}))
-	// if n > 0 { wasm3ChanSlotsAlloc(c, int32(n)) }
-	gtZero := ir.NewBinaryExpr(pos, ir.OGT, nn, ir.NewInt(pos, 0))
-	fn.Body.Append(ir.NewIfStmt(pos, gtZero, []ir.Node{
-		callChanHelper(t, "wasm3ChanSlotsAlloc",
-			[]ir.Node{cVar, ir.NewConvExpr(pos, ir.OCONV, int32T, nn)}),
+	// allocCap := n; if allocCap < 1 { allocCap = 1 }
+	// wasm3ChanSlotsAlloc(c, int32(allocCap))
+	allocCap := typecheck.TempAt(pos, ir.CurFunc, types.Types[types.TINT])
+	fn.Body.Append(ir.NewAssignStmt(pos, allocCap, nn))
+	ltOne := ir.NewBinaryExpr(pos, ir.OLT, allocCap, ir.NewInt(pos, 1))
+	fn.Body.Append(ir.NewIfStmt(pos, ltOne, []ir.Node{
+		ir.NewAssignStmt(pos, allocCap, ir.NewInt(pos, 1)),
 	}, nil))
+	fn.Body.Append(callChanHelper(t, "wasm3ChanSlotsAlloc",
+		[]ir.Node{cVar, ir.NewConvExpr(pos, ir.OCONV, int32T, allocCap)}))
 	fn.Body.Append(ir.NewReturnStmt(pos, []ir.Node{cVar}))
 
 	typecheck.FinishFuncBody()

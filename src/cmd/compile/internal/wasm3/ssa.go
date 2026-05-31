@@ -2432,10 +2432,71 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// (array (ref box.E)), scalars use packed/primitive storage.
 		// One Go element = one backing slot, so cap is the array length
 		// directly — no stride multiply.
+		sliceType := v.Aux.(*types.Type)
+		elem := sliceType.Elem()
+		arrIdx := int64(wasm3RegisterArrayAux(s, v))
 		getValue64(s, v.Args[1])
 		s.Prog(wasm.AI32WrapI64)
 		p := s.Prog(wasm.AArrayNewDefault)
-		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasm3RegisterArrayAux(s, v))}
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdx}
+		if elem.IsStruct() && elem.Size() > 0 {
+			// Struct elements: each slot is a (ref null $go.struct.T)
+			// that array.new_default initialised to null. Later
+			// `slice[i].F = v` lowers to array.get → ref.cast → struct.set
+			// and the ref.cast traps on the null slot. Pre-fill every
+			// slot with a fresh struct.new_default so writes find a
+			// real cell to mutate. Per-T fill loop emitted inline:
+			//   $arr (anyref) ← tee from the array.new_default above
+			//   $cap (i32)    ← i32.wrap(args[1])
+			//   $i   (i32)    ← 0
+			//   block { loop {
+			//     local.get $i; local.get $cap; i32.ge_u; br_if 1
+			//     local.get $arr; ref.cast $arr_T;
+			//     local.get $i; struct.new_default $T; array.set $arr_T
+			//     local.get $i; i32.const 1; i32.add; local.set $i
+			//     br 0
+			//   } end } end
+			//   local.get $arr   ;; re-push for the localSet fall-through
+			wasm3EnsureCollector(s.FuncInfo())
+			structIdx := int64(wasm3RegisterStruct(s.FuncInfo(), elem))
+			arrLocal := wasm3AllocAnyrefTempLocal(s)
+			capLocal := wasm3AllocI32TempLocal(s)
+			iLocal := wasm3AllocI32TempLocal(s)
+			// stack currently has the newly-allocated array ref on top.
+			localSetIdx(s, arrLocal)
+			// $cap = i32.wrap(args[1])
+			getValue64(s, v.Args[1])
+			s.Prog(wasm.AI32WrapI64)
+			localSetIdx(s, capLocal)
+			// $i = 0
+			i32Const(s, 0)
+			localSetIdx(s, iLocal)
+			s.Prog(wasm.ABlock)
+			s.Prog(wasm.ALoop)
+			localGetIdx(s, iLocal)
+			localGetIdx(s, capLocal)
+			s.Prog(wasm.AI32GeU)
+			pBr := s.Prog(wasm.ABrIf)
+			pBr.From = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
+			localGetIdx(s, arrLocal)
+			pCast := s.Prog(wasm.ARefCast)
+			pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdx}
+			localGetIdx(s, iLocal)
+			pNew := s.Prog(wasm.AStructNewDefault)
+			pNew.From = obj.Addr{Type: obj.TYPE_CONST, Offset: structIdx}
+			pSet := s.Prog(wasm.AArraySet)
+			pSet.From = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdx}
+			localGetIdx(s, iLocal)
+			i32Const(s, 1)
+			s.Prog(wasm.AI32Add)
+			localSetIdx(s, iLocal)
+			pBrLp := s.Prog(wasm.ABr)
+			pBrLp.From = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+			s.Prog(wasm.AEnd) // loop
+			s.Prog(wasm.AEnd) // block
+			// re-push the array ref so the default localSet sees it.
+			localGetIdx(s, arrLocal)
+		}
 
 	case ssa.OpWasm3FuncValue:
 		// M3 Stage G: a bare function value is a closure-singleton

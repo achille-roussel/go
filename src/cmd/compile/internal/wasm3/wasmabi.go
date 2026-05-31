@@ -899,8 +899,21 @@ func wasm3ChanBufElemRefIdx(fi *obj.FuncInfo, elem *types.Type) (int64, bool) {
 		// in the backing — see collectBacking's collectBox path which
 		// for a registered struct returns the struct's idx itself.
 		return int64(wasm3RegisterStruct(fi, elem)), true
-	case elem.IsPtr(), elem.IsUnsafePtr(), elem.IsChan(), elem.IsMap(), elem.Kind() == types.TFUNC:
-		// Pointers/chans/maps/funcs are stored as (ref null $go.object)
+	case elem.IsPtr():
+		// chan *T: the slots backing's elem ref matches what
+		// pointerStorage(*T) chose — collectStruct(pointee) for a
+		// struct pointee, collectBoxedScalar for a scalar, collectBox
+		// otherwise. Returning TypeGoObject here would cast the value
+		// to (ref $go.object) before array.set, but the array element
+		// type is the precise (ref $go.struct.<T>) and validation
+		// rejects the mismatch.
+		pointee := elem.Elem()
+		if pointee.IsStruct() && pointee.Size() > 0 {
+			return int64(wasm3RegisterStruct(fi, pointee)), true
+		}
+		return int64(wasmgc.TypeGoObject), true
+	case elem.IsUnsafePtr(), elem.IsChan(), elem.IsMap(), elem.Kind() == types.TFUNC:
+		// Pointer-shaped runtime types are stored as (ref null $go.object)
 		// in the backing — see collectBacking's pointerStorage path.
 		return int64(wasmgc.TypeGoObject), true
 	}

@@ -417,7 +417,14 @@ func mapAssignFuncWasm3(t *types.Type) *ir.Func {
 }
 
 // MapAccess2FuncWasm3 is the exported entry for the v,ok := m[k]
-// read path. Same shape as MapAccessFuncWasm3 but returns (*V, bool).
+// read path. Returns (V, bool) directly — no *V — for the same
+// reason MapAccessFullFuncWasm3 does: a cross-function *V deref to a
+// scalar V would lower to runtime.newobject(rtype) on the miss path,
+// and the wasm3 runtime.newobject lowering expects an anyref rtype
+// (no linear-memory type descriptors), so the call traps at wasm
+// validation. Returning V by value sidesteps the interior-pointer
+// codegen gap entirely; the caller (walkAssignMapRead's wasm3
+// branch) consumes the tuple directly without a deref.
 func MapAccess2FuncWasm3(t *types.Type) *ir.Func {
 	return mapAccess2FuncWasm3(t)
 }
@@ -434,14 +441,13 @@ func mapAccess2FuncWasm3(t *types.Type) *ir.Func {
 	base.Pos = pos
 	K := t.Key()
 	V := t.Elem()
-	ptrV := types.NewPtr(V)
 	fn := ir.NewFunc(pos, pos, sym, types.NewSignature(nil,
 		[]*types.Field{
 			types.NewField(pos, typecheck.Lookup("m"), types.Types[types.TUNSAFEPTR]),
 			types.NewField(pos, typecheck.Lookup("key"), K),
 		},
 		[]*types.Field{
-			types.NewField(pos, nil, ptrV),
+			types.NewField(pos, nil, V),
 			types.NewField(pos, nil, types.Types[types.TBOOL]),
 		},
 	))
@@ -469,17 +475,17 @@ func mapAccess2FuncWasm3(t *types.Type) *ir.Func {
 		ir.NewAssignStmt(pos, valsVar,
 			callMapHelper(t, "wasm3MapValues", []ir.Node{nm}, V)),
 		ir.NewReturnStmt(pos, []ir.Node{
-			typecheck.NodAddr(ir.NewIndexExpr(pos, valsVar, iVar)),
+			ir.NewIndexExpr(pos, valsVar, iVar),
 			ir.NewBool(pos, true),
 		}),
 	}
 	matchIf := ir.NewIfStmt(pos, matchCond, matchBody, nil)
 	seekBody = append(seekBody, ir.NewForStmt(pos, initFor, condFor, postFor, []ir.Node{matchIf}, false))
 	fn.Body.Append(ir.NewIfStmt(pos, gtZero, seekBody, nil))
-	fn.Body.Append(ir.NewReturnStmt(pos, []ir.Node{
-		ir.NewUnaryExpr(pos, ir.ONEW, ir.TypeNode(V)),
-		ir.NewBool(pos, false),
-	}))
+	// Miss: return (zero V, false).
+	zeroV := typecheck.TempAt(pos, ir.CurFunc, V)
+	fn.Body.Append(ir.NewAssignStmt(pos, zeroV, nil))
+	fn.Body.Append(ir.NewReturnStmt(pos, []ir.Node{zeroV, ir.NewBool(pos, false)}))
 	typecheck.FinishFuncBody()
 	ir.WithFunc(fn, func() { typecheck.Stmts(fn.Body) })
 	return fn

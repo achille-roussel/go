@@ -213,23 +213,32 @@ func walkAssignMapRead(init *ir.Nodes, n *ir.AssignListStmt) ir.Node {
 	if buildcfg.GOARCH == "wasm3" {
 		// M3 per-type maps (wasm3): v,ok := m[k] dispatches to the
 		// per-(K,V) generated access2 function instead of runtime
-		// mapaccess2_*. The function signature is
-		// (m unsafe.Pointer, key K) (*V, bool); compiler downstream
-		// dereferences the *V and stores via the OAS2FUNC pattern.
+		// mapaccess2_*. The function returns (V, bool) directly so the
+		// caller skips the *V deref (a cross-function interior pointer
+		// to a scalar V would lower through runtime.newobject on the
+		// miss path; wasm3 has no linear-memory heap and the lowering
+		// expects an anyref rtype, so the call traps at validation).
 		fn := reflectdata.MapAccess2FuncWasm3(t)
 		mapFn = fn.Nname
 		mapPtr := typecheck.ConvNop(map_, types.Types[types.TUNSAFEPTR])
 		args = []ir.Node{mapPtr, r.Index}
-	} else {
-		fast := mapfast(t)
-		key := mapKeyArg(fast, r, r.Index, false)
-		args = []ir.Node{reflectdata.IndexMapRType(base.Pos, r), map_, key}
-		if t.Elem().Size() > abi.ZeroValSize {
-			args = append(args, reflectdata.ZeroAddr(t.Elem().Size()))
-			mapFn = mapfn("mapaccess2_fat", t, true)
-		} else {
-			mapFn = mapfn(mapaccess[fast], t, false)
+
+		call := mkcall1(mapFn, mapFn.Type().ResultsTuple(), init, args...)
+		if ok := n.Lhs[1]; !ir.IsBlank(ok) && ok.Type().IsBoolean() {
+			call.Type().Field(1).Type = ok.Type()
 		}
+		n.Rhs = []ir.Node{call}
+		n.SetOp(ir.OAS2FUNC)
+		return walkExpr(typecheck.Stmt(n), init)
+	}
+	fast := mapfast(t)
+	key := mapKeyArg(fast, r, r.Index, false)
+	args = []ir.Node{reflectdata.IndexMapRType(base.Pos, r), map_, key}
+	if t.Elem().Size() > abi.ZeroValSize {
+		args = append(args, reflectdata.ZeroAddr(t.Elem().Size()))
+		mapFn = mapfn("mapaccess2_fat", t, true)
+	} else {
+		mapFn = mapfn(mapaccess[fast], t, false)
 	}
 
 	// from:

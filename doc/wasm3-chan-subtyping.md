@@ -2,9 +2,42 @@
 
 ## Status
 
-Plan, not yet implemented. Supersedes the current per-T `$go.chan.<T>` +
-fully-generated trampoline design (see commits `da0b94c0a9` chain,
-`88413a3466`, `da1d5265d5`, `b09b5ced37`, `c3144caa48`).
+Implemented. Replaces the previous per-T `$go.chan.<T>` + fully-generated
+trampoline design (commits `da0b94c0a9` chain, `88413a3466`, `da1d5265d5`,
+`b09b5ced37`, `c3144caa48`).
+
+Verified end-to-end on `js/wasm3` (Node + V8 wasmfx) for `chan int`,
+`chan int64`, `chan bool`, `chan string`, and `chan UserStruct{i32,i32}`.
+`chan *T` does not yet build (separate SSA codegen bug in `main.chanPtr`,
+unrelated to the chan layout).
+
+Two implementation deltas from the plan below worth flagging:
+
+- The `closed` field is `i32`, not `i8`. The compiler's struct-field
+  lowering for a Go `bool` field emits an `i32` Storage; using `i8` in
+  the prelude made the per-function `runtime.channel` struct register as
+  a distinct (non-subtype) entry from `$go.chan` and every helper call
+  trapped at `ref.cast`. Cost: 3 extra bytes per chan; readability is the
+  only loss.
+- The per-T `slots` field is typed as bare `anyref`, not
+  `(ref null (array T))`. The per-T slots array is per-function-local,
+  and even with the merge-table forward-ref fix the slots-array's
+  module-wide index isn't stable across functions before being merged.
+  Holding `slots` as `anyref` and `ref.cast`'ing to `(ref (array T))`
+  at the field's use sites keeps the chan subtype structurally identical
+  across functions, so `mergeTable`'s dedup folds every per-T chan to a
+  single module-wide entry.
+
+The per-T slots-array's elem ref was itself a forward-ref into the
+type collector's per-package table (the placeholder pattern in
+`collectBacking` reserved the array slot before recursing into
+`collectBox`). `mergeTable`'s single-pass remap saw `remap[boxIdx]=0`
+(zero value) and silently retargeted the array's elem to `$go.object` —
+which then matched some unrelated `(array (ref null 0))` entry and
+let `makechan` allocate a generic-anyref array that `chansend`'s typed
+`ref.cast` could not consume. Fixed by computing elem storage *first*
+and capturing the array's idx *after*, matching the order
+`collectSliceStruct` already used.
 
 ## Motivation
 

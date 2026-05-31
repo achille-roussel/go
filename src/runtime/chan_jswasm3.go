@@ -4,13 +4,14 @@
 
 //go:build js && wasm3
 
-// chan_jswasm3.go holds the runtime stubs the per-T chan trampoline
-// generator (reflectdata/wasm3_changen.go) calls into. The wasm3
-// compiler intrinsifies each stub to the corresponding OpWasm3Chan*
-// SSA op, recovering the chan's *types.Type from
-// ir.Wasm3ChanHelperTypes. Stub bodies are placeholders since the
-// intrinsic replaces the call. The chan arg is the $go.chan.<T>
-// WasmGC ref typed as unsafe.Pointer at the Go level.
+// chan_jswasm3.go is the wasm3-native chan substrate. *channel
+// mirrors the prelude $go.chan WasmGC struct exactly; the
+// compiler-generated per-T trampolines (reflectdata/wasm3_changen.go)
+// ref.cast a (ref $go.chan.<T>) down to *channel here to drive the
+// common state (qcount/dataqsiz/sendx/recvx/parkIDs) through plain
+// Go, and stay subtype-polymorphic across all chan T. Per-T slots
+// access lives in the trampoline as ref.cast back to $go.chan.<T> +
+// array.get/set. See doc/wasm3-chan-subtyping.md.
 
 package runtime
 
@@ -19,65 +20,92 @@ import (
 	"unsafe"
 )
 
-//go:noinline
-func wasm3ChanQcount(c unsafe.Pointer) int64 { return 0 }
+// channel mirrors $go.chan field-for-field; the trampoline gets a
+// *channel by ref.cast of (ref $go.chan.<T>) to (ref $go.chan).
+// Unexported — internal to the compiler/runtime boundary.
+type channel struct {
+	qcount     int32
+	dataqsiz   int32
+	sendx      int32
+	recvx      int32
+	closed     bool
+	sendParkID int32
+	recvParkID int32
+}
 
-//go:noinline
-func wasm3ChanQcountSet(c unsafe.Pointer, v int64) {}
-
-//go:noinline
-func wasm3ChanDataqsiz(c unsafe.Pointer) int64 { return 0 }
-
-//go:noinline
-func wasm3ChanDataqsizSet(c unsafe.Pointer, v int64) {}
-
-//go:noinline
-func wasm3ChanSendx(c unsafe.Pointer) int64 { return 0 }
-
-//go:noinline
-func wasm3ChanSendxSet(c unsafe.Pointer, v int64) {}
-
-//go:noinline
-func wasm3ChanRecvx(c unsafe.Pointer) int64 { return 0 }
-
-//go:noinline
-func wasm3ChanRecvxSet(c unsafe.Pointer, v int64) {}
-
-//go:noinline
-func wasm3ChanSendParkID(c unsafe.Pointer) int32 { return 0 }
-
-//go:noinline
-func wasm3ChanSendParkIDSet(c unsafe.Pointer, v int32) {}
-
-//go:noinline
-func wasm3ChanRecvParkID(c unsafe.Pointer) int32 { return 0 }
-
-//go:noinline
-func wasm3ChanRecvParkIDSet(c unsafe.Pointer, v int32) {}
-
-// wasm3ChanBufGet / wasm3ChanBufSet take `any` for the value type;
-// LookupRuntime substitutes the chan's element type at call site so
-// the SSA value carries the right wasm-level type.
-
-//go:noinline
-func wasm3ChanBufGet(c unsafe.Pointer, i int64) any { return nil }
-
-//go:noinline
-func wasm3ChanBufSet(c unsafe.Pointer, i int64, v any) {}
-
-//go:noinline
-func wasm3ChanBufAlloc(c unsafe.Pointer, cap int64) {}
-
-// wasm3ChanAlloc allocates a fresh $go.chan.<T> via OpWasm3MakeChan;
-// the chan type comes from the Wasm3ChanHelperTypes side-channel.
-// Body is a placeholder.
+// wasm3ChanAlloc allocates a fresh $go.chan.<T> WasmGC struct. The
+// intrinsic in cmd/compile/internal/ssagen/intrinsics.go replaces this
+// call with OpWasm3MakeChan keyed on the chan type from the side-
+// channel; this body is a placeholder.
 //
 //go:noinline
 func wasm3ChanAlloc() unsafe.Pointer { return nil }
 
-// Park-ID generator and JSPI park/ready wrappers callable from the
-// per-T chan trampolines via typecheck.LookupRuntime. The counter is
-// process-wide; 0 is reserved (used to signal "no waiter").
+// wasm3ChanSlotsAlloc / Get / Set are intrinsified to OpWasm3Chan{Slots*}
+// — they read/write/allocate the per-T slots array on a $go.chan.<T>
+// via ref.cast + struct.get/set 7 + array.get/set. Bodies are
+// placeholders the intrinsic replaces. wasm3ChanSlotsGet's `any`
+// return type gets substituted with the chan's element type at call
+// construction.
+
+//go:noinline
+func wasm3ChanSlotsAlloc(c *channel, cap int32) {}
+
+//go:noinline
+func wasm3ChanSlotsGet(c *channel, i int32) any { return nil }
+
+//go:noinline
+func wasm3ChanSlotsSet(c *channel, i int32, v any) {}
+
+// State-machine helpers driving the chan's common fields. Called by
+// the per-T trampoline directly (no intrinsic — these are real Go
+// functions whose bodies do the work).
+
+//go:noinline
+func wasm3ChanReserveSend(c *channel) int32 {
+	for c.qcount >= c.dataqsiz {
+		c.sendParkID = wasm3MintChanParkID()
+		wasm.WasmPark(c.sendParkID)
+		c.sendParkID = 0
+	}
+	return c.sendx
+}
+
+//go:noinline
+func wasm3ChanFinishSend(c *channel) {
+	c.sendx = (c.sendx + 1) % c.dataqsiz
+	c.qcount++
+	if id := c.recvParkID; id != 0 {
+		c.recvParkID = 0
+		wasm.WasmReady(id)
+	}
+}
+
+//go:noinline
+func wasm3ChanReserveRecv(c *channel) int32 {
+	for c.qcount <= 0 {
+		c.recvParkID = wasm3MintChanParkID()
+		wasm.WasmPark(c.recvParkID)
+		c.recvParkID = 0
+	}
+	return c.recvx
+}
+
+//go:noinline
+func wasm3ChanFinishRecv(c *channel) {
+	c.recvx = (c.recvx + 1) % c.dataqsiz
+	c.qcount--
+	if id := c.sendParkID; id != 0 {
+		c.sendParkID = 0
+		wasm.WasmReady(id)
+	}
+}
+
+//go:noinline
+func wasm3ChanSetDataqsiz(c *channel, n int32) { c.dataqsiz = n }
+
+// Park-ID generator — process-wide int32 counter; 0 reserved
+// (signals "no waiter").
 
 var wasm3NextChanParkID int32 = 1
 
@@ -90,9 +118,3 @@ func wasm3MintChanParkID() int32 {
 	}
 	return wasm3NextChanParkID
 }
-
-//go:noinline
-func wasm3ChanPark(id int32) { wasm.WasmPark(id) }
-
-//go:noinline
-func wasm3ChanReady(id int32) { wasm.WasmReady(id) }

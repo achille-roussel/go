@@ -107,30 +107,20 @@ func wasm3MapKeysSet(m unsafe.Pointer, keys []any)
 func wasm3MapValuesSet(m unsafe.Pointer, values []any)
 func wasm3MapRandStart(used uintptr) uintptr
 
-// Per-T chan stubs (M4) — channel counterpart of the per-(K,V) map
-// stubs. Each is intrinsified to the corresponding OpWasm3Chan* SSA
-// op carrying the chan's *types.Type as v.Aux. wasm3ChanBufGet/Set's
-// `any` value-type placeholder is substituted with the chan's
-// element type at IR-construction time by reflectdata/wasm3_changen.
+// M4 chan-subtyping (doc/wasm3-chan-subtyping.md): three per-T ops
+// the compiler intrinsifies to OpWasm3Chan{Slots*} SSA ops, plus
+// state-machine helpers that are plain Go functions in
+// runtime/chan_jswasm3.go (not intrinsified). The trampoline calls
+// these by name via typecheck.LookupRuntime.
 func wasm3ChanAlloc() unsafe.Pointer
-func wasm3ChanQcount(c unsafe.Pointer) int64
-func wasm3ChanQcountSet(c unsafe.Pointer, v int64)
-func wasm3ChanDataqsiz(c unsafe.Pointer) int64
-func wasm3ChanDataqsizSet(c unsafe.Pointer, v int64)
-func wasm3ChanSendx(c unsafe.Pointer) int64
-func wasm3ChanSendxSet(c unsafe.Pointer, v int64)
-func wasm3ChanRecvx(c unsafe.Pointer) int64
-func wasm3ChanRecvxSet(c unsafe.Pointer, v int64)
-func wasm3ChanSendParkID(c unsafe.Pointer) int32
-func wasm3ChanSendParkIDSet(c unsafe.Pointer, v int32)
-func wasm3ChanRecvParkID(c unsafe.Pointer) int32
-func wasm3ChanRecvParkIDSet(c unsafe.Pointer, v int32)
-func wasm3ChanBufGet(c unsafe.Pointer, i int64) any
-func wasm3ChanBufSet(c unsafe.Pointer, i int64, v any)
-func wasm3ChanBufAlloc(c unsafe.Pointer, cap int64)
-func wasm3MintChanParkID() int32
-func wasm3ChanPark(id int32)
-func wasm3ChanReady(id int32)
+func wasm3ChanSlotsAlloc(c unsafe.Pointer, cap int32)
+func wasm3ChanSlotsGet(c unsafe.Pointer, i int32) any
+func wasm3ChanSlotsSet(c unsafe.Pointer, i int32, v any)
+func wasm3ChanReserveSend(c unsafe.Pointer) int32
+func wasm3ChanFinishSend(c unsafe.Pointer)
+func wasm3ChanReserveRecv(c unsafe.Pointer) int32
+func wasm3ChanFinishRecv(c unsafe.Pointer)
+func wasm3ChanSetDataqsiz(c unsafe.Pointer, n int32)
 
 func intstring(*[4]byte, int64) string
 func slicebytetostring(buf *[32]byte, ptr *byte, n int) string

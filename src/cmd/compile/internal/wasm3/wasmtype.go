@@ -241,6 +241,19 @@ func (c *typeCollector) collectStruct(t *types.Type) int {
 	if idx, ok := c.structs[t]; ok {
 		return idx
 	}
+	// runtime.channel mirrors the prelude $go.chan field-for-field
+	// (see doc/wasm3-chan-subtyping.md and runtime/chan_jswasm3.go).
+	// Map it to TypeGoChan rather than collecting a new struct entry,
+	// so the runtime chan-state-machine helpers (signatures take
+	// *channel) accept any (ref $go.chan.<T>) via the subtype
+	// relationship — without this, the helpers would expect a
+	// (ref $go.struct.channel) that's distinct from $go.chan and
+	// every call from the trampoline would trap at ref.cast.
+	if sym := t.Sym(); sym != nil && sym.Pkg != nil &&
+		sym.Pkg.Path == "runtime" && sym.Name == "channel" {
+		c.structs[t] = wasmgc.TypeGoChan
+		return wasmgc.TypeGoChan
+	}
 	idx := len(c.table)
 	c.table = append(c.table, wasmgc.Type{
 		Name:  typeName(t),
@@ -268,18 +281,18 @@ func (c *typeCollector) collectBacking(elem *types.Type) int {
 	if idx, ok := c.backing[elem]; ok {
 		return idx
 	}
-	// Reserve the array's slot BEFORE running helpers that may grow
-	// the table (collectBox/collectSliceStruct/pointerStorage). The
-	// final c.table[idx] = ... rewrites this placeholder with the
-	// real array type. Without the placeholder, `idx` would still be
-	// captured early but the array would land at a later position
-	// (whatever len was after the helpers ran), and c.backing[elem]
-	// would cache the WRONG index — pointing at an intermediate type
-	// the helper appended.
-	idx := len(c.table)
-	c.backing[elem] = idx
-	c.table = append(c.table, wasmgc.Type{}) // placeholder
-
+	// Compute element storage FIRST. Helpers (collectBox /
+	// collectSliceStruct / pointerStorage) may append their own
+	// entries; appending them before this array's slot keeps all
+	// refs pointing BACKWARD, which the linker's mergeTable relies
+	// on (mergeTable resolves per-pkg → module-wide indices in a
+	// single forward pass and a forward ref reads remap[j]=0 instead
+	// of the eventual remapped index — silently retargeting the
+	// array's elem to TypeGoObject and dedup'ing with an unrelated
+	// (array (ref null 0))). Recursive Go types via collectBacking
+	// (struct X { ks []X }) would re-enter without c.backing[elem]
+	// set; the chan/slice/array tests in M3/M4 don't exercise that,
+	// and adding a cycle-break placeholder is a future refinement.
 	var st wasmgc.Storage
 	if p, ok := packedArrayPrim(elem.Kind()); ok {
 		st = wasmgc.PrimStorage(p)
@@ -308,13 +321,15 @@ func (c *typeCollector) collectBacking(elem *types.Type) int {
 		// which doc/wasm3-design.md §6.3 accepts as the M2 default.
 		st = wasmgc.RefStorage(c.collectBox(elem), true)
 	}
-	c.table[idx] = wasmgc.Type{
+	idx := len(c.table)
+	c.backing[elem] = idx
+	c.table = append(c.table, wasmgc.Type{
 		Name:    "go.array." + typeName(elem),
 		Kind:    wasmgc.KindArray,
 		Super:   -1,
 		Elem:    st,
 		ElemMut: true,
-	}
+	})
 	return idx
 }
 
@@ -452,22 +467,48 @@ func (c *typeCollector) collectChanStruct(t *types.Type) int {
 	if idx, ok := c.chans[t]; ok {
 		return idx
 	}
-	bufArrIdx := c.collectBacking(t.Elem())
+	// $go.chan.<T> subtypes the prelude $go.chan: fields 0..6 repeat
+	// the base exactly (WasmGC subtyping requires the prefix to
+	// match), and field 7 adds the typed slots array. Common chan
+	// state lives in the base so runtime/wasm helpers can manipulate
+	// it through (ref $go.chan) without ref.cast at every field
+	// access; only slots access needs the per-T cast. See
+	// doc/wasm3-chan-subtyping.md.
+	// Register the per-T slots array as a side effect so its type
+	// index is allocated in the local table — the trampoline's
+	// OpWasm3ChanSlotsGet/Set/Alloc codegen recovers it via
+	// wasm3RegisterArrayBacking(chanType.Elem()) and uses the typed
+	// array for array.get/set. The chan struct's slots FIELD,
+	// however, is typed as bare anyref — see below.
+	_ = c.collectBacking(t.Elem())
 	idx := len(c.table)
 	c.chans[t] = idx
 	c.table = append(c.table, wasmgc.Type{
 		Name:  "go.chan." + typeName(t.Elem()),
 		Kind:  wasmgc.KindStruct,
-		Super: wasmgc.TypeGoObject,
+		Super: wasmgc.TypeGoChan,
 		Fields: []wasmgc.Field{
-			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // 0: qcount
-			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // 1: dataqsiz
-			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // 2: sendx
-			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // 3: recvx
-			{Storage: wasmgc.RefStorage(bufArrIdx, true), Mutable: true}, // 4: buf
-			{Storage: wasmgc.PrimStorage(wasmgc.I8), Mutable: true},      // 5: closed
-			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},     // 6: sendParkID
-			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},     // 7: recvParkID
+			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true}, // 0: qcount    (inherited)
+			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true}, // 1: dataqsiz  (inherited)
+			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true}, // 2: sendx     (inherited)
+			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true}, // 3: recvx     (inherited)
+			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true}, // 4: closed    (inherited; i32 not packed i8, see prelude)
+			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true}, // 5: sendParkID (inherited)
+			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true}, // 6: recvParkID (inherited)
+			// 7: slots — anyref instead of (ref null (array T)) so every
+			// $go.chan.<T> subtype is structurally identical and dedups
+			// to a SINGLE entry in mergeTable. Per-T arrays still exist
+			// (collectBacking allocated above) and the trampoline's
+			// OpWasm3ChanSlots* codegen ref.casts the anyref slot down
+			// to the typed (ref (array T)) before array.get/set. Without
+			// this, mergeTable across functions produces structurally-
+			// different chan subtypes because the slots-array's local
+			// type index doesn't always remap to the same global entry
+			// (the per-function table can register the elem's box vs
+			// struct vs other intermediate entries in different order,
+			// and findEqualType compares the array entries strictly
+			// by their elem-ref RefType).
+			{Storage: wasmgc.AnyRefStorage(), Mutable: true}, // 7: slots
 		},
 	})
 	return idx

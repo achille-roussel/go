@@ -11,18 +11,23 @@ import (
 	"cmd/compile/internal/types"
 )
 
-// Per-T chan operation generators for GOARCH=wasm3 — the channel
-// counterpart of wasm3_mapgen.go. Each generator emits one *ir.Func
-// per chan type (keyed by t.LinkString) whose body uses the runtime
-// stubs wasm3ChanAlloc / wasm3ChanQcount / wasm3ChanBufGet / ...
-// (intrinsified at SSA time to the corresponding OpWasm3Chan* field-
-// access ops, carrying the chan *types.Type from Wasm3ChanHelperTypes).
+// Per-T chan operation generators for GOARCH=wasm3 (chan-subtyping
+// variant, doc/wasm3-chan-subtyping.md). Each generator emits one
+// *ir.Func per chan type whose body is a short bridge between the
+// per-T slots access (compiler-emitted SSA ops) and the common chan
+// state-machine helpers in runtime/chan_jswasm3.go.
+//
+// The trampolines collapse from ~70 IR lines each (the pre-subtyping
+// design) to ~5-10: alloc + dataqsiz set + optional slots alloc; or
+// reserve + slots access + finish. All park/unpark + sendx/recvx
+// arithmetic moves out of compiler-generated IR and into plain Go in
+// runtime/chan_jswasm3.go.
 
-// callChanHelper builds a call expression to a runtime wasm3Chan*
-// stub for the chan type t and pins t in Wasm3ChanHelperTypes so the
-// SSA intrinsic can recover it. retTypes are passed to LookupRuntime
-// for `any` substitution (used by ChanBufGet/Set whose value type is
-// declared as `any` but should be T per call).
+// callChanHelper builds a call expression to a runtime wasm3Chan* stub
+// for the chan type t and pins t in Wasm3ChanHelperTypes so the SSA
+// intrinsic can recover it. retTypes are passed to LookupRuntime for
+// `any` substitution (used by SlotsGet whose value type is declared
+// as `any` but should be T per call).
 func callChanHelper(t *types.Type, name string, args []ir.Node, retTypes ...*types.Type) *ir.CallExpr {
 	fn := typecheck.LookupRuntime(name, retTypes...)
 	call := ir.NewCallExpr(base.Pos, ir.OCALL, fn, args)
@@ -30,8 +35,20 @@ func callChanHelper(t *types.Type, name string, args []ir.Node, retTypes ...*typ
 	return call
 }
 
-// MakeChanFuncWasm3 generates the per-T allocation+init trampoline
-// for `make(chan T, n)`.
+// callRuntimeHelper builds a call to a non-intrinsified runtime helper
+// (state-machine functions like wasm3ChanReserveSend). No side-channel
+// pinning — these are real Go funcs called by name.
+func callRuntimeHelper(name string, args []ir.Node, retTypes ...*types.Type) *ir.CallExpr {
+	fn := typecheck.LookupRuntime(name, retTypes...)
+	return ir.NewCallExpr(base.Pos, ir.OCALL, fn, args)
+}
+
+// MakeChanFuncWasm3 generates the per-T `make(chan T, n)` trampoline:
+//
+//	c := wasm3ChanAlloc()
+//	wasm3ChanSetDataqsiz(c, int32(n))
+//	if n > 0 { wasm3ChanSlotsAlloc(c, int32(n)) }
+//	return c
 func MakeChanFuncWasm3(t *types.Type) *ir.Func {
 	if !t.IsChan() {
 		base.Fatalf("MakeChanFuncWasm3: not a chan type: %v", t)
@@ -56,19 +73,19 @@ func MakeChanFuncWasm3(t *types.Type) *ir.Func {
 	nn := fn.Dcl[0]
 
 	cVar := typecheck.TempAt(pos, ir.CurFunc, types.Types[types.TUNSAFEPTR])
-	int64T := types.Types[types.TINT64]
+	int32T := types.Types[types.TINT32]
 
 	// c := wasm3ChanAlloc()
 	fn.Body.Append(ir.NewAssignStmt(pos, cVar,
 		callChanHelper(t, "wasm3ChanAlloc", nil)))
-	// wasm3ChanDataqsizSet(c, int64(n))
-	fn.Body.Append(callChanHelper(t, "wasm3ChanDataqsizSet",
-		[]ir.Node{cVar, ir.NewConvExpr(pos, ir.OCONV, int64T, nn)}))
-	// if n > 0 { wasm3ChanBufAlloc(c, int64(n)) }
+	// wasm3ChanSetDataqsiz(c, int32(n))
+	fn.Body.Append(callRuntimeHelper("wasm3ChanSetDataqsiz",
+		[]ir.Node{cVar, ir.NewConvExpr(pos, ir.OCONV, int32T, nn)}))
+	// if n > 0 { wasm3ChanSlotsAlloc(c, int32(n)) }
 	gtZero := ir.NewBinaryExpr(pos, ir.OGT, nn, ir.NewInt(pos, 0))
 	fn.Body.Append(ir.NewIfStmt(pos, gtZero, []ir.Node{
-		callChanHelper(t, "wasm3ChanBufAlloc",
-			[]ir.Node{cVar, ir.NewConvExpr(pos, ir.OCONV, int64T, nn)}),
+		callChanHelper(t, "wasm3ChanSlotsAlloc",
+			[]ir.Node{cVar, ir.NewConvExpr(pos, ir.OCONV, int32T, nn)}),
 	}, nil))
 	fn.Body.Append(ir.NewReturnStmt(pos, []ir.Node{cVar}))
 
@@ -77,7 +94,11 @@ func MakeChanFuncWasm3(t *types.Type) *ir.Func {
 	return fn
 }
 
-// ChanSendFuncWasm3 generates the per-T send trampoline for `c <- v`.
+// ChanSendFuncWasm3 generates the per-T `c <- v` trampoline:
+//
+//	slot := wasm3ChanReserveSend(c)
+//	wasm3ChanSlotsSet(c, slot, v)
+//	wasm3ChanFinishSend(c)
 func ChanSendFuncWasm3(t *types.Type) *ir.Func {
 	if !t.IsChan() {
 		base.Fatalf("ChanSendFuncWasm3: not a chan type: %v", t)
@@ -103,60 +124,24 @@ func ChanSendFuncWasm3(t *types.Type) *ir.Func {
 	nv := fn.Dcl[1]
 
 	int32T := types.Types[types.TINT32]
-	int64T := types.Types[types.TINT64]
-
-	// Park loop: for qcount >= dataqsiz { park }
-	parkID := typecheck.TempAt(pos, ir.CurFunc, int32T)
-	parkBody := []ir.Node{
-		ir.NewAssignStmt(pos, parkID,
-			callChanHelper(t, "wasm3MintChanParkID", nil)),
-		callChanHelper(t, "wasm3ChanSendParkIDSet", []ir.Node{nc, parkID}),
-		callChanHelper(t, "wasm3ChanPark", []ir.Node{parkID}),
-		callChanHelper(t, "wasm3ChanSendParkIDSet",
-			[]ir.Node{nc, ir.NewConvExpr(pos, ir.OCONV, int32T, ir.NewInt(pos, 0))}),
-	}
-	fullCond := ir.NewBinaryExpr(pos, ir.OGE,
-		callChanHelper(t, "wasm3ChanQcount", []ir.Node{nc}),
-		callChanHelper(t, "wasm3ChanDataqsiz", []ir.Node{nc}))
-	fn.Body.Append(ir.NewForStmt(pos, nil, fullCond, nil, parkBody, false))
-
-	// buf[sendx] = v
-	fn.Body.Append(callChanHelper(t, "wasm3ChanBufSet", []ir.Node{
-		nc,
-		callChanHelper(t, "wasm3ChanSendx", []ir.Node{nc}),
-		nv,
-	}, T))
-	// sendx = (sendx+1) % dataqsiz
-	newSendx := ir.NewBinaryExpr(pos, ir.OMOD,
-		ir.NewBinaryExpr(pos, ir.OADD,
-			callChanHelper(t, "wasm3ChanSendx", []ir.Node{nc}),
-			ir.NewConvExpr(pos, ir.OCONV, int64T, ir.NewInt(pos, 1))),
-		callChanHelper(t, "wasm3ChanDataqsiz", []ir.Node{nc}))
-	fn.Body.Append(callChanHelper(t, "wasm3ChanSendxSet", []ir.Node{nc, newSendx}))
-	// qcount++
-	newQcount := ir.NewBinaryExpr(pos, ir.OADD,
-		callChanHelper(t, "wasm3ChanQcount", []ir.Node{nc}),
-		ir.NewConvExpr(pos, ir.OCONV, int64T, ir.NewInt(pos, 1)))
-	fn.Body.Append(callChanHelper(t, "wasm3ChanQcountSet", []ir.Node{nc, newQcount}))
-
-	// Wake any blocked receiver.
-	recvID := typecheck.TempAt(pos, ir.CurFunc, int32T)
-	fn.Body.Append(ir.NewAssignStmt(pos, recvID,
-		callChanHelper(t, "wasm3ChanRecvParkID", []ir.Node{nc})))
-	wakeCond := ir.NewBinaryExpr(pos, ir.ONE, recvID,
-		ir.NewConvExpr(pos, ir.OCONV, int32T, ir.NewInt(pos, 0)))
-	fn.Body.Append(ir.NewIfStmt(pos, wakeCond, []ir.Node{
-		callChanHelper(t, "wasm3ChanRecvParkIDSet",
-			[]ir.Node{nc, ir.NewConvExpr(pos, ir.OCONV, int32T, ir.NewInt(pos, 0))}),
-		callChanHelper(t, "wasm3ChanReady", []ir.Node{recvID}),
-	}, nil))
+	slotVar := typecheck.TempAt(pos, ir.CurFunc, int32T)
+	fn.Body.Append(ir.NewAssignStmt(pos, slotVar,
+		callRuntimeHelper("wasm3ChanReserveSend", []ir.Node{nc})))
+	fn.Body.Append(callChanHelper(t, "wasm3ChanSlotsSet",
+		[]ir.Node{nc, slotVar, nv}, T))
+	fn.Body.Append(callRuntimeHelper("wasm3ChanFinishSend", []ir.Node{nc}))
 
 	typecheck.FinishFuncBody()
 	ir.WithFunc(fn, func() { typecheck.Stmts(fn.Body) })
 	return fn
 }
 
-// ChanRecvFuncWasm3 generates the per-T recv trampoline for `<-c`.
+// ChanRecvFuncWasm3 generates the per-T `<-c` trampoline:
+//
+//	slot := wasm3ChanReserveRecv(c)
+//	v := wasm3ChanSlotsGet(c, slot)
+//	wasm3ChanFinishRecv(c)
+//	return v
 func ChanRecvFuncWasm3(t *types.Type) *ir.Func {
 	if !t.IsChan() {
 		base.Fatalf("ChanRecvFuncWasm3: not a chan type: %v", t)
@@ -182,59 +167,13 @@ func ChanRecvFuncWasm3(t *types.Type) *ir.Func {
 	nc := fn.Dcl[0]
 
 	int32T := types.Types[types.TINT32]
-	int64T := types.Types[types.TINT64]
-
-	// Park loop: for qcount <= 0 { park }
-	parkID := typecheck.TempAt(pos, ir.CurFunc, int32T)
-	parkBody := []ir.Node{
-		ir.NewAssignStmt(pos, parkID,
-			callChanHelper(t, "wasm3MintChanParkID", nil)),
-		callChanHelper(t, "wasm3ChanRecvParkIDSet", []ir.Node{nc, parkID}),
-		callChanHelper(t, "wasm3ChanPark", []ir.Node{parkID}),
-		callChanHelper(t, "wasm3ChanRecvParkIDSet",
-			[]ir.Node{nc, ir.NewConvExpr(pos, ir.OCONV, int32T, ir.NewInt(pos, 0))}),
-	}
-	emptyCond := ir.NewBinaryExpr(pos, ir.OLE,
-		callChanHelper(t, "wasm3ChanQcount", []ir.Node{nc}),
-		ir.NewConvExpr(pos, ir.OCONV, int64T, ir.NewInt(pos, 0)))
-	fn.Body.Append(ir.NewForStmt(pos, nil, emptyCond, nil, parkBody, false))
-
-	// Read out. Skips zero-out of buf[recvx] — the old value lingers
-	// in the chan's buffer until the slot is overwritten by a future
-	// send (or the chan itself is GC'd). For primitive T this is just
-	// a memory-noise issue; for ref-typed T it pins the value, but
-	// emitting a typed zero across all T forms (including user
-	// structs whose IR zero materialisation interacts oddly with the
-	// inline struct.new path) is follow-up work.
+	slotVar := typecheck.TempAt(pos, ir.CurFunc, int32T)
 	vVar := typecheck.TempAt(pos, ir.CurFunc, T)
+	fn.Body.Append(ir.NewAssignStmt(pos, slotVar,
+		callRuntimeHelper("wasm3ChanReserveRecv", []ir.Node{nc})))
 	fn.Body.Append(ir.NewAssignStmt(pos, vVar,
-		callChanHelper(t, "wasm3ChanBufGet", []ir.Node{
-			nc,
-			callChanHelper(t, "wasm3ChanRecvx", []ir.Node{nc}),
-		}, T)))
-	newRecvx := ir.NewBinaryExpr(pos, ir.OMOD,
-		ir.NewBinaryExpr(pos, ir.OADD,
-			callChanHelper(t, "wasm3ChanRecvx", []ir.Node{nc}),
-			ir.NewConvExpr(pos, ir.OCONV, int64T, ir.NewInt(pos, 1))),
-		callChanHelper(t, "wasm3ChanDataqsiz", []ir.Node{nc}))
-	fn.Body.Append(callChanHelper(t, "wasm3ChanRecvxSet", []ir.Node{nc, newRecvx}))
-	newQcount := ir.NewBinaryExpr(pos, ir.OSUB,
-		callChanHelper(t, "wasm3ChanQcount", []ir.Node{nc}),
-		ir.NewConvExpr(pos, ir.OCONV, int64T, ir.NewInt(pos, 1)))
-	fn.Body.Append(callChanHelper(t, "wasm3ChanQcountSet", []ir.Node{nc, newQcount}))
-
-	// Wake any blocked sender.
-	sendID := typecheck.TempAt(pos, ir.CurFunc, int32T)
-	fn.Body.Append(ir.NewAssignStmt(pos, sendID,
-		callChanHelper(t, "wasm3ChanSendParkID", []ir.Node{nc})))
-	wakeCond := ir.NewBinaryExpr(pos, ir.ONE, sendID,
-		ir.NewConvExpr(pos, ir.OCONV, int32T, ir.NewInt(pos, 0)))
-	fn.Body.Append(ir.NewIfStmt(pos, wakeCond, []ir.Node{
-		callChanHelper(t, "wasm3ChanSendParkIDSet",
-			[]ir.Node{nc, ir.NewConvExpr(pos, ir.OCONV, int32T, ir.NewInt(pos, 0))}),
-		callChanHelper(t, "wasm3ChanReady", []ir.Node{sendID}),
-	}, nil))
-
+		callChanHelper(t, "wasm3ChanSlotsGet", []ir.Node{nc, slotVar}, T)))
+	fn.Body.Append(callRuntimeHelper("wasm3ChanFinishRecv", []ir.Node{nc}))
 	fn.Body.Append(ir.NewReturnStmt(pos, []ir.Node{vVar}))
 
 	typecheck.FinishFuncBody()

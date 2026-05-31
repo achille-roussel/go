@@ -149,6 +149,14 @@ const (
 	TypeGoGoroutineEntry // go.goroutine.entry: func(anyref) -> anyref — the universal goroutine entry
 	TypeGoCont           // go.cont: (cont $TypeGoGoroutineEntry) — the universal continuation type
 
+	// M4 chan base type. Per doc/wasm3-chan-subtyping.md, every chan T
+	// is lowered to a (ref $go.chan.<T>) where $go.chan.<T> subtypes
+	// $go.chan and only adds the per-T slots array. The runtime/wasm
+	// helpers operate on the base type so the chan state machine
+	// (park loop / sendx-recvx arithmetic / wake-blocked-peer) lives
+	// as plain Go in one place, not per-T generated IR.
+	TypeGoChan // go.chan: (sub $go.object (struct qcount,dataqsiz,sendx,recvx i32, closed i8, sendParkID,recvParkID i32))
+
 	NumPreludeTypes
 )
 
@@ -373,6 +381,34 @@ func PreludeTypes() []Type {
 		Kind:     KindCont,
 		Super:    -1,
 		ContBody: TypeGoGoroutineEntry,
+	}
+
+	// M4 chan base: $go.chan carries every chan T's common state. The
+	// per-T extension $go.chan.<T> subtypes this and adds the slots
+	// array. Fields 0..6 here MUST match the prefix of $go.chan.<T>'s
+	// field list — WasmGC subtyping requires the prefix to repeat
+	// exactly. Field order: qcount(0), dataqsiz(1), sendx(2), recvx(3),
+	// closed(4), sendParkID(5), recvParkID(6). i32 throughout, aligning
+	// with the int=i32 direction on wasm3 and removing the per-op
+	// i32.wrap_i64 tax at every buf index. See doc/wasm3-chan-subtyping.md.
+	t[TypeGoChan] = Type{
+		Name:  "go.chan",
+		Kind:  KindStruct,
+		Super: TypeGoObject,
+		Fields: []Field{
+			{Storage: PrimStorage(I32), Mutable: true}, // 0: qcount
+			{Storage: PrimStorage(I32), Mutable: true}, // 1: dataqsiz
+			{Storage: PrimStorage(I32), Mutable: true}, // 2: sendx
+			{Storage: PrimStorage(I32), Mutable: true}, // 3: recvx
+			// closed is i32 (not packed i8) so the layout matches how
+			// Go's bool struct field lowers — scalarPrim(TBOOL) = I32.
+			// Lets the runtime/chan_jswasm3.go channel struct map
+			// onto $go.chan via collectStruct's identity-mapping
+			// special case.
+			{Storage: PrimStorage(I32), Mutable: true}, // 4: closed
+			{Storage: PrimStorage(I32), Mutable: true}, // 5: sendParkID
+			{Storage: PrimStorage(I32), Mutable: true}, // 6: recvParkID
+		},
 	}
 
 	return t

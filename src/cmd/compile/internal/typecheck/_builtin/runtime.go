@@ -121,6 +121,10 @@ func wasm3ChanFinishSend(c unsafe.Pointer)
 func wasm3ChanReserveRecv(c unsafe.Pointer) int32
 func wasm3ChanFinishRecv(c unsafe.Pointer)
 func wasm3ChanSetDataqsiz(c unsafe.Pointer, n int32)
+func wasm3ChanTryRecvBegin(c unsafe.Pointer) (slot int32, ok bool, closed bool)
+func wasm3ChanTryRecvCommit(c unsafe.Pointer)
+func wasm3ChanTrySendBegin(c unsafe.Pointer) (slot int32, ok bool)
+func wasm3ChanTrySendCommit(c unsafe.Pointer)
 
 func intstring(*[4]byte, int64) string
 func slicebytetostring(buf *[32]byte, ptr *byte, n int) string

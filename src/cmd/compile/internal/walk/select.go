@@ -7,9 +7,11 @@ package walk
 import (
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/ir"
+	"cmd/compile/internal/reflectdata"
 	"cmd/compile/internal/typecheck"
 	"cmd/compile/internal/types"
 	"cmd/internal/src"
+	"internal/buildcfg"
 )
 
 func walkSelect(sel *ir.SelectStmt) {
@@ -73,12 +75,21 @@ func walkSelectCases(cases []*ir.CommClause) []ir.Node {
 
 	// convert case value arguments to addresses.
 	// this rewrite is used by both the general code and the next optimization.
+	//
+	// Skipped on GOARCH=wasm3: there is no Go stack in linear memory, so
+	// a scalar &local lowers to an SP-relative TYPE_ADDR the obj backend
+	// can't encode (only string/slice/iface have boxed-local cells today,
+	// see doc/wasm3-addressable-boxed-locals.md). The wasm3 select
+	// trampolines instead take/return values by value.
 	var dflt *ir.CommClause
 	for _, cas := range cases {
 		ir.SetPos(cas)
 		n := cas.Comm
 		if n == nil {
 			dflt = cas
+			continue
+		}
+		if buildcfg.GOARCH == "wasm3" {
 			continue
 		}
 		switch n.Op() {
@@ -116,6 +127,16 @@ func walkSelectCases(cases []*ir.CommClause) []ir.Node {
 			// if selectnbsend(c, v) { body } else { default body }
 			n := n.(*ir.SendStmt)
 			ch := n.Chan
+			if buildcfg.GOARCH == "wasm3" {
+				// Per-T wasm3 trampoline takes (c unsafe.Pointer, v T)
+				// by value (n.Value was NOT NodAddr'd on wasm3 — see
+				// the earlier-pass NodAddr skip).
+				trampoline := reflectdata.SelectNbSendFuncWasm3(ch.Type())
+				chArg := ir.NewConvExpr(base.Pos, ir.OCONVNOP, types.Types[types.TUNSAFEPTR], ch)
+				chArg.SetTypecheck(1)
+				cond = mkcall1(trampoline.Nname, types.Types[types.TBOOL], r.PtrInit(), chArg, n.Value)
+				break
+			}
 			cond = mkcall1(chanfn("selectnbsend", 2, ch.Type()), types.Types[types.TBOOL], r.PtrInit(), ch, n.Value)
 
 		case ir.OSELRECV2:
@@ -123,6 +144,32 @@ func walkSelectCases(cases []*ir.CommClause) []ir.Node {
 			recv := n.Rhs[0].(*ir.UnaryExpr)
 			ch := recv.X
 			elem := n.Lhs[0]
+			if buildcfg.GOARCH == "wasm3" {
+				// Per-T wasm3 trampoline returns (v T, selected,
+				// received) by value. Distribute v into the user's
+				// LHS in-line; cond/received feed the if/else after.
+				trampoline := reflectdata.SelectNbRecvFuncWasm3(ch.Type())
+				fn := trampoline.Nname
+				chArg := ir.NewConvExpr(base.Pos, ir.OCONVNOP, types.Types[types.TUNSAFEPTR], ch)
+				chArg.SetTypecheck(1)
+				call := mkcall1(fn, fn.Type().ResultsTuple(), r.PtrInit(), chArg)
+				cond = typecheck.TempAt(base.Pos, ir.CurFunc, types.Types[types.TBOOL])
+				vTmp := typecheck.TempAt(base.Pos, ir.CurFunc, ch.Type().Elem())
+				okTmp := n.Lhs[1]
+				if ir.IsBlank(okTmp) {
+					okTmp = typecheck.TempAt(base.Pos, ir.CurFunc, types.Types[types.TBOOL])
+				}
+				as := ir.NewAssignListStmt(r.Pos(), ir.OAS2, []ir.Node{vTmp, cond, okTmp}, []ir.Node{call})
+				r.PtrInit().Append(typecheck.Stmt(as))
+				if !ir.IsBlank(elem) {
+					// Prepend `elem = vTmp` to the case body so the
+					// user's variable receives the value before BODY
+					// runs.
+					assignV := typecheck.Stmt(ir.NewAssignStmt(base.Pos, elem, vTmp))
+					cas.Body = append([]ir.Node{assignV}, cas.Body...)
+				}
+				break
+			}
 			if ir.IsBlank(elem) {
 				elem = typecheck.NodNil()
 			}
@@ -139,6 +186,28 @@ func walkSelectCases(cases []*ir.CommClause) []ir.Node {
 		return []ir.Node{r, ir.NewBranchStmt(base.Pos, ir.OBREAK, nil)}
 	}
 
+	if buildcfg.GOARCH == "wasm3" {
+		// General multi-case (and N-case-with-default for N>2) select
+		// goes through runtime.selectgo, which walks an array of
+		// runtime.scase entries that point at hchan (the legacy
+		// runtime chan). wasm3 chans are $go.chan.<T> WasmGC structs
+		// — incompatible. A wasm3 selectgo would need a per-T
+		// case-builder + a polling/parking loop coordinating across
+		// all chans via WasmPark; that's a substantial follow-up.
+		// For now, emit a runtime.throw so the rest of the program
+		// compiles cleanly (instead of hitting the SSA scase-array
+		// liveness error) and the user gets a clear runtime message.
+		// Emit a panicwrap call — its body is `runtime.throw(...)`, no
+		// args needed at the IR level and the runtime side will print
+		// a stack trace identifying the (panicwrap-named) caller. Not
+		// the prettiest diagnostic, but it lets the compile succeed
+		// and a runtime trap is the best we can do until a real
+		// wasm3 selectgo lands.
+		var init ir.Nodes
+		call := mkcall("panicwrap", nil, &init)
+		init.Append(typecheck.Stmt(call))
+		return init
+	}
 	if dflt != nil {
 		ncas--
 	}

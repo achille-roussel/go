@@ -155,6 +155,95 @@ func wasm3ChanFinishRecv(c *channel) {
 //go:noinline
 func wasm3ChanSetDataqsiz(c *channel, n int32) { c.dataqsiz = n }
 
+// Non-blocking select helpers — drive the buffered/unbuffered chan
+// state machine without ever calling WasmPark, so the per-T select
+// trampolines (reflectdata/wasm3_changen.go) can implement
+// `select { case v := <-c: …; default: … }` as a peek-then-act
+// sequence with no risk of suspending.
+
+// wasm3ChanTryRecvBegin reports whether a value can be received right
+// now. If ok, slot is the index for SlotsGet (always 0 for unbuffered).
+// If !ok and closed, the caller delivers a zero value with
+// selected=true, received=false. If !ok and !closed, the case is
+// not ready; the caller takes its default branch.
+//
+//go:noinline
+func wasm3ChanTryRecvBegin(c *channel) (slot int32, ok, closed bool) {
+	if c.dataqsiz == 0 {
+		if c.sendParkID != 0 {
+			return 0, true, false
+		}
+		return 0, false, c.closed
+	}
+	if c.qcount > 0 {
+		return c.recvx, true, false
+	}
+	return 0, false, c.closed
+}
+
+// wasm3ChanTryRecvCommit advances the recv bookkeeping (recvx, qcount)
+// and wakes any parked sender, after the per-T trampoline has read the
+// value via SlotsGet.
+//
+//go:noinline
+func wasm3ChanTryRecvCommit(c *channel) {
+	if c.dataqsiz == 0 {
+		if id := c.sendParkID; id != 0 {
+			c.sendParkID = 0
+			wasm.WasmReady(id)
+		}
+		return
+	}
+	c.recvx = (c.recvx + 1) % c.dataqsiz
+	c.qcount--
+	if id := c.sendParkID; id != 0 {
+		c.sendParkID = 0
+		wasm.WasmReady(id)
+	}
+}
+
+// wasm3ChanTrySendBegin reports whether a value can be sent right now.
+// If ok, slot is the index for SlotsSet (always 0 for unbuffered).
+// Panics on a closed chan, matching Go's send-on-closed semantics.
+//
+//go:noinline
+func wasm3ChanTrySendBegin(c *channel) (slot int32, ok bool) {
+	if c.closed {
+		panic(plainError("send on closed channel"))
+	}
+	if c.dataqsiz == 0 {
+		if c.recvParkID != 0 {
+			return 0, true
+		}
+		return 0, false
+	}
+	if c.qcount < c.dataqsiz {
+		return c.sendx, true
+	}
+	return 0, false
+}
+
+// wasm3ChanTrySendCommit advances the send bookkeeping (sendx, qcount)
+// and wakes any parked receiver, after the per-T trampoline has written
+// the value via SlotsSet.
+//
+//go:noinline
+func wasm3ChanTrySendCommit(c *channel) {
+	if c.dataqsiz == 0 {
+		if id := c.recvParkID; id != 0 {
+			c.recvParkID = 0
+			wasm.WasmReady(id)
+		}
+		return
+	}
+	c.sendx = (c.sendx + 1) % c.dataqsiz
+	c.qcount++
+	if id := c.recvParkID; id != 0 {
+		c.recvParkID = 0
+		wasm.WasmReady(id)
+	}
+}
+
 // Park-ID generator — process-wide int32 counter; 0 reserved
 // (signals "no waiter").
 

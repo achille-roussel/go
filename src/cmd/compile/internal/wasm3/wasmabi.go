@@ -342,9 +342,15 @@ func flatPrimitiveFields(t *types.Type) ([]obj.WasmField, bool) {
 		// ref.cast before extracting the funcref for call_ref.
 		return []obj.WasmField{{Type: obj.WasmAnyref}}, true
 	case types.TMAP, types.TCHAN:
-		// Pointer-shaped runtime types: one i64 register at the SSA
-		// layer until the M3/M4 lowering refines them.
-		return []obj.WasmField{{Type: obj.WasmI64}}, true
+		// Pointer-shaped runtime types: a wasm3 chan is a
+		// (ref $go.chan.<T>) and a wasm3 map is a (ref $go.map.<K,V>),
+		// both anyref-shaped per wasm3ValueType. The previous i64
+		// lowering predated the M3/M4 WasmGC chan/map cutovers and
+		// mismatched the body's per-value local at every call site
+		// taking or returning one (worker(id int32, ch chan int32)
+		// failed wasm validation: "local.set[0] expected anyref,
+		// found local.get of type i64").
+		return []obj.WasmField{{Type: obj.WasmAnyref}}, true
 	}
 	return nil, false
 }

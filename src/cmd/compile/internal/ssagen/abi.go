@@ -516,7 +516,11 @@ func wasm3RefField(t *types.Type, frameOff int64) (obj.WasmField, bool) {
 }
 
 func resultsToWasmFields(f *ir.Func, pragma string, result *abi.ABIParamResultInfo, abiParams []abi.ABIParamAssignment) []obj.WasmField {
-	if len(abiParams) > 1 {
+	// GOARCH=wasm3 uses the wasm multi-value extension natively, so a
+	// gojs import or export can return more than one scalar
+	// (runtime.walltime → (int64, int32) is the load-bearing case).
+	// Other arches still observe the historical single-result cap.
+	if len(abiParams) > 1 && buildcfg.GOARCH != "wasm3" {
 		base.ErrorfAt(f.Pos(), 0, "%s: too many return values", pragma)
 		return nil
 	}
@@ -598,7 +602,7 @@ func setupWasmImport(f *ir.Func) {
 		Module: f.WasmImport.Module,
 		Name:   f.WasmImport.Name,
 	}
-	if wi.Module == wasm.GojsModule {
+	if wi.Module == wasm.GojsModule && buildcfg.GOARCH != "wasm3" {
 		// Functions that are imported from the "gojs" module use a special
 		// ABI that just accepts the stack pointer.
 		// Example:
@@ -609,6 +613,13 @@ func setupWasmImport(f *ir.Func) {
 		// will roughly become
 		//
 		// 	(import "gojs" "add" (func (param i32)))
+		//
+		// Excluded for GOARCH=wasm3: there is no Go stack in linear
+		// memory, so the stack-pointer ABI has no meaning. gojs
+		// imports on wasm3 use the normal multi-param ABI below
+		// (with the wasm3 multi-return relaxation in
+		// resultsToWasmFields, so walltime's (int64, int32) and
+		// nanotime1's int64 return values both reach the caller).
 		wi.Params = []obj.WasmField{{Type: obj.WasmI32}}
 	} else {
 		// All other imported functions use the normal WASM ABI.

@@ -1386,15 +1386,27 @@ func wasmFuncTypeStorage(f obj.WasmField) wasmgc.Storage {
 // for routing them through the legacy heap-captures route instead.
 // That refusal happens at the wasm3 walk-pass site, not here — by
 // collectIfaceVtabType reserves and returns the table index of the
-// $go.vtab.<I> wasmgc struct for interface I. The struct subtypes
-// $go.vtab (the empty base prelude type) and has one field per
-// method of I, in I.AllMethods order.
+// $go.vtab.<I> wasmgc struct for interface I, matching the layout
+// validated by doc/wasm3-iface-poly-derisk.wat:
 //
-// Phase C: field storage is anyref for every method slot — a
-// placeholder shape that's structurally valid and allows the
-// linker to lay out the type table. Phase D narrows each field to
-// the method's specific funcref type so the dispatch path can
-// call_ref through the field directly.
+//	$go.vtab.<I> = (sub $go.vtab (struct
+//	                               (ref null $go.object) type,
+//	                               <method 0 funcref>,
+//	                               <method 1 funcref>,
+//	                               ...))
+//
+// Field 0 carries the type descriptor — shared per-T across every
+// interface T satisfies — so cross-interface type assertions
+// (x.(T) on an `any` holding T) compare against the same identity
+// regardless of which I the value was constructed against. Fields
+// 1..N are per-method funcrefs in I.AllMethods order.
+//
+// Phase D in-progress: the per-method funcref fields are still
+// anyref placeholders; a follow-up step narrows each to its
+// specific funcref type once the anyref-receiver method ABI is
+// wired through collectSignature. The type-descriptor field at
+// offset 0 is already typed correctly so dispatch and assertion
+// lowering can target the final shape now.
 func (c *typeCollector) collectIfaceVtabType(I *types.Type) int {
 	if I.Kind() != types.TINTER {
 		panic("wasm3: collectIfaceVtabType on non-interface type " + I.Kind().String())
@@ -1403,12 +1415,12 @@ func (c *typeCollector) collectIfaceVtabType(I *types.Type) int {
 		return idx
 	}
 	methods := I.AllMethods()
-	fields := make([]wasmgc.Field, len(methods))
-	for i := range methods {
-		// Phase C placeholder: anyref slot. Phase D will replace
-		// this with (ref $methodfunc.<I>.<M>) once collectSignature
-		// supports the anyref-receiver prepended method ABI.
-		fields[i] = wasmgc.Field{Storage: wasmgc.AnyRefStorage()}
+	fields := make([]wasmgc.Field, 0, 1+len(methods))
+	fields = append(fields, wasmgc.Field{
+		Storage: wasmgc.RefStorage(wasmgc.TypeGoObject, true),
+	})
+	for range methods {
+		fields = append(fields, wasmgc.Field{Storage: wasmgc.AnyRefStorage()})
 	}
 	idx := len(c.table)
 	c.ifaceVtabs[I] = idx

@@ -67,19 +67,25 @@ func TestAppendLeb128(t *testing.T) {
 func TestEncodePreludeTypeSection(t *testing.T) {
 	payload := Table(PreludeTypes()).EncodeTypeSection()
 
-	// Prelude: 25 singleton rec groups in table order: object, bytes,
-	// string, the seven go.iptr.<class> fat-pointer wrappers
-	// (i8, i16, i32, i64, f32, f64, ref), go.iface, the
-	// getter/setter/ptr accessor-pair triples for the i64, ref, f64, and
-	// f32 classes, and the M4 stack-switching pair go.goroutine.entry +
-	// go.cont. Typed-ref heap references emit the plain (non-exact)
-	// encoding (0x64 / 0x63 followed by typeidx) — the exact-heap-type
-	// prefix opExactHeap=0x62 was dropped to match wasmfxtime /
-	// wasmparser 1.223, which predates the custom-descriptors extension.
-	// See heaptype helper in typesec.go for rationale. Pin the exact
+	// Prelude: 42 singleton rec groups in table order:
+	//   * object, bytes, string
+	//   * 7 go.iptr.<class> fat-pointer wrappers (i8..ref)
+	//   * go.iface
+	//   * 4 getter/setter/ptr accessor-pair triples (i64, ref, f64, f32)
+	//   * M4 stack-switching pair go.goroutine.entry + go.cont
+	//   * M4 chan base go.chan
+	//   * polymorphic fat-pointer hierarchy
+	//     (doc/wasm3-fat-ptr-class-prototype): 4 families x 4 types
+	//     each — refclass.<X>, ptr.poly.<X>, ptr.array.<X>,
+	//     ptr.struct.<X> — for X in {i64, ref, f32, f64}.
+	// Typed-ref heap references emit the plain (non-exact) encoding
+	// (0x64 / 0x63 followed by typeidx) — the exact-heap-type prefix
+	// opExactHeap=0x62 was dropped to match wasmfxtime / wasmparser
+	// 1.223, which predates the custom-descriptors extension. See
+	// heaptype helper in typesec.go for rationale. Pin the exact
 	// bytes — this is the module preamble every wasm3 binary starts with.
 	want := []byte{
-		0x19, // 25 rec groups
+		0x2a, // 42 rec groups
 
 		// rec { go.object }: sub, 0 supertypes, struct with 0 fields.
 		opRec, 0x01,
@@ -176,6 +182,73 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 		// rec { go.cont }: final cont type wrapping go.goroutine.entry
 		// (table index 23 → wasm index 23).
 		opRec, 0x01, opSubFinal, 0x00, opCont, 0x17,
+
+		// rec { go.chan }: sub go.object, 7 mut i32 fields: qcount,
+		// dataqsiz, sendx, recvx, closed, sendParkID, recvParkID.
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x07,
+		valI32, fieldVar, valI32, fieldVar, valI32, fieldVar, valI32, fieldVar,
+		valI32, fieldVar, valI32, fieldVar, valI32, fieldVar,
+
+		// rec { go.refclass.i64 }: vtable struct {(ref getter.i64)=index 11,
+		// (ref setter.i64)=index 12}. Carries the funcrefs that polymorphic
+		// dereferences call_ref against.
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02,
+		opRef, 0x0b, fieldConst,
+		opRef, 0x0c, fieldConst,
+		// rec { go.ptr.poly.i64 }: polymorphic base, sub go.object, struct
+		// with one field (ref refclass.i64)=index 26.
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x01,
+		opRef, 0x1a, fieldConst,
+		// rec { go.ptr.array.i64 }: sub ptr.poly.i64=index 27, struct
+		// {class (inherited), anyref backing, i32 offset}.
+		opRec, 0x01, opSub, 0x01, 0x1b, opStruct, 0x03,
+		opRef, 0x1a, fieldConst, valAnyref, fieldConst, valI32, fieldConst,
+		// rec { go.ptr.struct.i64 }: sub ptr.poly.i64=index 27, struct
+		// {class (inherited), anyref container}.
+		opRec, 0x01, opSub, 0x01, 0x1b, opStruct, 0x02,
+		opRef, 0x1a, fieldConst, valAnyref, fieldConst,
+
+		// rec { go.refclass.ref }: vtable {(ref getter.ref)=14, (ref setter.ref)=15}.
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02,
+		opRef, 0x0e, fieldConst,
+		opRef, 0x0f, fieldConst,
+		// rec { go.ptr.poly.ref }: {(ref refclass.ref)=30}.
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x01,
+		opRef, 0x1e, fieldConst,
+		// rec { go.ptr.array.ref }: sub poly.ref=31, {class, anyref, i32}.
+		opRec, 0x01, opSub, 0x01, 0x1f, opStruct, 0x03,
+		opRef, 0x1e, fieldConst, valAnyref, fieldConst, valI32, fieldConst,
+		// rec { go.ptr.struct.ref }: sub poly.ref=31, {class, anyref}.
+		opRec, 0x01, opSub, 0x01, 0x1f, opStruct, 0x02,
+		opRef, 0x1e, fieldConst, valAnyref, fieldConst,
+
+		// rec { go.refclass.f32 }: vtable {(ref getter.f32)=20, (ref setter.f32)=21}.
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02,
+		opRef, 0x14, fieldConst,
+		opRef, 0x15, fieldConst,
+		// rec { go.ptr.poly.f32 }: {(ref refclass.f32)=34}.
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x01,
+		opRef, 0x22, fieldConst,
+		// rec { go.ptr.array.f32 }: sub poly.f32=35, {class, anyref, i32}.
+		opRec, 0x01, opSub, 0x01, 0x23, opStruct, 0x03,
+		opRef, 0x22, fieldConst, valAnyref, fieldConst, valI32, fieldConst,
+		// rec { go.ptr.struct.f32 }: sub poly.f32=35, {class, anyref}.
+		opRec, 0x01, opSub, 0x01, 0x23, opStruct, 0x02,
+		opRef, 0x22, fieldConst, valAnyref, fieldConst,
+
+		// rec { go.refclass.f64 }: vtable {(ref getter.f64)=17, (ref setter.f64)=18}.
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02,
+		opRef, 0x11, fieldConst,
+		opRef, 0x12, fieldConst,
+		// rec { go.ptr.poly.f64 }: {(ref refclass.f64)=38}.
+		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x01,
+		opRef, 0x26, fieldConst,
+		// rec { go.ptr.array.f64 }: sub poly.f64=39, {class, anyref, i32}.
+		opRec, 0x01, opSub, 0x01, 0x27, opStruct, 0x03,
+		opRef, 0x26, fieldConst, valAnyref, fieldConst, valI32, fieldConst,
+		// rec { go.ptr.struct.f64 }: sub poly.f64=39, {class, anyref}.
+		opRec, 0x01, opSub, 0x01, 0x27, opStruct, 0x02,
+		opRef, 0x26, fieldConst, valAnyref, fieldConst,
 	}
 	if !bytes.Equal(payload, want) {
 		t.Fatalf("prelude type section mismatch:\n got % x\nwant % x", payload, want)

@@ -157,6 +157,50 @@ const (
 	// as plain Go in one place, not per-T generated IR.
 	TypeGoChan // go.chan: (sub $go.object (struct qcount,dataqsiz,sendx,recvx i32, closed i8, sendParkID,recvParkID i32))
 
+	// Polymorphic fat-pointer type system
+	// (doc/wasm3-fat-ptr-class-prototype). A *T on wasm3 is a
+	// subtype of $go.ptr.<class> whose $class field selects the
+	// dereference behaviour at runtime via call_ref. Loads/stores
+	// through any *T go through the same two-step dispatch (get the
+	// class, call_ref the get/set funcref) regardless of where the
+	// underlying cell lives — a heap-allocated scalar (array variant),
+	// a field inside a heap-allocated struct (struct variant), or a
+	// direct ref to a composite (ref variant). The supertype layout
+	// guarantees the $class field sits at field 0 in every subtype,
+	// so the dispatcher reads it without any cast.
+	//
+	// Four leaf classes mirror the existing accessor-pair set
+	// (TypeGoPtr{I64,Ref,F32,F64}): integer/bool pointees use I64
+	// (sub-word ints widen at the accessor boundary), reference
+	// pointees use Ref, floats use F32/F64. For each class we add:
+	//   * TypeGoRefClass<X>   — vtable struct {get funcref, set funcref}
+	//   * TypeGoPtrPoly<X>    — polymorphic base struct {class}
+	//   * TypeGoPtrArray<X>   — subtype with backing array + element index
+	//   * TypeGoPtrStruct<X>  — subtype with container ref (field encoded
+	//                            in the bound class instance)
+	//
+	// The get/set funcref shapes already exist as TypeGoGetter<X> /
+	// TypeGoSetter<X>; the vtable struct reuses them. Functions matching
+	// those signatures are generated lazily per-(container,leaf) by
+	// reflectdata; class-instance globals are emitted per-(container,leaf)
+	// too.
+	TypeGoRefClassI64   // go.refclass.i64:    {get, set} — vtable struct for i64-class pointers
+	TypeGoPtrPolyI64    // go.ptr.poly.i64:    (sub go.object (struct (ref refclass.i64))) — polymorphic base
+	TypeGoPtrArrayI64   // go.ptr.array.i64:   (sub go.ptr.poly.i64 (struct class, anyref base, i32 offset))
+	TypeGoPtrStructI64  // go.ptr.struct.i64:  (sub go.ptr.poly.i64 (struct class, anyref container))
+	TypeGoRefClassRef   // go.refclass.ref:    ref-class vtable
+	TypeGoPtrPolyRef    // go.ptr.poly.ref:    ref-class polymorphic base
+	TypeGoPtrArrayRef   // go.ptr.array.ref
+	TypeGoPtrStructRef  // go.ptr.struct.ref
+	TypeGoRefClassF32   // go.refclass.f32
+	TypeGoPtrPolyF32    // go.ptr.poly.f32
+	TypeGoPtrArrayF32   // go.ptr.array.f32
+	TypeGoPtrStructF32  // go.ptr.struct.f32
+	TypeGoRefClassF64   // go.refclass.f64
+	TypeGoPtrPolyF64    // go.ptr.poly.f64
+	TypeGoPtrArrayF64   // go.ptr.array.f64
+	TypeGoPtrStructF64  // go.ptr.struct.f64
+
 	NumPreludeTypes
 )
 
@@ -411,7 +455,87 @@ func PreludeTypes() []Type {
 		},
 	}
 
+	// Polymorphic fat-pointer hierarchy
+	// (doc/wasm3-fat-ptr-class-prototype). For each leaf storage class
+	// (i64, ref, f32, f64) emit a four-tuple:
+	//   * refclass.<X>      — {get, set} vtable struct (reuses the
+	//                          TypeGoGetter<X> / TypeGoSetter<X>
+	//                          funcref signatures already defined).
+	//   * ptr.poly.<X>      — polymorphic base whose only field is
+	//                          (ref refclass.<X>). Loads/stores read
+	//                          this field to dispatch.
+	//   * ptr.array.<X>     — subtype with a backing array + an i32
+	//                          element index.
+	//   * ptr.struct.<X>    — subtype with a container ref (the
+	//                          field index is bound inside the
+	//                          per-(container, field) class instance).
+	//
+	// The $class field appears at field index 0 in every subtype so
+	// a polymorphic dispatcher needs no ref.cast before reading it.
+	// WasmGC subtype rules require the prefix to repeat exactly, so
+	// each subtype redeclares the parent's field first.
+	defPolyPtrFamily := func(refclass, poly, array, strct int, getter, setter int) {
+		t[refclass] = Type{
+			Name:  "go.refclass." + className(refclass),
+			Kind:  KindStruct,
+			Super: TypeGoObject,
+			Fields: []Field{
+				{Storage: RefStorage(getter, false)},
+				{Storage: RefStorage(setter, false)},
+			},
+		}
+		t[poly] = Type{
+			Name:  "go.ptr.poly." + className(refclass),
+			Kind:  KindStruct,
+			Super: TypeGoObject,
+			Fields: []Field{
+				{Storage: RefStorage(refclass, false)}, // class
+			},
+		}
+		t[array] = Type{
+			Name:  "go.ptr.array." + className(refclass),
+			Kind:  KindStruct,
+			Super: poly,
+			Fields: []Field{
+				{Storage: RefStorage(refclass, false)}, // class (inherited)
+				{Storage: AnyRefStorage()},             // backing
+				{Storage: PrimStorage(I32)},            // offset
+			},
+		}
+		t[strct] = Type{
+			Name:  "go.ptr.struct." + className(refclass),
+			Kind:  KindStruct,
+			Super: poly,
+			Fields: []Field{
+				{Storage: RefStorage(refclass, false)}, // class (inherited)
+				{Storage: AnyRefStorage()},             // container ref
+			},
+		}
+	}
+	defPolyPtrFamily(TypeGoRefClassI64, TypeGoPtrPolyI64, TypeGoPtrArrayI64, TypeGoPtrStructI64, TypeGoGetterI64, TypeGoSetterI64)
+	defPolyPtrFamily(TypeGoRefClassRef, TypeGoPtrPolyRef, TypeGoPtrArrayRef, TypeGoPtrStructRef, TypeGoGetterRef, TypeGoSetterRef)
+	defPolyPtrFamily(TypeGoRefClassF32, TypeGoPtrPolyF32, TypeGoPtrArrayF32, TypeGoPtrStructF32, TypeGoGetterF32, TypeGoSetterF32)
+	defPolyPtrFamily(TypeGoRefClassF64, TypeGoPtrPolyF64, TypeGoPtrArrayF64, TypeGoPtrStructF64, TypeGoGetterF64, TypeGoSetterF64)
+
 	return t
+}
+
+// className maps a TypeGoRefClass<X> prelude index to its class
+// suffix ("i64" / "ref" / "f32" / "f64"). Used by PreludeTypes to
+// build the human-readable type names; also useful to the lowering
+// when picking the per-class accessor.
+func className(refclass int) string {
+	switch refclass {
+	case TypeGoRefClassI64:
+		return "i64"
+	case TypeGoRefClassRef:
+		return "ref"
+	case TypeGoRefClassF32:
+		return "f32"
+	case TypeGoRefClassF64:
+		return "f64"
+	}
+	panic("wasmgc: not a refclass prelude index")
 }
 
 // DependsOn returns the type-table indices that t directly depends on:

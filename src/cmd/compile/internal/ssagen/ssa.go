@@ -5473,6 +5473,33 @@ func (s *state) call(n *ir.CallExpr, k callKind, returnResultAddr bool, deferExt
 			s.Fatalf("OCALLINTER: n.Left not an ODOTINTER: %v", fn.Op())
 		}
 		fn := fn.(*ir.SelectorExpr)
+		// wasm3 iface phase D step 5: route OCALLINTER through a
+		// per-(I, methodIdx) hand-assembled trampoline LSym instead
+		// of the legacy itab.Fun load + indirect call. The legacy
+		// path's OpITab returns an anyref (the boxed iface's itab
+		// slot) and the OpOffPtr+24 the rttype.ITab field address
+		// arithmetic generates an i64.add on that anyref, which
+		// fails wasm validation (anyref ≠ i64). The trampoline
+		// extracts vtab + data via struct.get and call_refs the
+		// method funcref, expressible only in hand-encoded wasm.
+		if buildcfg.GOARCH == "wasm3" && (k == callNormal || k == callTail) && Arch.Wasm3IfaceDispatchTrampoline != nil {
+			ifaceT := fn.X.Type()
+			if ifaceT != nil && ifaceT.IsInterface() {
+				methods := ifaceT.AllMethods()
+				methodIdx := -1
+				for i, m := range methods {
+					if m.Sym == fn.Sel {
+						methodIdx = i
+						break
+					}
+				}
+				if methodIdx >= 0 {
+					calleeLSym = Arch.Wasm3IfaceDispatchTrampoline(ifaceT, methodIdx)
+					rcvr = s.expr(fn.X) // the iface itself becomes arg0
+					break
+				}
+			}
+		}
 		var iclosure *ssa.Value
 		iclosure, rcvr = s.getClosureAndRcvr(fn)
 		if k == callNormal || k == callTail {

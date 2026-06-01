@@ -562,6 +562,35 @@ func wasm3RegisterIfaceSubtype(fi *obj.FuncInfo, I *types.Type) uint32 {
 	return uint32(idx)
 }
 
+// wasm3RegisterIfaceMethodFuncSigFor returns the table index of the
+// anyref-receiver funcref type for an interface method whose Go type
+// is mft, in fi's collector. The funcref signature is the wasmgc
+// counterpart of the method type with the abstract receiver slot
+// replaced by anyref (the boxed iface data). Used by the iface-
+// dispatch trampoline (phase D step 5) — both as the call_ref typeidx
+// and as the vtab field type at the (1 + methodIdx) slot. Memoized
+// on mft so the vtab field's type and the trampoline's call_ref see
+// the same index.
+func wasm3RegisterIfaceMethodFuncSigFor(fi *obj.FuncInfo, mft *types.Type) uint32 {
+	if fi == nil {
+		base.Fatalf("wasm3RegisterIfaceMethodFuncSigFor: fi is nil")
+	}
+	cAny, ok := wasm3LiveCollector.Load(fi)
+	var c *typeCollector
+	if ok {
+		c = cAny.(*typeCollector)
+	} else {
+		c = newTypeCollector()
+		wasm3LiveCollector.Store(fi, c)
+		if fi.WasmType == nil {
+			fi.WasmType = &obj.WasmType{}
+		}
+	}
+	idx := c.collectIfaceMethodFuncSig(mft)
+	c.writeTable(fi)
+	return uint32(idx)
+}
+
 // wasm3RegisterPerClosureCtx registers a per-closure subtype of the
 // per-signature closureCtx, with `captureTypes`'s wasm storages
 // appended after the legacy (funcref, captures-ptr-i64) fields.
@@ -1415,12 +1444,23 @@ func (c *typeCollector) collectIfaceVtabType(I *types.Type) int {
 		return idx
 	}
 	methods := I.AllMethods()
+	// Per-method funcref types must be registered BEFORE the vtab struct
+	// so the struct's field type indices are stable. Funcrefs live in
+	// the wasmgc func hierarchy, not the anyref one — an anyref slot
+	// cannot be ref.cast'd to a (ref func), so the vtab field types
+	// must already be the concrete funcref type to be call_ref'd.
+	methodFuncIdxs := make([]int, len(methods))
+	for i, m := range methods {
+		methodFuncIdxs[i] = c.collectIfaceMethodFuncSig(m.Type)
+	}
 	fields := make([]wasmgc.Field, 0, 1+len(methods))
 	fields = append(fields, wasmgc.Field{
 		Storage: wasmgc.RefStorage(wasmgc.TypeGoObject, true),
 	})
-	for range methods {
-		fields = append(fields, wasmgc.Field{Storage: wasmgc.AnyRefStorage()})
+	for _, fIdx := range methodFuncIdxs {
+		fields = append(fields, wasmgc.Field{
+			Storage: wasmgc.RefStorage(fIdx, true), // nullable (ref null $funcsig)
+		})
 	}
 	idx := len(c.table)
 	c.ifaceVtabs[I] = idx
@@ -1429,6 +1469,57 @@ func (c *typeCollector) collectIfaceVtabType(I *types.Type) int {
 		Kind:   wasmgc.KindStruct,
 		Super:  wasmgc.TypeGoVtab,
 		Fields: fields,
+	})
+	return idx
+}
+
+// collectIfaceMethodFuncSig reserves and returns the table index of
+// the wasm function-type used as the vtab funcref slot for an
+// interface method whose Go type is mft. The wasm signature has an
+// anyref-typed receiver (the boxed data extracted from the iface
+// value at dispatch time) followed by the method's params and
+// results lowered to wasm storages via topLevelFields.
+//
+// Phase D step 5: the vtab field at index 1+methodIdx is typed as
+// (ref null $funcsig) (this type), so the dispatcher's struct.get
+// already yields a properly-typed funcref ready for call_ref —
+// anyref→funcref ref.casts are forbidden in WasmGC since the func
+// hierarchy is disjoint from the any hierarchy.
+//
+// mft is the method's Go func type from I.AllMethods()[i].Type. Its
+// RecvParams()[0] is the interface itself (the abstract receiver);
+// the wasm signature replaces that slot with anyref so each per-
+// (I,T) method body's anyref-receiver wrapper signature matches.
+func (c *typeCollector) collectIfaceMethodFuncSig(mft *types.Type) int {
+	if mft == nil || mft.Kind() != types.TFUNC {
+		panic("wasm3: collectIfaceMethodFuncSig: non-func type")
+	}
+	if idx, ok := c.ifaceMethodFuncs[mft]; ok {
+		return idx
+	}
+	params := []wasmgc.Storage{wasmgc.AnyRefStorage()}
+	for _, p := range mft.Params() {
+		for _, f := range c.topLevelFields(p.Type) {
+			params = append(params, f.Storage)
+		}
+	}
+	var results []wasmgc.Storage
+	for _, r := range mft.Results() {
+		for _, f := range c.topLevelFields(r.Type) {
+			results = append(results, f.Storage)
+		}
+	}
+	idx := len(c.table)
+	if c.ifaceMethodFuncs == nil {
+		c.ifaceMethodFuncs = make(map[*types.Type]int)
+	}
+	c.ifaceMethodFuncs[mft] = idx
+	c.table = append(c.table, wasmgc.Type{
+		Name:    "go.ifacemethod." + typeName(mft),
+		Kind:    wasmgc.KindFunc,
+		Super:   -1,
+		Params:  params,
+		Results: results,
 	})
 	return idx
 }

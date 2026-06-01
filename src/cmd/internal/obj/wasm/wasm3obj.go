@@ -262,6 +262,11 @@ func assemble3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 		return
 	}
 
+	if id := s.Func().Wasm3IfaceDispatch; id != nil {
+		assembleWasm3IfaceDispatch(ctxt, s, id)
+		return
+	}
+
 	if body, ok := encodeWasm3Body(ctxt, s); ok {
 		s.P = body
 		return
@@ -1849,6 +1854,151 @@ func assembleWasm3PolyAccessor(ctxt *obj.Link, s *obj.LSym, pa *obj.Wasm3PolyAcc
 			}
 		}
 	}
+
+	w.WriteByte(0x0b) // end
+	s.P = w.Bytes()
+	for _, r := range relocs {
+		s.AddRel(ctxt, r)
+	}
+}
+
+// assembleWasm3IfaceDispatch emits the body of a per-(I, methodIdx)
+// interface-method dispatch trampoline (phase D step 5 of the wasm3
+// iface migration). The trampoline's wasm signature is
+// (anyref iface, arg1, arg2, ...) -> (results...) as attached by
+// attachWasmType — the iface lives in local 0; the rest of the
+// trampoline's wasm params occupy locals 1..N-1.
+//
+// Body shape (locals = trampoline wasm params). call_ref pops the
+// funcref from the top of the stack and the args from underneath, so
+// the receiver data and the trampoline's other args have to be pushed
+// FIRST and the resolved method funcref pushed last:
+//
+//	;; local declaration count: 0
+//	local.get 0                  ; iface anyref (for receiver data)
+//	ref.cast (ref $go.iface)     ; R_WASMHEAPTYPE → TypeGoIface
+//	struct.get $go.iface 1       ; R_WASMTYPE + fieldidx 1 — data anyref
+//	local.get 1                  ; for each non-iface wasm param, in order
+//	local.get 2
+//	...
+//	local.get 0                  ; iface anyref (for vtab walk)
+//	ref.cast (ref $go.iface)
+//	struct.get $go.iface 0       ; R_WASMTYPE + fieldidx 0 — vtab anyref
+//	ref.cast (ref $go.vtab.<I>)  ; R_WASMHEAPTYPE → per-(I) vtab type
+//	struct.get $go.vtab.<I> N+1  ; R_WASMTYPE + fieldidx N+1 — typed (ref null $methodFuncTy)
+//	call_ref $methodFuncTy       ; R_WASMTYPE — dispatch (traps on null)
+//	end
+//
+// The vtab field type at slot N+1 is the concrete funcref type — not
+// anyref — because WasmGC forbids ref.casting between the any and
+// func type hierarchies. collectIfaceVtabType narrows each method
+// field to (ref null $methodFuncTy) for that reason.
+//
+// Phase D step 5 acceptance criterion is wasm validation, not runtime
+// correctness: iface construction still puts the legacy itab linear
+// address in field 0 (not a vtab ref), so the ref.cast on the vtab
+// slot will trap at runtime. The follow-up step routes iface
+// construction through per-(I,T) vtab globals.
+func assembleWasm3IfaceDispatch(ctxt *obj.Link, s *obj.LSym, id *obj.Wasm3IfaceDispatch) {
+	w := new(bytes.Buffer)
+	writeUleb128(w, 0) // local declaration count
+
+	// Determine the wasm param count (= number of local.get's we need
+	// to push for the call). The trampoline's WasmType has been
+	// attached by attachWasmType; if for some reason it's absent
+	// (the SSA pipeline fell back to ()->() stub), there's nothing
+	// to dispatch over — emit an unreachable stub.
+	wt := s.Func().WasmType
+	if wt == nil {
+		s.P = []byte{0x00, 0x00, 0x0b} // 0 locals; unreachable; end
+		return
+	}
+	numParams := len(wt.Params)
+	if numParams < 1 {
+		s.P = []byte{0x00, 0x00, 0x0b}
+		return
+	}
+
+	var relocs []obj.Reloc
+
+	// 1. Push receiver data (iface.data) FIRST — call_ref pops the
+	// funcref from the top so args must sit underneath it.
+	writeOpcode(w, ALocalGet)
+	writeUleb128(w, 0)
+	writeOpcode(w, ARefCast)
+	relocs = append(relocs, obj.Reloc{
+		Type: objabi.R_WASMHEAPTYPE,
+		Off:  int32(w.Len()),
+		Siz:  1,
+		Add:  id.IfaceTypeIdx,
+	})
+	writeOpcode(w, AStructGet)
+	relocs = append(relocs, obj.Reloc{
+		Type: objabi.R_WASMTYPE,
+		Off:  int32(w.Len()),
+		Siz:  1,
+		Add:  id.IfaceTypeIdx,
+	})
+	writeUleb128(w, 1) // field 1 of $go.iface = data anyref
+
+	// 2. Push the rest of the trampoline's wasm params verbatim — the
+	// funcref signature (anyref recv + same params[1:]) lines up
+	// exactly with what the trampoline received.
+	for i := 1; i < numParams; i++ {
+		writeOpcode(w, ALocalGet)
+		writeUleb128(w, uint64(i))
+	}
+
+	// 3. Walk iface -> vtab -> method funcref slot, ending with a
+	// properly-typed (ref $methodFuncTy) on the top of the stack.
+	writeOpcode(w, ALocalGet)
+	writeUleb128(w, 0)
+	writeOpcode(w, ARefCast)
+	relocs = append(relocs, obj.Reloc{
+		Type: objabi.R_WASMHEAPTYPE,
+		Off:  int32(w.Len()),
+		Siz:  1,
+		Add:  id.IfaceTypeIdx,
+	})
+	writeOpcode(w, AStructGet)
+	relocs = append(relocs, obj.Reloc{
+		Type: objabi.R_WASMTYPE,
+		Off:  int32(w.Len()),
+		Siz:  1,
+		Add:  id.IfaceTypeIdx,
+	})
+	writeUleb128(w, 0) // field 0 of $go.iface = itab/vtab anyref
+
+	writeOpcode(w, ARefCast)
+	relocs = append(relocs, obj.Reloc{
+		Type: objabi.R_WASMHEAPTYPE,
+		Off:  int32(w.Len()),
+		Siz:  1,
+		Add:  id.VtabTypeIdx,
+	})
+	writeOpcode(w, AStructGet)
+	relocs = append(relocs, obj.Reloc{
+		Type: objabi.R_WASMTYPE,
+		Off:  int32(w.Len()),
+		Siz:  1,
+		Add:  id.VtabTypeIdx,
+	})
+	writeUleb128(w, uint64(id.MethodSlot))
+	// The vtab field at (1 + methodIdx) is typed (ref null
+	// $methodFuncTy) — no anyref→funcref ref.cast needed (and not
+	// permitted by WasmGC: the func and any type hierarchies are
+	// disjoint). call_ref tolerates the nullable shape and traps at
+	// runtime on a null funcref.
+
+	// 4. call_ref $methodFuncTy — pops [funcref, args...] and pushes
+	// [results...].
+	writeOpcode(w, ACallRef)
+	relocs = append(relocs, obj.Reloc{
+		Type: objabi.R_WASMTYPE,
+		Off:  int32(w.Len()),
+		Siz:  1,
+		Add:  id.FuncTypeIdx,
+	})
 
 	w.WriteByte(0x0b) // end
 	s.P = w.Bytes()

@@ -57,8 +57,9 @@ type typeCollector struct {
 	//     the wasm level, so the dispatcher can struct.get the
 	//     vtab without a ref.cast.
 	// See .claude/plans/wasm3-iface-polymorphic-migration.md.
-	ifaceVtabs    map[*types.Type]int            // interface I -> $go.vtab.<I> index
-	ifaceSubtypes map[*types.Type]int            // interface I -> $go.iface.<I> index
+	ifaceVtabs       map[*types.Type]int            // interface I -> $go.vtab.<I> index
+	ifaceSubtypes    map[*types.Type]int            // interface I -> $go.iface.<I> index
+	ifaceMethodFuncs map[*types.Type]int            // interface method Go func type -> anyref-recv funcref type index (phase D step 5)
 	lowered        map[*types.Type][]wasmgc.Field // memoized lowerFields result (deterministic per type; no caller mutates the returned slice)
 	serializedLen  int                            // table length at last writeTable; the table only grows, so a re-serialize is redundant unless it changed
 }
@@ -75,9 +76,10 @@ func newTypeCollector() *typeCollector {
 		funcs:          make(map[*types.Type]int),
 		closureCtxs:    make(map[*types.Type]int),
 		perClosureCtxs: make(map[*obj.LSym]int),
-		ifaceVtabs:     make(map[*types.Type]int),
-		ifaceSubtypes:  make(map[*types.Type]int),
-		lowered:        make(map[*types.Type][]wasmgc.Field),
+		ifaceVtabs:       make(map[*types.Type]int),
+		ifaceSubtypes:    make(map[*types.Type]int),
+		ifaceMethodFuncs: make(map[*types.Type]int),
+		lowered:          make(map[*types.Type][]wasmgc.Field),
 	}
 }
 

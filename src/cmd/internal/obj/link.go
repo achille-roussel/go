@@ -532,6 +532,17 @@ type FuncInfo struct {
 	// accessor LSyms are generated locally per compilation.
 	Wasm3PolyAccessor *Wasm3PolyAccessor
 
+	// Wasm3IfaceDispatch, when non-nil, marks this function as a
+	// hand-synthesised iface method-dispatch trampoline (phase D of
+	// the wasm3 iface migration). The body is emitted by
+	// assembleWasm3IfaceDispatch in obj/wasm/wasm3obj.go. Mirrors
+	// Wasm3PolyAccessor in lifecycle and intent: the trampoline's
+	// wasm body cannot be expressed in Go IR (it does ref.cast +
+	// struct.get + call_ref of a typed funcref pulled from a vtab
+	// struct field), so the SSA pipeline emits a trivial placeholder
+	// body and the assembler swaps in the hand-encoded one.
+	Wasm3IfaceDispatch *Wasm3IfaceDispatch
+
 	sehUnwindInfoSym *LSym
 }
 
@@ -575,6 +586,40 @@ type Wasm3PolyAccessor struct {
 	// instructions; the linker remaps it to the module-wide
 	// type index.
 	ArrayTypeIdx int64
+}
+
+// Wasm3IfaceDispatch describes a per-(I, methodIdx) interface-method
+// dispatch trampoline that the wasm3 backend generates lazily at every
+// OCALLINTER call site. The trampoline's Go signature mirrors the
+// interface method's, with the interface itself as receiver:
+//
+//	func(I, args...) results
+//
+// The emitted wasm body reads the legacy $go.iface (TypeGoIface)
+// struct to extract the vtab anyref from field 0 and the receiver
+// data anyref from field 1, casts the vtab to (ref $go.vtab.<I>),
+// reads the method's funcref slot at vtab field MethodSlot, casts to
+// the method's funcref type, and call_refs it with (data, args...).
+// Body emitted by assembleWasm3IfaceDispatch in obj/wasm/wasm3obj.go.
+type Wasm3IfaceDispatch struct {
+	// IfaceTypeIdx is the per-function wasmgc.Table index of the
+	// legacy $go.iface (TypeGoIface) prelude struct used to project
+	// the vtab and data fields out of the boxed interface value.
+	// Today this is wasmgc.TypeGoIface; the field is kept on the
+	// metadata so the assembler doesn't reach across packages.
+	IfaceTypeIdx int64
+	// VtabTypeIdx is the per-function wasmgc.Table index of the
+	// per-interface $go.vtab.<I> struct the trampoline pulls the
+	// method funcref out of.
+	VtabTypeIdx int64
+	// FuncTypeIdx is the per-function wasmgc.Table index of the
+	// method's funcref type used as the call_ref typeidx immediate
+	// and as the ref.cast target before call_ref.
+	FuncTypeIdx int64
+	// MethodSlot is the vtab field index of the method's funcref —
+	// equal to 1 + methodIdx because field 0 of $go.vtab.<I> is the
+	// shared type-descriptor slot.
+	MethodSlot int64
 }
 
 // JumpTable represents a table used for implementing multi-way

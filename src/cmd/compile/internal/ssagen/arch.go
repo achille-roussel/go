@@ -60,4 +60,14 @@ type ArchInfo struct {
 	// hook attaches. GOARCH=wasm3 uses it to attach the function's
 	// typed-ABI signature, which wasm3PlaceValues and genssa both read.
 	PrepareFunc func(*ir.Func)
+
+	// Wasm3IfaceDispatchTrampoline, if non-nil, is consulted by the
+	// OCALLINTER lowering: it returns the LSym of a per-(I, methodIdx)
+	// hand-assembled trampoline that the wasm3 backend uses in place
+	// of the legacy itab.Fun load + indirect call (phase D step 5 of
+	// the wasm3 iface migration). The trampoline's Go signature is
+	// `func(I, args...) results`; the caller passes the iface itself
+	// as the first arg, replacing the standard rcvr = iface.data
+	// path that getClosureAndRcvr would otherwise build.
+	Wasm3IfaceDispatchTrampoline func(I *types.Type, methodIdx int) *obj.LSym
 }

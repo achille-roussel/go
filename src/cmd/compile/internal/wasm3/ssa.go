@@ -25,6 +25,7 @@ import (
 	"cmd/internal/src"
 	"cmd/internal/wasmgc"
 	"go/constant"
+	"strconv"
 	"sync"
 )
 
@@ -168,6 +169,12 @@ func Init(arch *ssagen.ArchInfo) {
 	// assemble3 then sees the marker and dispatches to
 	// assembleWasm3PolyAccessor, replacing the trivial SSA body.
 	obj.Wasm3SetupPolyAccessor = wasm3SetupPolyAccessor
+
+	// Phase D step 5: route OCALLINTER lowering through a per-(I,
+	// methodIdx) trampoline LSym instead of the legacy
+	// itab.Fun-load + indirect-call sequence. The trampoline body
+	// is hand-assembled by assembleWasm3IfaceDispatch.
+	ssagen.Arch.Wasm3IfaceDispatchTrampoline = wasm3GetOrGenIfaceDispatchTrampoline
 }
 
 // spillArgReg and loadRegResult bridge register-resident arguments and
@@ -4184,28 +4191,206 @@ func wasm3GetOrGenArrayAccessor(elemT *types.Type, isSet bool) *obj.LSym {
 // reference its slot — and (b) installs the Wasm3PolyAccessor on the
 // FuncInfo so the next assemble3 check dispatches to
 // assembleWasm3PolyAccessor. No-op for any other symbol.
+//
+// It also handles iface-dispatch trampolines (phase D step 5): an
+// LSym registered in wasm3IfaceDispatchMetaTable gets its
+// $go.iface / $go.vtab.<I> / method-funcref types registered in
+// the trampoline's own collector and a Wasm3IfaceDispatch installed
+// on its FuncInfo so assemble3 routes to assembleWasm3IfaceDispatch.
 func wasm3SetupPolyAccessor(s *obj.LSym) {
-	mAny, ok := wasm3ArrayAccessorMetaTable.Load(s)
-	if !ok {
+	if mAny, ok := wasm3ArrayAccessorMetaTable.Load(s); ok {
+		m := mAny.(*wasm3ArrayAccessorMeta)
+		fi := s.Func()
+		if fi == nil {
+			// Accessor's compile pass hasn't created the FuncInfo yet.
+			// Shouldn't happen — assemble3 runs after Compile, which
+			// creates FuncInfo unconditionally. Defensive only.
+			return
+		}
+		arrayIdx := wasm3RegisterArrayBacking(fi, m.elemT)
+		elemSize := int(m.elemT.Size())
+		fi.Wasm3PolyAccessor = &obj.Wasm3PolyAccessor{
+			Set:          m.isSet,
+			LeafClass:    m.leaf,
+			ElemSize:     elemSize,
+			Signed:       m.signed,
+			ArrayTypeIdx: int64(arrayIdx),
+		}
 		return
 	}
-	m := mAny.(*wasm3ArrayAccessorMeta)
-	fi := s.Func()
-	if fi == nil {
-		// Accessor's compile pass hasn't created the FuncInfo yet.
-		// Shouldn't happen — assemble3 runs after Compile, which
-		// creates FuncInfo unconditionally. Defensive only.
+	if mAny, ok := wasm3IfaceDispatchMetaTable.Load(s); ok {
+		m := mAny.(*wasm3IfaceDispatchMeta)
+		fi := s.Func()
+		if fi == nil {
+			return
+		}
+		// Register $go.vtab.<I> and the legacy $go.iface prelude type
+		// in this trampoline's own collector — the body emits
+		// R_WASMTYPE / R_WASMHEAPTYPE relocs referencing these slots,
+		// and the linker maps per-function indices to module-global
+		// indices via WasmType.Table. Registering the vtab also
+		// transitively registers each method's anyref-recv funcref
+		// type via collectIfaceMethodFuncSig (so the vtab's field
+		// types resolve), and the trampoline's call_ref reuses the
+		// same funcref-type index for its own method via
+		// wasm3RegisterIfaceMethodFuncSigFor.
+		wasm3EnsureCollector(fi)
+		vtabIdx := wasm3RegisterIfaceVtab(fi, m.I)
+		methods := m.I.AllMethods()
+		if m.methodIdx < 0 || m.methodIdx >= len(methods) {
+			return
+		}
+		funcIdx := wasm3RegisterIfaceMethodFuncSigFor(fi, methods[m.methodIdx].Type)
+		fi.Wasm3IfaceDispatch = &obj.Wasm3IfaceDispatch{
+			IfaceTypeIdx: int64(wasmgc.TypeGoIface),
+			VtabTypeIdx:  int64(vtabIdx),
+			FuncTypeIdx:  int64(funcIdx),
+			MethodSlot:   int64(1 + m.methodIdx),
+		}
 		return
 	}
-	arrayIdx := wasm3RegisterArrayBacking(fi, m.elemT)
-	elemSize := int(m.elemT.Size())
-	fi.Wasm3PolyAccessor = &obj.Wasm3PolyAccessor{
-		Set:          m.isSet,
-		LeafClass:    m.leaf,
-		ElemSize:     elemSize,
-		Signed:       m.signed,
-		ArrayTypeIdx: int64(arrayIdx),
+}
+
+// wasm3IfaceDispatchMeta is the side-table entry for a pending iface-
+// dispatch trampoline. wasm3SetupPolyAccessor uses it to register the
+// vtab and method-funcref types in the trampoline's own collector and
+// install the Wasm3IfaceDispatch metadata on its FuncInfo.
+type wasm3IfaceDispatchMeta struct {
+	I         *types.Type // the interface type the dispatch targets
+	methodIdx int         // position in I.AllMethods() of the selected method
+}
+
+// wasm3IfaceDispatchCache memoises trampoline LSyms keyed on
+// "<I.LinkString>#<methodIdx>" so every OCALLINTER site for a given
+// (I, method) shares one trampoline. Serialization of the DeclFunc
+// path is via the shared reflectdata.Wasm3AccessorMu (also used by
+// wasm3GetOrGenArrayAccessor) — ir.CurFunc and the funcStack are
+// process-globals.
+var wasm3IfaceDispatchCache sync.Map // string -> *obj.LSym
+
+// wasm3IfaceDispatchMetaTable maps each generated trampoline LSym to
+// the meta wasm3SetupPolyAccessor uses to lazily wire it.
+var wasm3IfaceDispatchMetaTable sync.Map // *obj.LSym -> *wasm3IfaceDispatchMeta
+
+// wasm3GetOrGenIfaceDispatchTrampoline returns the obj.LSym of a
+// per-(I, methodIdx) interface-method dispatch trampoline used by the
+// wasm3 lowering of OCALLINTER. Phase D step 5 — see
+// doc/wasm3-iface-poly-derisk.wat and the Wasm3IfaceDispatch
+// docstring in obj/link.go for the body shape.
+//
+// The trampoline's Go signature mirrors the interface method's, with
+// the interface itself as receiver: func(I, args...) results. The
+// trivial Go body (zero-value return) is thrown away at assemble
+// time; assembleWasm3IfaceDispatch hand-encodes the wasm body.
+//
+// FuncInfo wiring (vtab/funcref type registration, install
+// Wasm3IfaceDispatch) is deferred to wasm3SetupPolyAccessor — the
+// trampoline's FuncInfo isn't created until its own compile pass.
+func wasm3GetOrGenIfaceDispatchTrampoline(I *types.Type, methodIdx int) *obj.LSym {
+	cacheKey := I.LinkString() + "#" + strconv.Itoa(methodIdx)
+	if cached, ok := wasm3IfaceDispatchCache.Load(cacheKey); ok {
+		return cached.(*obj.LSym)
 	}
+	reflectdata.Wasm3AccessorMu.Lock()
+	defer reflectdata.Wasm3AccessorMu.Unlock()
+	if cached, ok := wasm3IfaceDispatchCache.Load(cacheKey); ok {
+		return cached.(*obj.LSym)
+	}
+
+	methods := I.AllMethods()
+	if methodIdx < 0 || methodIdx >= len(methods) {
+		base.Fatalf("wasm3GetOrGenIfaceDispatchTrampoline: methodIdx %d out of range for %v", methodIdx, I)
+	}
+	method := methods[methodIdx]
+	mft := method.Type
+	if mft == nil || mft.Kind() != types.TFUNC {
+		base.Fatalf("wasm3GetOrGenIfaceDispatchTrampoline: method %v has no func type", method)
+	}
+
+	// Build the trampoline's Go signature: receiver = I, plus the
+	// method's own params, returning the method's own results. Use
+	// the method type's Params/Results directly — they already
+	// exclude the abstract receiver slot.
+	pos := base.AutogeneratedPos
+	base.Pos = pos
+	var params []*types.Field
+	params = append(params, types.NewField(pos, typecheck.Lookup("iface"), I))
+	for i, p := range mft.Params() {
+		name := typecheck.Lookup("a" + strconv.Itoa(i))
+		params = append(params, types.NewField(pos, name, p.Type))
+	}
+	var results []*types.Field
+	for _, r := range mft.Results() {
+		results = append(results, types.NewField(pos, nil, r.Type))
+	}
+
+	// Symbol name: ".ifacedispatch.w3.<I-linkstring>#<methodIdx>". The
+	// leading dot keeps it out of the user namespace and matches the
+	// array-accessor convention.
+	sym := types.TypeSymLookup(".ifacedispatch.w3." + cacheKey)
+	if sym.Def != nil {
+		ls := sym.Def.(*ir.Name).Func.Linksym()
+		wasm3IfaceDispatchCache.Store(cacheKey, ls)
+		return ls
+	}
+	fn := ir.NewFunc(pos, pos, sym, types.NewSignature(nil, params, results))
+	sym.Def = fn.Nname
+	fn.Pragma |= ir.Noinline
+	typecheck.DeclFunc(fn)
+	// Trivial body — assemble3's Wasm3IfaceDispatch dispatch replaces
+	// the actual emission, so the SSA-compiled output is thrown away.
+	// Same NON-EMPTY-body invariant as wasm3GetOrGenArrayAccessor: an
+	// empty body means enqueueFunc skips compilation and assemble3
+	// never runs. Use zero-value returns for every result.
+	if len(results) == 0 {
+		fn.Body.Append(ir.NewReturnStmt(pos, nil))
+	} else {
+		zs := make([]ir.Node, 0, len(results))
+		for _, r := range results {
+			zs = append(zs, wasm3ZeroValueForReturn(pos, r.Type))
+		}
+		fn.Body.Append(ir.NewReturnStmt(pos, zs))
+	}
+	typecheck.FinishFuncBody()
+	fn.SetDupok(true)
+	ir.WithFunc(fn, func() { typecheck.Stmts(fn.Body) })
+	fn.SetNilCheckDisabled(true)
+
+	ls := fn.Linksym()
+	wasm3IfaceDispatchMetaTable.Store(ls, &wasm3IfaceDispatchMeta{
+		I:         I,
+		methodIdx: methodIdx,
+	})
+	wasm3IfaceDispatchCache.Store(cacheKey, ls)
+	return ls
+}
+
+// wasm3ZeroValueForReturn returns an ir.Node holding the zero value
+// of t for use in the synthesised trampoline body's return statement.
+// The body is thrown away at assemble time, so it only has to type-
+// check and trip enqueueFunc into compiling the function. nil for
+// reference-shaped Go kinds (pointer/interface/slice/string/map/chan/
+// func), 0 for integers/booleans, 0.0 for floats; composite types
+// (struct/array) get a composite literal of zero leaves.
+func wasm3ZeroValueForReturn(pos src.XPos, t *types.Type) ir.Node {
+	switch {
+	case t.IsFloat():
+		return ir.NewBasicLit(pos, t, constant.MakeFloat64(0))
+	case t.IsString():
+		return ir.NewBasicLit(pos, t, constant.MakeString(""))
+	case t.IsBoolean():
+		return ir.NewBasicLit(pos, t, constant.MakeBool(false))
+	case t.IsInteger():
+		return ir.NewInt(pos, 0)
+	case t.IsPtr() || t.IsUnsafePtr() || t.IsInterface() || t.IsSlice() ||
+		t.IsMap() || t.IsChan() || t.Kind() == types.TFUNC:
+		return typecheck.NodNil()
+	}
+	// Composite (struct, array): a typed nil-ish composite literal of
+	// the type. Use NewCompLitExpr with no fields — the typechecker
+	// expands it to a zero value.
+	cl := ir.NewCompLitExpr(pos, ir.OCOMPLIT, t, nil)
+	return cl
 }
 
 // wasm3PtrField emits the read of field `field` of the

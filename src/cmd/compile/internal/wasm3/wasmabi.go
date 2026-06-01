@@ -1422,11 +1422,17 @@ func (c *typeCollector) collectIfaceVtabType(I *types.Type) int {
 }
 
 // collectIfaceSubtype reserves and returns the table index of the
-// $go.iface.<I> wasmgc subtype of $go.eface for interface I.
-// Layout: type descriptor + data inherited from $go.eface, plus a
-// vtab field typed (ref $go.vtab.<I>). Iface values of static
-// interface type I are typed as (ref $go.iface.<I>) so the
-// dispatcher can struct.get the vtab without a ref.cast.
+// $go.iface.<I> wasmgc subtype of $go.object for interface I.
+// Layout is the canonical two-field interface shape:
+//
+//	$go.iface.<I> = (sub $go.object (struct
+//	                                  anyref data,
+//	                                  (ref $go.vtab.<I>) vtab))
+//
+// No separate type-descriptor field — type identity IS the vtab
+// pointer (the per-(I,T) module-global singleton). Type assertion
+// `x.(T)` lowers to `ref.eq iface.vtab against $vtab.<I>.<T>`.
+// Method dispatch reads vtab[methodIdx] via struct.get + call_ref.
 func (c *typeCollector) collectIfaceSubtype(I *types.Type) int {
 	if I.Kind() != types.TINTER {
 		panic("wasm3: collectIfaceSubtype on non-interface type " + I.Kind().String())
@@ -1440,11 +1446,10 @@ func (c *typeCollector) collectIfaceSubtype(I *types.Type) int {
 	c.table = append(c.table, wasmgc.Type{
 		Name:  "go.iface." + typeName(I),
 		Kind:  wasmgc.KindStruct,
-		Super: wasmgc.TypeGoEface,
+		Super: wasmgc.TypeGoObject,
 		Fields: []wasmgc.Field{
-			{Storage: wasmgc.RefStorage(wasmgc.TypeGoObject, true)}, // 0: type descriptor (inherited)
-			{Storage: wasmgc.AnyRefStorage()},                       // 1: data (inherited)
-			{Storage: wasmgc.RefStorage(vtabIdx, false)},            // 2: vtab — typed
+			{Storage: wasmgc.AnyRefStorage()},            // 0: data (boxed receiver)
+			{Storage: wasmgc.RefStorage(vtabIdx, false)}, // 1: vtab (per-(I,T) singleton)
 		},
 	})
 	return idx

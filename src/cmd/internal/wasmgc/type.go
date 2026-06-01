@@ -212,44 +212,42 @@ const (
 
 	// Polymorphic interface type system (M5 iface migration,
 	// doc/wasm3-iface-poly-derisk.wat de-risk). Mirrors the
-	// $go.ptr.poly design landed for *T values:
+	// $go.ptr.poly design landed for *T values.
 	//
-	//   - TypeGoEface — the polymorphic interface BASE: a struct
-	//     {type descriptor (ref null $go.object), data anyref}.
-	//     Used directly for empty interface (interface{} / any).
-	//     The type-descriptor field is (ref null $go.object) NOT
-	//     anyref because Go's type-assertion lowering on wasm3
-	//     compares descriptors via ref.eq, and ref.eq requires
-	//     eqref-compatible operands — struct refs are eqref-
-	//     compatible while bare anyref is not. The derisk WAT
-	//     verifies this; getting it wrong on the existing
-	//     TypeGoIface is the root cause of the "i64 vs anyref"
-	//     codegen bugs in printpanicval / growslice / Stringer
-	//     dispatch surfaced by the stdlib probe.
+	// TypeGoVtab is the empty base for per-(I) vtab struct types.
+	// Program-specific $go.vtab.<I> structs subtype it, adding one
+	// funcref field per interface method (in I.AllMethods order).
+	// Per-(I,T) vtab instances are module-level WasmGC global
+	// singletons built via struct.new in the global's initializer
+	// — one allocation per (I,T) pair, shared across every iface
+	// value of that pair.
 	//
-	//   - TypeGoVtab — base for per-(I) vtab struct types. An
-	//     empty (sub $go.object struct) that program-specific
-	//     $go.vtab.<I> structs subtype, adding one funcref field
-	//     per interface method. Per-(I,T) vtab instances are
-	//     module-level WasmGC global singletons built via
-	//     struct.new in the global's initializer — one allocation
-	//     per (I,T) pair, shared across every iface value of that
-	//     pair.
+	// Per-interface $go.iface.<I> subtypes are generated dynamically
+	// per program by the wasm3 backend (collectIfaceSubtype). Their
+	// layout is the canonical two-field interface shape:
 	//
-	// Per-interface $go.iface.<I> subtypes (extending TypeGoEface
-	// with a typed vtab field) and $go.vtab.<I> subtypes
-	// (extending TypeGoVtab with the per-method funcref fields)
-	// are generated DYNAMICALLY per program by the wasm3 backend
-	// — same lazy-type-collector mechanism that emits per-T
-	// closure-ctx + map / chan / array-backing subtypes today.
+	//   $go.iface.<I> = (sub $go.object (struct
+	//                                     anyref data,
+	//                                     (ref $go.vtab.<I>) vtab))
 	//
-	// Phase A (this commit): prelude additions only — no consumer
-	// changes; the existing TypeGoIface remains in place. Phase B
-	// migrates *_type to a wasmgc ref, phase C generates per-(I,T)
-	// vtabs, phase D switches method dispatch to call_ref through
-	// the new shape. See .claude/plans/wasm3-iface-polymorphic-migration.md.
-	TypeGoEface // go.eface: (sub go.object (struct (ref null go.object) type, anyref data))
-	TypeGoVtab  // go.vtab:  (sub go.object (struct)) — base for per-interface vtab subtypes
+	// No separate type-descriptor field — type identity IS the
+	// vtab pointer (the per-(I,T) singleton global). Type
+	// assertions lower to `ref.eq iface.vtab against $vtab.<I>.<T>`.
+	// Method dispatch: `struct.get iface.vtab method_index;
+	// struct.get iface.data; call_ref`. Nil-interface check:
+	// ref.is_null on the iface ref OR on iface.vtab.
+	//
+	// Empty interface (interface{} / any) uses the same shape with
+	// a marker vtab whose struct is empty (no methods). Per-(any,T)
+	// vtab singletons are still generated — they're the type
+	// identity for assertions like `x.(string)`.
+	//
+	// Note: the existing TypeGoIface (legacy {itab anyref, data
+	// anyref} layout) is preserved through phase C; phase D
+	// switches call sites that currently use it over to the new
+	// $go.iface.<I> shape. Once all sites migrate TypeGoIface can
+	// be removed entirely.
+	TypeGoVtab // go.vtab:  (sub go.object (struct)) — base for per-interface vtab subtypes
 
 	NumPreludeTypes
 )
@@ -550,33 +548,21 @@ func PreludeTypes() []Type {
 	defPolyPtrFamily(TypeGoRefClassF32, TypeGoPtrPolyF32, TypeGoGetterF32, TypeGoSetterF32, "f32")
 	defPolyPtrFamily(TypeGoRefClassF64, TypeGoPtrPolyF64, TypeGoGetterF64, TypeGoSetterF64, "f64")
 
-	// Polymorphic interface base types (M5 iface migration phase A).
+	// Polymorphic interface vtab base (M5 iface migration phase A).
 	// See doc/wasm3-iface-poly-derisk.wat for the validated shape.
 	//
-	// $go.eface — the polymorphic interface BASE / empty interface
-	// (interface{} / any). Two fields: a type-descriptor ref (eqref-
-	// compatible via the struct-ref shape so ref.eq works for type
-	// assertions) and the boxed data anyref. Per-(I) subtypes
-	// emitted by the wasm3 backend extend this with a typed vtab
-	// field; the type-descriptor + data inherited slots stay at
-	// offsets 0/1 so common-path access works across all interface
-	// shapes.
-	t[TypeGoEface] = Type{
-		Name:  "go.eface",
-		Kind:  KindStruct,
-		Super: TypeGoObject,
-		Fields: []Field{
-			{Storage: RefStorage(TypeGoObject, true)}, // 0: type descriptor (ref null $go.object)
-			{Storage: AnyRefStorage()},                // 1: data
-		},
-	}
-
 	// $go.vtab — empty base for per-(I) vtab struct subtypes. The
 	// per-interface $go.vtab.<I> structs emitted by the wasm3
 	// backend subtype this with one funcref field per interface
 	// method, in the order the compiler assigns. Per-(I,T) vtab
 	// instances are module-level global singletons (struct.new in
 	// the global's initializer).
+	//
+	// The per-(I,T) vtab IS the type identity for an iface value —
+	// type assertions ref.eq against the target T's vtab global.
+	// No separate type-descriptor type is needed in the prelude;
+	// the $go.iface.<I> struct directly stores (data, vtab) with
+	// no extra fields.
 	t[TypeGoVtab] = Type{
 		Name:  "go.vtab",
 		Kind:  KindStruct,

@@ -81,8 +81,10 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 	//     references the vtable struct (one-way), the vtable holds
 	//     the existing legacy TypeGoGetter<X>/TypeGoSetter<X>
 	//     funcrefs — no cycle, all singletons.
-	// Total: 26 + 8 + 2 = 36 rec groups (the +2 covers the M5
-	// polymorphic interface base types $go.eface + $go.vtab).
+	// Total: 26 + 8 + 1 = 35 rec groups (the +1 covers the M5
+	// polymorphic interface vtab base $go.vtab; per-(I) subtypes
+	// are dynamic, no per-type prelude entry; $go.iface.<I>
+	// subtypes $go.object directly).
 	// Typed-ref heap references emit the plain (non-exact) encoding
 	// (0x64 / 0x63 followed by typeidx) — the exact-heap-type prefix
 	// opExactHeap=0x62 was dropped to match wasmfxtime / wasmparser
@@ -90,7 +92,7 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 	// heaptype helper in typesec.go for rationale. Pin the exact
 	// bytes — this is the module preamble every wasm3 binary starts with.
 	want := []byte{
-		0x24, // 36 rec groups
+		0x23, // 35 rec groups
 
 		// rec { go.object }: sub, 0 supertypes, struct with 0 fields.
 		opRec, 0x01,
@@ -226,19 +228,14 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 		// ptr.poly.f64: sub go.object, struct {(ref refclass.f64=0x20), anyref, i32}
 		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x03, opRef, 0x20, fieldConst, valAnyref, fieldConst, valI32, fieldConst,
 
-		// Polymorphic interface base types (M5 iface migration phase A,
-		// doc/wasm3-iface-poly-derisk.wat). Indices:
-		//   go.eface=34 (0x22), go.vtab=35 (0x23).
+		// Polymorphic interface vtab base (M5 iface migration phase A,
+		// doc/wasm3-iface-poly-derisk.wat). Index: go.vtab=34 (0x22).
 		//
-		// go.eface: sub go.object, struct {(ref null go.object=0x00), anyref}
-		// — the type-descriptor field is (ref null $go.object) NOT anyref
-		// because Go type-assertion lowering on wasm3 uses ref.eq which
-		// requires eqref-compatible operands.
-		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02, opRefNull, 0x00, fieldConst, valAnyref, fieldConst,
-
 		// go.vtab: sub go.object, struct {} — empty base for per-(I)
-		// vtab subtypes; per-interface $go.vtab.<I> subtypes will add
-		// one funcref field per interface method.
+		// vtab subtypes. Per-interface $go.vtab.<I> subtypes add one
+		// funcref field per interface method. The vtab pointer IS
+		// the type identity for an iface value; there's no separate
+		// type-descriptor prelude type.
 		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x00,
 	}
 	if !bytes.Equal(payload, want) {

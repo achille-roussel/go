@@ -494,6 +494,74 @@ func wasm3RegisterClosureCtx(fi *obj.FuncInfo, ft *types.Type) uint32 {
 	return uint32(idx)
 }
 
+// wasm3RegisterIfaceVtab registers the per-interface $go.vtab.<I>
+// wasmgc struct type for interface I in fi's collector and returns
+// its module-internal type index. Each (I,T) pair phase D emits as
+// a module-level global is typed as (ref $go.vtab.<I>); the global's
+// initializer is a struct.new $go.vtab.<I> with the per-T method
+// funcrefs in the order returned by I.AllMethods().
+//
+// Phase C: the type is registered with anyref-typed fields as a
+// structural placeholder — phase D's dispatch wire-up will refine
+// each field to the method's specific funcref type so call_ref can
+// dispatch directly. The struct shape (sub $go.vtab, one field per
+// method, in canonical-method-set order) is the stable contract;
+// only the per-field ref types change between C and D.
+//
+// Idempotent: repeated calls for the same interface I return the
+// cached index.
+func wasm3RegisterIfaceVtab(fi *obj.FuncInfo, I *types.Type) uint32 {
+	if fi == nil {
+		base.Fatalf("wasm3RegisterIfaceVtab: fi is nil")
+	}
+	if !I.IsInterface() {
+		base.Fatalf("wasm3RegisterIfaceVtab: %v is not an interface", I)
+	}
+	cAny, ok := wasm3LiveCollector.Load(fi)
+	var c *typeCollector
+	if ok {
+		c = cAny.(*typeCollector)
+	} else {
+		c = newTypeCollector()
+		wasm3LiveCollector.Store(fi, c)
+		if fi.WasmType == nil {
+			fi.WasmType = &obj.WasmType{}
+		}
+	}
+	idx := c.collectIfaceVtabType(I)
+	c.writeTable(fi)
+	return uint32(idx)
+}
+
+// wasm3RegisterIfaceSubtype registers the per-interface $go.iface.<I>
+// subtype of $go.eface in fi's collector and returns its index. Iface
+// values whose static type is interface I lower to (ref $go.iface.<I>)
+// at the wasm level; the dispatcher reads vtab without a ref.cast.
+//
+// Idempotent: repeated calls for the same I return the cached index.
+func wasm3RegisterIfaceSubtype(fi *obj.FuncInfo, I *types.Type) uint32 {
+	if fi == nil {
+		base.Fatalf("wasm3RegisterIfaceSubtype: fi is nil")
+	}
+	if !I.IsInterface() {
+		base.Fatalf("wasm3RegisterIfaceSubtype: %v is not an interface", I)
+	}
+	cAny, ok := wasm3LiveCollector.Load(fi)
+	var c *typeCollector
+	if ok {
+		c = cAny.(*typeCollector)
+	} else {
+		c = newTypeCollector()
+		wasm3LiveCollector.Store(fi, c)
+		if fi.WasmType == nil {
+			fi.WasmType = &obj.WasmType{}
+		}
+	}
+	idx := c.collectIfaceSubtype(I)
+	c.writeTable(fi)
+	return uint32(idx)
+}
+
 // wasm3RegisterPerClosureCtx registers a per-closure subtype of the
 // per-signature closureCtx, with `captureTypes`'s wasm storages
 // appended after the legacy (funcref, captures-ptr-i64) fields.
@@ -1317,6 +1385,71 @@ func wasmFuncTypeStorage(f obj.WasmField) wasmgc.Storage {
 // struct, ...) fall outside the path and the caller is responsible
 // for routing them through the legacy heap-captures route instead.
 // That refusal happens at the wasm3 walk-pass site, not here — by
+// collectIfaceVtabType reserves and returns the table index of the
+// $go.vtab.<I> wasmgc struct for interface I. The struct subtypes
+// $go.vtab (the empty base prelude type) and has one field per
+// method of I, in I.AllMethods order.
+//
+// Phase C: field storage is anyref for every method slot — a
+// placeholder shape that's structurally valid and allows the
+// linker to lay out the type table. Phase D narrows each field to
+// the method's specific funcref type so the dispatch path can
+// call_ref through the field directly.
+func (c *typeCollector) collectIfaceVtabType(I *types.Type) int {
+	if I.Kind() != types.TINTER {
+		panic("wasm3: collectIfaceVtabType on non-interface type " + I.Kind().String())
+	}
+	if idx, ok := c.ifaceVtabs[I]; ok {
+		return idx
+	}
+	methods := I.AllMethods()
+	fields := make([]wasmgc.Field, len(methods))
+	for i := range methods {
+		// Phase C placeholder: anyref slot. Phase D will replace
+		// this with (ref $methodfunc.<I>.<M>) once collectSignature
+		// supports the anyref-receiver prepended method ABI.
+		fields[i] = wasmgc.Field{Storage: wasmgc.AnyRefStorage()}
+	}
+	idx := len(c.table)
+	c.ifaceVtabs[I] = idx
+	c.table = append(c.table, wasmgc.Type{
+		Name:   "go.vtab." + typeName(I),
+		Kind:   wasmgc.KindStruct,
+		Super:  wasmgc.TypeGoVtab,
+		Fields: fields,
+	})
+	return idx
+}
+
+// collectIfaceSubtype reserves and returns the table index of the
+// $go.iface.<I> wasmgc subtype of $go.eface for interface I.
+// Layout: type descriptor + data inherited from $go.eface, plus a
+// vtab field typed (ref $go.vtab.<I>). Iface values of static
+// interface type I are typed as (ref $go.iface.<I>) so the
+// dispatcher can struct.get the vtab without a ref.cast.
+func (c *typeCollector) collectIfaceSubtype(I *types.Type) int {
+	if I.Kind() != types.TINTER {
+		panic("wasm3: collectIfaceSubtype on non-interface type " + I.Kind().String())
+	}
+	if idx, ok := c.ifaceSubtypes[I]; ok {
+		return idx
+	}
+	vtabIdx := c.collectIfaceVtabType(I)
+	idx := len(c.table)
+	c.ifaceSubtypes[I] = idx
+	c.table = append(c.table, wasmgc.Type{
+		Name:  "go.iface." + typeName(I),
+		Kind:  wasmgc.KindStruct,
+		Super: wasmgc.TypeGoEface,
+		Fields: []wasmgc.Field{
+			{Storage: wasmgc.RefStorage(wasmgc.TypeGoObject, true)}, // 0: type descriptor (inherited)
+			{Storage: wasmgc.AnyRefStorage()},                       // 1: data (inherited)
+			{Storage: wasmgc.RefStorage(vtabIdx, false)},            // 2: vtab — typed
+		},
+	})
+	return idx
+}
+
 // the time collectPerClosureCtx is called, the captures are
 // guaranteed scalar.
 func (c *typeCollector) collectPerClosureCtx(sym *obj.LSym, ft *types.Type, captureTypes []*types.Type) int {

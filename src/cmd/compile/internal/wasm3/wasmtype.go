@@ -42,6 +42,23 @@ type typeCollector struct {
 	funcs          map[*types.Type]int // Go func type -> func-type table index
 	closureCtxs    map[*types.Type]int // Go func type -> per-signature closure-struct table index
 	perClosureCtxs map[*obj.LSym]int              // closure body LSym -> per-closure closure-struct subtype index (doc/wasm3-m3-captures-in-struct.md)
+	// Polymorphic interface migration phase C. For each interface
+	// type I the program uses, we emit:
+	//   * one $go.vtab.<I> wasmgc struct (sub $go.vtab) with one
+	//     funcref field per interface method, in the order the
+	//     compiler's method-set walk produces them. Each (I,T) pair
+	//     gets a module-level global instance of this struct
+	//     initialised with T's per-method bound funcrefs (phase D
+	//     wires the iface dispatch through these).
+	//   * one $go.iface.<I> wasmgc struct (sub $go.eface) that
+	//     adds a (ref $go.vtab.<I>) field after the inherited
+	//     {type descriptor, data} pair. Iface values of static
+	//     interface type I are typed as (ref $go.iface.<I>) at
+	//     the wasm level, so the dispatcher can struct.get the
+	//     vtab without a ref.cast.
+	// See .claude/plans/wasm3-iface-polymorphic-migration.md.
+	ifaceVtabs    map[*types.Type]int            // interface I -> $go.vtab.<I> index
+	ifaceSubtypes map[*types.Type]int            // interface I -> $go.iface.<I> index
 	lowered        map[*types.Type][]wasmgc.Field // memoized lowerFields result (deterministic per type; no caller mutates the returned slice)
 	serializedLen  int                            // table length at last writeTable; the table only grows, so a re-serialize is redundant unless it changed
 }
@@ -58,6 +75,8 @@ func newTypeCollector() *typeCollector {
 		funcs:          make(map[*types.Type]int),
 		closureCtxs:    make(map[*types.Type]int),
 		perClosureCtxs: make(map[*obj.LSym]int),
+		ifaceVtabs:     make(map[*types.Type]int),
+		ifaceSubtypes:  make(map[*types.Type]int),
 		lowered:        make(map[*types.Type][]wasmgc.Field),
 	}
 }

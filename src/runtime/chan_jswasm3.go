@@ -166,6 +166,23 @@ func wasm3SelectYield() {
 	wasm.SleepMs(1)
 }
 
+// wasm3SelectStart returns a pseudo-random offset in [0, n) used to
+// rotate per-case polling order in multi-case selects. The Go spec
+// requires uniform pseudo-random selection when multiple cases can
+// proceed; without rotation, a deterministic source-order poll
+// would starve later cases (e.g. `case <-ticker.C` always winning
+// over `case <-stop`). Same LCG used by wasm3MapRandStart.
+var wasm3SelectCounter uint64
+
+//go:noinline
+func wasm3SelectStart(n int32) int32 {
+	if n <= 0 {
+		return 0
+	}
+	wasm3SelectCounter += 0x9e3779b97f4a7c15
+	return int32(wasm3SelectCounter % uint64(n))
+}
+
 // wasm3ChanClose implements the close(c) builtin on wasm3. Marks
 // the chan closed and wakes any parked sender / receiver so they
 // can observe the close in their re-checked loop bodies.

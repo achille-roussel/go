@@ -327,98 +327,196 @@ func walkSelectCases(cases []*ir.CommClause) []ir.Node {
 }
 
 // walkSelectCasesWasm3Multi lowers a multi-case select on GOARCH=wasm3
-// by emitting a polling for-loop that tries each case non-blocking
-// via the per-T trampolines, falls back to a wasm.SleepMs(1) yield
-// when nothing is ready, and dispatches the matched case body inside
-// the loop (so a user's `break` inside a case body breaks the
-// for-loop = the select). Default case becomes the no-ready fallback.
+// using a dispatch-after-poll pattern with rotated case order for
+// Go-spec-required pseudo-random selection.
 //
-// Cases are tried top-to-bottom; the first ready one wins. No
-// randomisation (real Go select randomises to prevent starvation).
+// Phase 1 (poll): try each case via its per-T non-blocking trampoline,
+// in a rotated order chosen by wasm3SelectStart(N). The first ready
+// case sets `chosen` to its index; subsequent tries in the rotation
+// short-circuit so we never commit two trampolines per round.
 //
-// Shape (3 cases, no default):
+// Phase 2 (dispatch): an if-chain on `chosen` runs the matching case
+// body. Recv-case bodies get prepended assignments from per-case
+// (vTmp_i, okTmp_i) temps the poll phase populated.
 //
-//	for {
-//	    if wasm3SelectNbSend.T0(c0, e0) { BODY0; break }
-//	    v1, sel1, ok1 := wasm3SelectNbRecv.T1(c1)
-//	    if sel1 { user_v1 = v1; user_ok1 = ok1; BODY1; break }
-//	    if wasm3SelectNbSend.T2(c2, e2) { BODY2; break }
-//	    wasm.SleepMs(1)
+// No-default form wraps phase 1 in a `for chosen<0 { ... ; yield }`
+// loop so unsuccessful rounds yield via wasm.SleepMs(1) and re-poll.
+// With-default form runs phase 1 once; if `chosen<0` after, the
+// default body runs.
+//
+// Shape (no-default):
+//
+//	chosen := int32(-1)
+//	for chosen < 0 {
+//	    switch wasm3SelectStart(N) {
+//	    case 0: try0; if chosen>=0 break; try1; if chosen>=0 break; ...
+//	    case 1: try1; if chosen>=0 break; try2; ...
+//	    ...
+//	    }
+//	    if chosen < 0 { wasm3SelectYield() }
 //	}
+//	if chosen == 0 { user_v0 = vTmp0; ...; BODY0; break }
+//	if chosen == 1 { user_v1 = vTmp1; ...; BODY1; break }
+//	...
 //
-// With default:
-//
-//	for {
-//	    ... try each case ...
-//	    DEFAULT_BODY; break
-//	}
+// With-default: same phase 1 (single iteration, no loop / no yield);
+// an extra `if chosen == -1 { DFLT; break }` precedes the dispatch.
 func walkSelectCasesWasm3Multi(cases []*ir.CommClause, dflt *ir.CommClause) []ir.Node {
 	var init []ir.Node
+	pos := base.Pos
 
-	// `done` is the "we picked a case" flag — false initially, set
-	// true at the end of any case body that fires. Each per-case
-	// nested SelectStmt is gated by `if !done { … }`, so once any
-	// case succeeds the rest short-circuit.
-	doneVar := typecheck.TempAt(base.Pos, ir.CurFunc, types.Types[types.TBOOL])
-	init = append(init, typecheck.Stmt(ir.NewAssignStmt(base.Pos, doneVar, nil)))
+	// chosen := int32(-1). The poll phase sets chosen to a case index
+	// on success; the dispatch phase reads it.
+	int32T := types.Types[types.TINT32]
+	chosenVar := typecheck.TempAt(pos, ir.CurFunc, int32T)
+	init = append(init, typecheck.Stmt(ir.NewAssignStmt(pos, chosenVar, ir.NewInt(pos, -1))))
 
-	// Build sequential per-case attempts. Each one is a synthesised
-	// 2-case-default SelectStmt (which goes through walkSelectCases'
-	// proven 2-case-default emission path) wrapped in `if !done`.
-	var perIter ir.Nodes
+	type caseInfo struct {
+		idx     int          // index among non-default cases
+		cas     *ir.CommClause
+		isSend  bool
+		chType  *types.Type
+		ch      ir.Node
+		sendVal ir.Node // OSEND
+		userV   ir.Node // OSELRECV2
+		userOk  ir.Node // OSELRECV2
+		vTmp    ir.Node // populated on recv success
+		okTmp   ir.Node // populated on recv success
+	}
+	var infos []caseInfo
 	for _, cas := range cases {
 		n := cas.Comm
 		if n == nil {
-			continue // default handled after the per-case sweep
+			continue
 		}
-		// Augment the case body with `done = true` so subsequent
-		// gates short-circuit. cas.Body.Take() empties cas.Body;
-		// the caller (walkSelect) does not re-read it after we
-		// return.
-		bodyWithDone := append([]ir.Node(cas.Body.Take()),
-			typecheck.Stmt(ir.NewAssignStmt(base.Pos, doneVar, ir.NewBool(base.Pos, true))))
+		ci := caseInfo{idx: len(infos), cas: cas}
+		switch n.Op() {
+		case ir.OSEND:
+			s := n.(*ir.SendStmt)
+			ci.isSend = true
+			ci.ch = s.Chan
+			ci.chType = s.Chan.Type()
+			ci.sendVal = s.Value
+		case ir.OSELRECV2:
+			a := n.(*ir.AssignListStmt)
+			recv := a.Rhs[0].(*ir.UnaryExpr)
+			ci.ch = recv.X
+			ci.chType = recv.X.Type()
+			ci.userV = a.Lhs[0]
+			ci.userOk = a.Lhs[1]
+			elem := ci.chType.Elem()
+			ci.vTmp = typecheck.TempAt(pos, ir.CurFunc, elem)
+			ci.okTmp = typecheck.TempAt(pos, ir.CurFunc, types.Types[types.TBOOL])
+			// Zero vTmp so SSA liveness sees a write before any
+			// dispatch-branch read.
+			init = append(init, typecheck.Stmt(ir.NewAssignStmt(pos, ci.vTmp, nil)))
+		default:
+			base.Fatalf("walkSelectCasesWasm3Multi: unexpected case op %v", n.Op())
+		}
+		infos = append(infos, ci)
+	}
+	N := len(infos)
 
-		// Build: select { case <original-comm>: bodyWithDone; default: }
-		synthCase := ir.NewCommStmt(base.Pos, n, bodyWithDone)
-		dfltCase := ir.NewCommStmt(base.Pos, nil, nil)
-		synthSel := ir.NewSelectStmt(base.Pos, []*ir.CommClause{synthCase, dfltCase})
-
-		// Lower via walkSelectCases directly (NOT walkSelect — that
-		// would call walkStmtList over the case bodies which were
-		// already typechecked by the outer walkSelect; re-walking
-		// hits ir.ORESULT temps the walker doesn't recognise).
-		// walkSelectCases takes the 2-case-default fast path for the
-		// synthCase + dfltCase shape and produces the if/else IR
-		// shape the obj backend's CFG analyser is known to accept.
-		synthIR := walkSelectCases([]*ir.CommClause{synthCase, dfltCase})
-
-		// if !done { <synthIR> }
-		notDone := ir.NewUnaryExpr(base.Pos, ir.ONOT, doneVar)
-		perIter.Append(typecheck.Stmt(ir.NewIfStmt(base.Pos, notDone, synthIR, nil)))
-		_ = synthSel // synthSel only built to group CommClauses; Compiled unused
+	// tryBlock builds the (trampoline-call + set-chosen) IR for one
+	// case, with NO body. Returns a slice of statements.
+	tryBlock := func(ci caseInfo) []ir.Node {
+		var out []ir.Node
+		chArg := ir.NewConvExpr(pos, ir.OCONVNOP, types.Types[types.TUNSAFEPTR], ci.ch)
+		chArg.SetTypecheck(1)
+		if ci.isSend {
+			trampoline := reflectdata.SelectNbSendFuncWasm3(ci.chType)
+			var cinit ir.Nodes
+			call := mkcall1(trampoline.Nname, types.Types[types.TBOOL], &cinit, chArg, ci.sendVal)
+			out = append(out, cinit...)
+			setChosen := typecheck.Stmt(ir.NewAssignStmt(pos, chosenVar, ir.NewInt(pos, int64(ci.idx))))
+			out = append(out, typecheck.Stmt(ir.NewIfStmt(pos, call, []ir.Node{setChosen}, nil)))
+		} else {
+			trampoline := reflectdata.SelectNbRecvFuncWasm3(ci.chType)
+			fn := trampoline.Nname
+			selTmp := typecheck.TempAt(pos, ir.CurFunc, types.Types[types.TBOOL])
+			var cinit ir.Nodes
+			call := mkcall1(fn, fn.Type().ResultsTuple(), &cinit, chArg)
+			out = append(out, cinit...)
+			out = append(out, typecheck.Stmt(ir.NewAssignListStmt(pos, ir.OAS2,
+				[]ir.Node{ci.vTmp, selTmp, ci.okTmp}, []ir.Node{call})))
+			setChosen := typecheck.Stmt(ir.NewAssignStmt(pos, chosenVar, ir.NewInt(pos, int64(ci.idx))))
+			out = append(out, typecheck.Stmt(ir.NewIfStmt(pos, selTmp, []ir.Node{setChosen}, nil)))
+		}
+		return out
 	}
 
+	// Build the per-rotation switch arms. Arm R tries cases in order
+	// R, R+1, ..., (R-1) mod N. After each non-final try, an
+	// `if chosen>=0 { break }` short-circuits the rest of this arm
+	// (the break breaks the switch, not anything outer).
+	var swCases []*ir.CaseClause
+	for r := 0; r < N; r++ {
+		var arm ir.Nodes
+		for off := 0; off < N; off++ {
+			k := (r + off) % N
+			arm.Append(tryBlock(infos[k])...)
+			if off < N-1 {
+				ge := ir.NewBinaryExpr(pos, ir.OGE, chosenVar, ir.NewInt(pos, 0))
+				brk := ir.NewBranchStmt(pos, ir.OBREAK, nil)
+				arm.Append(typecheck.Stmt(ir.NewIfStmt(pos, ge, []ir.Node{brk}, nil)))
+			}
+		}
+		swCases = append(swCases, ir.NewCaseStmt(pos, []ir.Node{ir.NewInt(pos, int64(r))}, arm))
+	}
+
+	// startVar := wasm3SelectStart(N)
+	startVar := typecheck.TempAt(pos, ir.CurFunc, int32T)
+	var startInit ir.Nodes
+	startCall := mkcall("wasm3SelectStart", int32T, &startInit, ir.NewInt(pos, int64(N)))
+	startInit.Append(typecheck.Stmt(ir.NewAssignStmt(pos, startVar, startCall)))
+	swStmt := typecheck.Stmt(ir.NewSwitchStmt(pos, startVar, swCases))
+
+	if dflt == nil {
+		// Wrap phase 1 in `for chosen<0 { switch; if chosen<0 yield }`.
+		var loopBody ir.Nodes
+		loopBody.Append(startInit...)
+		loopBody.Append(swStmt)
+		lt := ir.NewBinaryExpr(pos, ir.OLT, chosenVar, ir.NewInt(pos, 0))
+		var yieldInit ir.Nodes
+		yieldCall := typecheck.Stmt(mkcall("wasm3SelectYield", nil, &yieldInit))
+		yieldBody := append(append([]ir.Node{}, yieldInit...), yieldCall)
+		loopBody.Append(typecheck.Stmt(ir.NewIfStmt(pos, lt, yieldBody, nil)))
+		loopCond := ir.NewBinaryExpr(pos, ir.OLT, chosenVar, ir.NewInt(pos, 0))
+		init = append(init, typecheck.Stmt(ir.NewForStmt(pos, nil, loopCond, nil, loopBody, false)))
+	} else {
+		// With-default: single attempt; default fires if nothing ready.
+		init = append(init, startInit...)
+		init = append(init, swStmt)
+	}
+
+	// Dispatch chain: one if-statement per case; each ends with
+	// OBREAK so every reachable path through sel.Compiled terminates
+	// in a break (the SSA OSELECT handler at ssagen/ssa.go:2398
+	// asserts this — without it the fall-through gets marked
+	// BlockExit, deleting code after the select).
+	for _, ci := range infos {
+		var body ir.Nodes
+		if !ci.isSend {
+			if !ir.IsBlank(ci.userV) {
+				body.Append(typecheck.Stmt(ir.NewAssignStmt(pos, ci.userV, ci.vTmp)))
+			}
+			if !ir.IsBlank(ci.userOk) {
+				body.Append(typecheck.Stmt(ir.NewAssignStmt(pos, ci.userOk, ci.okTmp)))
+			}
+		}
+		body.Append(ci.cas.Body.Take()...)
+		body.Append(ir.NewBranchStmt(pos, ir.OBREAK, nil))
+		cond := ir.NewBinaryExpr(pos, ir.OEQ, chosenVar, ir.NewInt(pos, int64(ci.idx)))
+		init = append(init, typecheck.Stmt(ir.NewIfStmt(pos, cond, body, nil)))
+	}
 	if dflt != nil {
-		init = append(init, perIter...)
-		// Final fallback: if no case fired, run the user's default.
-		dfltBody := append([]ir.Node(dflt.Body.Take()),
-			typecheck.Stmt(ir.NewAssignStmt(base.Pos, doneVar, ir.NewBool(base.Pos, true))))
-		notDone := ir.NewUnaryExpr(base.Pos, ir.ONOT, doneVar)
-		init = append(init, typecheck.Stmt(ir.NewIfStmt(base.Pos, notDone, dfltBody, nil)))
-		return init
+		var body ir.Nodes
+		body.Append(dflt.Body.Take()...)
+		body.Append(ir.NewBranchStmt(pos, ir.OBREAK, nil))
+		cond := ir.NewBinaryExpr(pos, ir.OLT, chosenVar, ir.NewInt(pos, 0))
+		init = append(init, typecheck.Stmt(ir.NewIfStmt(pos, cond, body, nil)))
 	}
-
-	// No-default multi-case: needs a polling loop with yield. Wrapping
-	// perIter (sequence of `if !done { synthIR }` calls) in a
-	// for-loop trips the wasm3 obj backend's CFG analyser at
-	// RESUMEPOINT — the analyser accepts a for-loop with a single
-	// if+call+break body (m4_loop3.go) but not for+multi-if+nested-
-	// select bodies. Until that gap closes, emit a runtime trap so
-	// the program builds with a clear "not yet supported" signal.
-	var trapInit ir.Nodes
-	trapCall := mkcall("panicwrap", nil, &trapInit)
-	trapInit.Append(typecheck.Stmt(trapCall))
-	return trapInit
+	return init
 }
 
 // bytePtrToIndex returns a Node representing "(*byte)(&n[i])".

@@ -81,3 +81,106 @@ func wasm3DeferRunAll() {
 		rec.fn()
 	}
 }
+
+// wasm3PanicValue is the in-flight panic value, written by
+// wasm3Gopanic and read by wasm3Gorecover. Single-goroutine only
+// (pairs with wasm3DeferHead's single-goroutine limitation).
+var wasm3PanicValue any
+
+// wasm3InRecoverableDefer is true while wasm3Gopanic is iterating
+// deferred functions during unwind. recover() observes the in-flight
+// value only when this flag is set, matching Go's spec rule that
+// recover only takes effect when called from a deferred function.
+var wasm3InRecoverableDefer bool
+
+// wasm3PanicSwallowed is set by wasm3Gorecover when it returns the
+// in-flight panic to its caller. wasm3Gopanic checks this AFTER its
+// defer loop returns; a false value means no defer called recover,
+// so the panic propagates. Tracked as a separate flag from
+// wasm3PanicValue==nil because clearing wasm3PanicValue inside
+// wasm3Gorecover is folded away by the SSA optimizer
+// (read-then-write of a package-level any global is treated like a
+// local by inter-procedural analysis — the read is dropped because
+// the write provides the latest value, which is nil).
+var wasm3PanicSwallowed bool
+
+// wasm3Gopanic replaces runtime.gopanic on wasm3. Sets the in-flight
+// panic value, runs every deferred function in LIFO order (each
+// observable via wasm3Gorecover during its body), then either
+// returns normally (panic was recovered) or unreachable-traps the
+// program (no recover).
+//
+// PHASE 2 SIMPLIFICATION: the wasm activation frames between the
+// panic call site and the recovering caller are NOT unwound — defers
+// run in-place. For panic-without-recover the wasm "unreachable"
+// trap is the program failure, which is fine. For recover from a
+// defer in the panicking function's own frame this matches Go
+// semantics. For recover from a caller's defer when a callee
+// panicked the callee's remaining instructions would still execute
+// briefly after wasm3Gopanic returns, but the SSA noreturn bit
+// (entry in ssa.go's gopanic special-case list) marks the post-
+// call block BlockExit, so the caller actually never falls through
+// — unreachable trap. A proper try_table / throw_ref implementation
+// is M5 phase 1B follow-up; see project_wasm3_m5_panic_recover_blockers
+// memory.
+//
+//go:nosplit
+func wasm3Gopanic(e any) {
+	wasm3PanicValue = e
+	wasm3PanicSwallowed = false
+	wasm3InRecoverableDefer = true
+	wasm3DeferRunAll()
+	wasm3InRecoverableDefer = false
+	if wasm3PanicSwallowed {
+		// Recovered. The compiler-side noreturn marking on
+		// wasm3Gopanic means the calling function's post-call
+		// block is BlockExit — if we return normally, the caller
+		// falls into the noreturn unreachable trap. Without wasm
+		// exception handling we cannot unwind the caller's wasm
+		// frame; for now the user-visible behavior of a recovered
+		// panic is a stack-overflow trap rather than a clean
+		// exit. The deferred function's println / recover work
+		// observably (output appears before the trap). A real
+		// M5 phase 3 with try_table + throw_ref will let the
+		// panicking function's frame return.
+		wasm3PanicTrap()
+	}
+	// Unrecovered: same trap.
+	wasm3PanicTrap()
+}
+
+// wasm3PanicTrap is reached when an unrecovered panic propagates
+// past the topmost defer. Cannot call runtime.abort or
+// runtime.throw because both end up routed through sigpanic ->
+// wasm3Gopanic -> wasm3PanicTrap (infinite recursion) on wasm3 (or,
+// for abort, link errors because the asm stub isn't compiled).
+// The minimal trap that avoids the cycle: blow the wasm call
+// stack via deep recursion. The engine terminates the program
+// with a stack-overflow error containing wasm3PanicTrap in the
+// trace — recognizable as "unrecovered panic" without printing
+// the panic value (phase 3 will add proper value formatting).
+//
+//go:noinline
+func wasm3PanicTrap() {
+	wasm3PanicTrapRecurse(0)
+}
+
+//go:noinline
+func wasm3PanicTrapRecurse(depth int) {
+	wasm3PanicTrapRecurse(depth + 1)
+}
+
+// wasm3Gorecover replaces runtime.gorecover on wasm3. Returns the
+// in-flight panic value when called from a deferred function during
+// unwind (wasm3InRecoverableDefer set), nil otherwise. Clears
+// wasm3PanicValue so the panic is considered "swallowed" and
+// wasm3Gopanic's post-loop check sees no in-flight panic.
+//
+//go:nosplit
+func wasm3Gorecover() any {
+	if !wasm3InRecoverableDefer {
+		return nil
+	}
+	wasm3PanicSwallowed = true
+	return wasm3PanicValue
+}

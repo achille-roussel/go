@@ -37,6 +37,8 @@ var runtimeDecls = [...]struct {
 	{"panicwrap", funcTag, 9},
 	{"gopanic", funcTag, 11},
 	{"gorecover", funcTag, 12},
+	{"wasm3Gopanic", funcTag, 11},
+	{"wasm3Gorecover", funcTag, 12},
 	{"goschedguarded", funcTag, 9},
 	{"goPanicIndex", funcTag, 14},
 	{"goPanicIndexU", funcTag, 16},

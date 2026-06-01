@@ -914,6 +914,13 @@ func walkPrint(nn *ir.CallExpr, init *ir.Nodes) ir.Node {
 
 // walkRecover walks an ORECOVER node.
 func walkRecover(nn *ir.CallExpr, init *ir.Nodes) ir.Node {
+	// wasm3 M5 phase 2: read the in-flight panic value from the
+	// wasm3-only runtime global, paired with wasm3Gopanic's writer.
+	// The standard gorecover uses gp._panic + the stack-frame argp
+	// scheme, neither of which exists on wasm3.
+	if buildcfg.GOARCH == "wasm3" {
+		return mkcall("wasm3Gorecover", nn.Type(), init)
+	}
 	return mkcall("gorecover", nn.Type(), init)
 }
 

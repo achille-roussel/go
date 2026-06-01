@@ -25,14 +25,16 @@ func getCPUCount() int32 {
 const _SIGSEGV = 0xb
 
 func sigpanic() {
-	gp := getg()
-	if !canpanic() {
-		throw("unexpected signal during runtime execution")
-	}
-
-	// js only invokes the exception handler for memory faults.
-	gp.sig = _SIGSEGV
-	panicmem()
+	// wasm3 M5: stripped-down sigpanic. runtime.getg() has no wasm3
+	// backend lowering (OpGetG falls into the generic "// nothing
+	// to do when there's a g register" branch), so the standard
+	// `gp := getg(); gp.sig = _SIGSEGV; panicmem()` chain emits
+	// invalid wasm — any dereference of gp's uninitialized local
+	// trips i32.wrap_i64 on an anyref. Route directly to
+	// wasm3Gopanic with a memory-fault message; signal delivery
+	// isn't a thing on js/wasip1 so the lost gp.sig assignment is
+	// inert.
+	wasm3Gopanic("invalid memory address or nil pointer dereference")
 }
 
 // func exitThread(wait *uint32)

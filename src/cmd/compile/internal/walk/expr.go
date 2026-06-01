@@ -189,6 +189,16 @@ func walkExpr1(n ir.Node, init *ir.Nodes) ir.Node {
 
 	case ir.OPANIC:
 		n := n.(*ir.UnaryExpr)
+		// wasm3 M5 phase 2: route panic through a wasm3-specific
+		// runtime entry that walks the heap-allocated wasm3Defer
+		// list (matching wasm3DeferPush's storage) rather than the
+		// standard gopanic which uses linear-memory _defer records.
+		// wasm3Gopanic is listed in the ssagen "noreturn" set so
+		// the SSA call site terminates properly (BlockExit) and
+		// the post-panic-call code stays unreachable.
+		if buildcfg.GOARCH == "wasm3" {
+			return mkcall("wasm3Gopanic", nil, init, n.X)
+		}
 		return mkcall("gopanic", nil, init, n.X)
 
 	case ir.ORECOVER:

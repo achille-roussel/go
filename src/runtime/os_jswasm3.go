@@ -21,11 +21,12 @@
 
 package runtime
 
-// exit terminates the wasm instance. Phase 1 binds this to a JS
-// import `__wasm3_exit(code)` that calls process.exit / throws.
-func exit(code int32) {
-	throw("js/wasm3 runtime.exit not yet implemented")
-}
+// exit terminates the wasm instance via a gojs host import that
+// calls process.exit(code) (or throws on the JS side). Bound by the
+// wasm_exec_wasm3.js harness as `runtime.Exit`.
+//
+//go:wasmimport gojs runtime.Exit
+func exit(code int32)
 
 // usleep blocks at least usec microseconds. Single-threaded busy-
 // yield until Phase 5 wires it to setTimeout via JSPI.

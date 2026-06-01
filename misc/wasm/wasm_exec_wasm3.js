@@ -125,6 +125,14 @@ async function main() {
             // simplest way to observe execution.
             "runtime.LogInt": (n) => process.stdout.write(`log ${n}\n`),
 
+            // Clean program termination — M5 phase 1B uses this when
+            // a panic is recovered cleanly (without proper wasm-frame
+            // unwinding via try_table+throw_ref the panicking
+            // function's frame can't return, so wasm3Gopanic exits
+            // the program after defers ran). Bound to runtime.exit
+            // on the wasm3 side.
+            "runtime.Exit": (code) => process.exit(code),
+
             // Per-goroutine footprint measurement helper (M4 Phase E):
             // emit a tagged process.memoryUsage() snapshot to stderr.
             // Bash driver scrapes the lines to compute slope per

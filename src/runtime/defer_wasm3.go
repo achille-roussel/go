@@ -137,15 +137,16 @@ func wasm3Gopanic(e any) {
 		// block is BlockExit — if we return normally, the caller
 		// falls into the noreturn unreachable trap. Without wasm
 		// exception handling we cannot unwind the caller's wasm
-		// frame; for now the user-visible behavior of a recovered
-		// panic is a stack-overflow trap rather than a clean
-		// exit. The deferred function's println / recover work
-		// observably (output appears before the trap). A real
-		// M5 phase 3 with try_table + throw_ref will let the
-		// panicking function's frame return.
-		wasm3PanicTrap()
+		// frame, so the pragmatic approximation is to exit the
+		// program cleanly (code 0) after defers ran. The deferred
+		// function's output is observable. Phase 1B's full
+		// try_table + throw_ref will let the panicking function's
+		// frame return so the program can continue past recover.
+		exit(0)
 	}
-	// Unrecovered: same trap.
+	// Unrecovered: trap. abort() isn't compiled on wasm3 and
+	// runtime.throw uses getg(); deep recursion is the only
+	// cycle-free trap mechanism pre-phase-3.
 	wasm3PanicTrap()
 }
 

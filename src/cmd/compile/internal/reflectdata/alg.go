@@ -17,6 +17,7 @@ import (
 	"cmd/compile/internal/typecheck"
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
+	"cmd/internal/src"
 
 	"internal/buildcfg"
 )
@@ -600,6 +601,80 @@ func wasm3LeafFieldType(st *types.Type, off int64) *types.Type {
 // slice, string) rather than an integer/bool.
 func wasm3IsRefClass(t *types.Type) bool {
 	return t != nil && (t.IsUnsafePtr() || t.IsPtr() || t.IsInterface() || t.IsSlice() || t.IsString())
+}
+
+// wasm3ScalarPtrWrapCache holds the per-scalar-leaf `struct{V T}`
+// wrapper types used as the container backing for new(scalar T) on
+// wasm3 under the polymorphic fat-pointer model. Populated by
+// Wasm3InitScalarPtrWrappers (called from ssagen.InitConfig) before
+// CalcSizeDisabled fires; each entry has its width/alignment
+// pre-computed so SSA workers can use the type freely without
+// hitting the disabled CalcSize check.
+var wasm3ScalarPtrWrapCache map[types.Kind]*types.Type
+
+// Wasm3InitScalarPtrWrappers eagerly creates and sizes the
+// `struct{V T}` wrapper for each scalar leaf T that `new(T)` may
+// need on wasm3 (the set Wasm3IsScalarLeaf matches). Called once at
+// compiler init from ssagen.InitConfig — single-threaded, before
+// the parallel SSA backend disables CalcSize. The wrappers then
+// go through the same WasmGCFieldGetter/Setter accessor-pair
+// machinery as any other struct field, so the polymorphic fat
+// pointer for new(scalar T) is a $go.ptr.struct.<X> over the
+// wrapper with field offset 0.
+//
+// Wasm3InitScalarPtrWrappers is idempotent — re-calls return
+// without rebuilding.
+func Wasm3InitScalarPtrWrappers() {
+	if wasm3ScalarPtrWrapCache != nil {
+		return
+	}
+	scalars := []types.Kind{
+		types.TINT, types.TINT8, types.TINT16, types.TINT32, types.TINT64,
+		types.TUINT, types.TUINT8, types.TUINT16, types.TUINT32, types.TUINT64, types.TUINTPTR,
+		types.TBOOL, types.TFLOAT32, types.TFLOAT64, types.TUNSAFEPTR,
+	}
+	wasm3ScalarPtrWrapCache = make(map[types.Kind]*types.Type, len(scalars))
+	vSym := typecheck.Lookup("V")
+	for _, k := range scalars {
+		t := types.Types[k]
+		if t == nil {
+			continue
+		}
+		field := types.NewField(src.NoXPos, vSym, t)
+		wrap := types.NewStruct([]*types.Field{field})
+		types.CalcSize(wrap)
+		wasm3ScalarPtrWrapCache[k] = wrap
+	}
+}
+
+// Wasm3ScalarPtrWrap returns the `struct{V T}` wrapper used as the
+// container backing for new(T) on wasm3 when T is a scalar leaf.
+// Returns nil if T is not a scalar (caller should fall back to the
+// existing struct/array/box path) or Wasm3InitScalarPtrWrappers
+// hasn't run yet (caller bug — file an issue).
+func Wasm3ScalarPtrWrap(t *types.Type) *types.Type {
+	if wasm3ScalarPtrWrapCache == nil || t == nil {
+		return nil
+	}
+	return wasm3ScalarPtrWrapCache[t.Kind()]
+}
+
+// Wasm3IsScalarLeaf reports whether t is one of the scalar leaf
+// types whose *T on wasm3 takes the polymorphic-fat-pointer
+// treatment via a pre-built struct wrapper. Mirrors the predicate
+// behind wasm3IsScalarPtr (in ssa/wasm3place.go): integers/bool,
+// floats, and unsafe.Pointer all qualify.
+func Wasm3IsScalarLeaf(t *types.Type) bool {
+	if t == nil {
+		return false
+	}
+	switch t.Kind() {
+	case types.TINT, types.TINT8, types.TINT16, types.TINT32, types.TINT64,
+		types.TUINT, types.TUINT8, types.TUINT16, types.TUINT32, types.TUINT64, types.TUINTPTR,
+		types.TBOOL, types.TFLOAT32, types.TFLOAT64, types.TUNSAFEPTR:
+		return true
+	}
+	return false
 }
 
 // WasmGCFieldGetter and WasmGCFieldSetter generate the accessor pair for

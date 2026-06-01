@@ -99,6 +99,16 @@ func InitConfig() {
 	_ = types.NewPtr(types.ErrorType)                                       // *error
 	_ = types.NewPtr(reflectdata.MapType())                                 // *internal/runtime/maps.Map
 	_ = types.NewPtr(deferstruct())                                         // *runtime._defer
+	if buildcfg.GOARCH == "wasm3" {
+		// Pre-build the per-scalar `struct{V T}` wrapper used as the
+		// container backing for new(scalar T) on wasm3 under the
+		// polymorphic fat-pointer model. Must run here, before
+		// compileFunctions sets CalcSizeDisabled — the wrappers'
+		// sizes must be calculated for the SSA workers' downstream
+		// uses (WasmGCFieldGetter / Setter, the type-collector).
+		// See doc/wasm3-fat-ptr-class-prototype/.
+		reflectdata.Wasm3InitScalarPtrWrappers()
+	}
 	types.NewPtrCacheEnabled = false
 	ssaConfig = ssa.NewConfig(base.Ctxt.Arch.Name, *types_, base.Ctxt, base.Flag.N == 0, Arch.SoftFloat)
 	ssaConfig.Race = base.Flag.Race

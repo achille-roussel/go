@@ -2660,13 +2660,46 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// subtype of (ref null $T).
 		col, _ := wasm3LiveCollector.Load(s.FuncInfo())
 		c := col.(*typeCollector)
-		for i, a := range v.Args {
-			getValue64(s, a)
-			ct := captureTypes[i]
-			if refIdx, ok := c.captureClosureFieldIsRef(ct); ok {
-				pCast := s.Prog(wasm.ARefCastNull)
-				pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(refIdx)}
+		// Walk captureTypes (Go-level: one entry per Go capture) in
+		// lockstep with v.Args (SSA-level: one entry per wasm field
+		// in the closureCtx — composite captures like []T / string /
+		// [N]int decompose into 3 / 2 / N args). captureClosureFields
+		// is the per-Go-type expansion the body side already uses to
+		// declare the matching struct fields; we mirror it here so the
+		// caller's push count and field count agree.
+		//
+		// Refs only need an explicit ref.cast in the single-component
+		// case (captureClosureFieldIsRef): a *T / chan / map / func /
+		// unsafe.Pointer capture is one typed-ref field that the
+		// anyref per-value local must be downcast to before struct.new.
+		// Multi-component captures push only scalars (i64 for slice
+		// len/cap and string len/data, i64 for array elements) plus
+		// the slice's anyref backing — none need a cast.
+		argIdx := 0
+		for _, ct := range captureTypes {
+			fields := c.captureClosureFields(ct)
+			if len(fields) == 1 {
+				if argIdx >= len(v.Args) {
+					v.Fatalf("OpWasm3MakeClosureRefInline: %v argIdx %d out of range (len v.Args %d, captureTypes %v)", sym.Name, argIdx, len(v.Args), captureTypes)
+				}
+				getValue64(s, v.Args[argIdx])
+				if refIdx, ok := c.captureClosureFieldIsRef(ct); ok {
+					pCast := s.Prog(wasm.ARefCastNull)
+					pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(refIdx)}
+				}
+				argIdx++
+				continue
 			}
+			for j := 0; j < len(fields); j++ {
+				if argIdx >= len(v.Args) {
+					v.Fatalf("OpWasm3MakeClosureRefInline: %v argIdx %d out of range mid-composite (capture %v field %d, len v.Args %d)", sym.Name, argIdx, ct, j, len(v.Args))
+				}
+				getValue64(s, v.Args[argIdx])
+				argIdx++
+			}
+		}
+		if argIdx != len(v.Args) {
+			v.Fatalf("OpWasm3MakeClosureRefInline: %v consumed %d of %d v.Args from captureTypes %v", sym.Name, argIdx, len(v.Args), captureTypes)
 		}
 		pn := s.Prog(wasm.AStructNew)
 		pn.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(perClosureIdx)}

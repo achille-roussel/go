@@ -105,11 +105,22 @@ func MakeChanFuncWasm3(t *types.Type) *ir.Func {
 	return fn
 }
 
-// ChanSendFuncWasm3 generates the per-T `c <- v` trampoline:
+// ChanSendFuncWasm3 generates the per-T `c <- v` trampoline. The
+// trampoline branches on dataqsiz so the unbuffered path can write
+// slot 0 BEFORE setting sendParkID — preserving the write-before-park
+// invariant that lets select-recv (wasm3ChanTryRecvBegin) read slot 0
+// safely whenever it observes sendParkID != 0.
 //
-//	slot := wasm3ChanReserveSend(c)
-//	wasm3ChanSlotsSet(c, slot, v)
-//	wasm3ChanFinishSend(c)
+//	if wasm3ChanGetDataqsiz(c) == 0 {
+//	    // Unbuffered: write first, then signal/park via SendUnbuf.
+//	    wasm3ChanSlotsSet(c, 0, v)
+//	    wasm3ChanSendUnbuf(c)
+//	} else {
+//	    // Buffered: existing reserve / set / finish path.
+//	    slot := wasm3ChanReserveSend(c)
+//	    wasm3ChanSlotsSet(c, slot, v)
+//	    wasm3ChanFinishSend(c)
+//	}
 func ChanSendFuncWasm3(t *types.Type) *ir.Func {
 	if !t.IsChan() {
 		base.Fatalf("ChanSendFuncWasm3: not a chan type: %v", t)
@@ -135,12 +146,30 @@ func ChanSendFuncWasm3(t *types.Type) *ir.Func {
 	nv := fn.Dcl[1]
 
 	int32T := types.Types[types.TINT32]
+
+	// Unbuffered body: write slot 0, then SendUnbuf.
+	unbufBody := []ir.Node{
+		callChanHelper(t, "wasm3ChanSlotsSet",
+			[]ir.Node{nc, ir.NewInt(pos, 0), nv}, T),
+		callRuntimeHelper("wasm3ChanSendUnbuf", []ir.Node{nc}),
+	}
+
+	// Buffered body: reserve → set → finish.
 	slotVar := typecheck.TempAt(pos, ir.CurFunc, int32T)
-	fn.Body.Append(ir.NewAssignStmt(pos, slotVar,
-		callRuntimeHelper("wasm3ChanReserveSend", []ir.Node{nc})))
-	fn.Body.Append(callChanHelper(t, "wasm3ChanSlotsSet",
-		[]ir.Node{nc, slotVar, nv}, T))
-	fn.Body.Append(callRuntimeHelper("wasm3ChanFinishSend", []ir.Node{nc}))
+	bufBody := []ir.Node{
+		ir.NewAssignStmt(pos, slotVar,
+			callRuntimeHelper("wasm3ChanReserveSend", []ir.Node{nc})),
+		callChanHelper(t, "wasm3ChanSlotsSet",
+			[]ir.Node{nc, slotVar, nv}, T),
+		callRuntimeHelper("wasm3ChanFinishSend", []ir.Node{nc}),
+	}
+
+	// if wasm3ChanGetDataqsiz(c) == 0 { unbuf } else { buf }
+	cond := ir.NewBinaryExpr(pos, ir.OEQ,
+		callRuntimeHelper("wasm3ChanGetDataqsiz", []ir.Node{nc}),
+		ir.NewInt(pos, 0))
+	_ = int32T
+	fn.Body.Append(ir.NewIfStmt(pos, cond, unbufBody, bufBody))
 
 	typecheck.FinishFuncBody()
 	ir.WithFunc(fn, func() { typecheck.Stmts(fn.Body) })

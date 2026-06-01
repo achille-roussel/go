@@ -114,6 +114,8 @@ var runtimeDecls = [...]struct {
 	{"wasm3ChanTrySendBegin", funcTag, 68},
 	{"wasm3ChanTrySendCommit", funcTag, 66},
 	{"wasm3ChanClose", funcTag, 66},
+	{"wasm3ChanSendUnbuf", funcTag, 66},
+	{"wasm3ChanGetDataqsiz", funcTag, 65},
 	{"wasm3SelectYield", funcTag, 9},
 	{"wasm3SelectStart", funcTag, 69},
 	{"intstring", funcTag, 72},

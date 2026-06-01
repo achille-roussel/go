@@ -126,6 +126,8 @@ func wasm3ChanTryRecvCommit(c unsafe.Pointer)
 func wasm3ChanTrySendBegin(c unsafe.Pointer) (slot int32, ok bool)
 func wasm3ChanTrySendCommit(c unsafe.Pointer)
 func wasm3ChanClose(c unsafe.Pointer)
+func wasm3ChanSendUnbuf(c unsafe.Pointer)
+func wasm3ChanGetDataqsiz(c unsafe.Pointer) int32
 func wasm3SelectYield()
 func wasm3SelectStart(n int32) int32
 

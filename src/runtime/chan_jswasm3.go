@@ -61,22 +61,29 @@ func wasm3ChanSlotsSet(c *channel, i int32, v any) {}
 // the per-T trampoline directly (no intrinsic — these are real Go
 // functions whose bodies do the work).
 
+// Send/recv protocol on unbuffered chans uses a write-before-park
+// invariant: the sender writes slot 0 BEFORE setting sendParkID, so
+// any concurrent reader (blocking ReserveRecv or non-blocking select
+// TryRecvBegin) that observes sendParkID != 0 can safely read slot 0
+// without further synchronisation. The earlier protocol set
+// sendParkID first then waited for ReserveSend to return so the
+// trampoline could write — that left a window where TryRecvBegin
+// reported "ready" while slot 0 was empty.
+//
+// Per-T trampolines branch on dataqsiz: dataqsiz == 0 routes to
+// SlotsSet(0, v) + wasm3ChanSendUnbuf; dataqsiz > 0 keeps the
+// existing buffered ReserveSend / SlotsSet / FinishSend path. So
+// the unbuffered branches of wasm3ChanReserveSend / FinishSend
+// below are dead under the new trampoline shape — kept as a
+// safety net if someone calls them directly.
+
 //go:noinline
 func wasm3ChanReserveSend(c *channel) int32 {
 	if c.dataqsiz == 0 {
-		// Unbuffered rendez-vous: park until a receiver is waiting.
-		// The receiver will be parked too (see ReserveRecv) and will
-		// have woken us — we exit when recvParkID is non-zero (the
-		// receiver's park-ID, planted before it called WasmReady on
-		// our sendParkID). Slot 0 is the transit cell allocated by
-		// MakeChan regardless of cap; the trampoline writes v there
-		// next, and FinishSend wakes the receiver.
-		for c.recvParkID == 0 {
-			c.sendParkID = wasm3MintChanParkID()
-			wasm.WasmPark(c.sendParkID)
-			c.sendParkID = 0
-		}
-		return 0
+		// Dead path (trampoline routes unbuffered sends through
+		// SlotsSet + wasm3ChanSendUnbuf instead). Trap loudly if
+		// reached so the bug is visible.
+		panic(plainError("wasm3ChanReserveSend: unbuffered chan; trampoline should branch to wasm3ChanSendUnbuf"))
 	}
 	for c.qcount >= c.dataqsiz {
 		c.sendParkID = wasm3MintChanParkID()
@@ -89,14 +96,8 @@ func wasm3ChanReserveSend(c *channel) int32 {
 //go:noinline
 func wasm3ChanFinishSend(c *channel) {
 	if c.dataqsiz == 0 {
-		// Unbuffered: receiver is parked on recvParkID (it planted
-		// the ID then waited for us to write). Wake it; no buffer
-		// bookkeeping (sendx/recvx/qcount stay 0).
-		if id := c.recvParkID; id != 0 {
-			c.recvParkID = 0
-			wasm.WasmReady(id)
-		}
-		return
+		// Dead path; see wasm3ChanReserveSend.
+		panic(plainError("wasm3ChanFinishSend: unbuffered chan; trampoline should branch to wasm3ChanSendUnbuf"))
 	}
 	c.sendx = (c.sendx + 1) % c.dataqsiz
 	c.qcount++
@@ -106,26 +107,68 @@ func wasm3ChanFinishSend(c *channel) {
 	}
 }
 
+// wasm3ChanSendUnbuf finalises an unbuffered send AFTER the caller
+// has written its value to slot 0. Two scenarios:
+//
+//   - A receiver is already parked (recvParkID != 0): clear it, plant
+//     sendParkID, wake the receiver, then park ourselves. Receiver
+//     reads slot 0 then calls FinishRecv (or TryRecvCommit), which
+//     wakes us via sendParkID.
+//
+//   - No receiver yet: plant sendParkID (sender is parked WITH value
+//     in slot 0; ReserveRecv / TryRecvBegin treat sendParkID != 0 as
+//     "slot 0 ready"), park. Receiver eventually arrives, reads, then
+//     wakes us.
+//
+// Both paths exit with the sender having waited for the receiver to
+// consume the value — the rendez-vous is fully synchronous, so the
+// sender's next iteration won't overwrite slot 0 mid-read.
+//
+//go:noinline
+func wasm3ChanSendUnbuf(c *channel) {
+	if c.closed {
+		panic(plainError("send on closed channel"))
+	}
+	if id := c.recvParkID; id != 0 {
+		c.recvParkID = 0
+		c.sendParkID = wasm3MintChanParkID()
+		wasm.WasmReady(id)
+		wasm.WasmPark(c.sendParkID)
+		c.sendParkID = 0
+		return
+	}
+	c.sendParkID = wasm3MintChanParkID()
+	wasm.WasmPark(c.sendParkID)
+	c.sendParkID = 0
+}
+
+// wasm3ChanGetDataqsiz exposes c.dataqsiz to the per-T send
+// trampoline so it can branch between the unbuffered (SlotsSet +
+// SendUnbuf) and buffered (ReserveSend + SlotsSet + FinishSend)
+// paths.
+//
+//go:noinline
+func wasm3ChanGetDataqsiz(c *channel) int32 { return c.dataqsiz }
+
 //go:noinline
 func wasm3ChanReserveRecv(c *channel) int32 {
 	if c.dataqsiz == 0 {
-		// Unbuffered rendez-vous: two scenarios depending on arrival
-		// order. We always plant our recvParkID first so the sender
-		// (whenever it arrives) can find us via the ReserveSend loop's
-		// "recvParkID != 0" exit condition.
-		c.recvParkID = wasm3MintChanParkID()
 		if c.sendParkID != 0 {
-			// Sender already arrived and parked. Wake it so it can
-			// proceed through SlotsSet (writing v to slot 0) and
-			// FinishSend (which will wake us via recvParkID).
-			id := c.sendParkID
-			c.sendParkID = 0
-			wasm.WasmReady(id)
+			// Sender already wrote slot 0 and is parked waiting for
+			// our FinishRecv to wake them. Skip the park-and-wait
+			// dance; the trampoline reads slot 0 next, FinishRecv
+			// wakes the sender.
+			return 0
 		}
-		// Sender (either just-woken from above or still to arrive)
-		// will write slot 0 and call FinishSend → WasmReady(recvParkID).
+		// Plant recvParkID and park. Sender will arrive, write slot
+		// 0, then call wasm3ChanSendUnbuf — which wakes us (clearing
+		// recvParkID) and parks ON sendParkID waiting for FinishRecv
+		// to ack.
+		c.recvParkID = wasm3MintChanParkID()
 		wasm.WasmPark(c.recvParkID)
-		c.recvParkID = 0
+		// On wake: sender cleared recvParkID before WasmReady; slot 0
+		// holds the value; sender is now parked on sendParkID
+		// waiting for FinishRecv.
 		return 0
 	}
 	for c.qcount <= 0 {
@@ -139,9 +182,13 @@ func wasm3ChanReserveRecv(c *channel) int32 {
 //go:noinline
 func wasm3ChanFinishRecv(c *channel) {
 	if c.dataqsiz == 0 {
-		// Unbuffered: sender already returned from ReserveSend (we
-		// woke it earlier) and ran SlotsSet + FinishSend; no wake-up
-		// owed. sendx/recvx/qcount stay 0.
+		// Unbuffered: under the write-before-park protocol the sender
+		// is parked on sendParkID waiting for us to ack the read.
+		// Wake it.
+		if id := c.sendParkID; id != 0 {
+			c.sendParkID = 0
+			wasm.WasmReady(id)
+		}
 		return
 	}
 	c.recvx = (c.recvx + 1) % c.dataqsiz

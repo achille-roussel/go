@@ -906,16 +906,23 @@ func wasm3ChanBufElemRefIdx(fi *obj.FuncInfo, elem *types.Type) (int64, bool) {
 		// for a registered struct returns the struct's idx itself.
 		return int64(wasm3RegisterStruct(fi, elem)), true
 	case elem.IsPtr():
-		// chan *T: the slots backing's elem ref matches what
-		// pointerStorage(*T) chose — collectStruct(pointee) for a
-		// struct pointee, collectBoxedScalar for a scalar, collectBox
-		// otherwise. Returning TypeGoObject here would cast the value
-		// to (ref $go.object) before array.set, but the array element
-		// type is the precise (ref $go.struct.<T>) and validation
-		// rejects the mismatch.
+		// chan *T: the slots backing's elem ref must match what
+		// pointerStorage(*T) chose. Three pointee shapes today:
+		//   * struct → (ref $go.struct.<T>)
+		//   * scalar → (ref $go.ptr.<class>) — the accessor-pair fat
+		//              pointer; the slot stores it directly so an
+		//              `&x`-derived fat pointer flows through the
+		//              chan with no cast away of its accessor data.
+		//   * other  → (ref $go.box.<T>) (slice, string, ...)
+		// Returning TypeGoObject here would cast the value to
+		// (ref $go.object) before array.set, which validation
+		// rejects against the precise element type.
 		pointee := elem.Elem()
 		if pointee.IsStruct() && pointee.Size() > 0 {
 			return int64(wasm3RegisterStruct(fi, pointee)), true
+		}
+		if p, ok := scalarPrim(pointee.Kind()); ok {
+			return int64(wasm3PtrClassFor(pointee.Kind(), p)), true
 		}
 		return int64(wasmgc.TypeGoObject), true
 	case elem.IsUnsafePtr(), elem.IsChan(), elem.IsMap(), elem.Kind() == types.TFUNC:

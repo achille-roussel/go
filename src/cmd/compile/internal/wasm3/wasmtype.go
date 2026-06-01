@@ -223,12 +223,40 @@ func (c *typeCollector) pointerStorage(elem *types.Type) wasmgc.Storage {
 		return wasmgc.RefStorage(c.collectStruct(elem), true)
 	}
 	if p, ok := scalarPrim(elem.Kind()); ok {
-		return wasmgc.RefStorage(c.collectBoxedScalar(p), true)
+		// *scalar lowers to the $go.ptr.<class> accessor-pair fat
+		// pointer (the same type OpWasm3MakeFieldPtr constructs for
+		// interior pointers into struct fields). All *scalar values
+		// in the program — chan slots, struct fields, function args,
+		// new(T) results — share this representation, so loads /
+		// stores go through PtrLoad / PtrStore uniformly. Without
+		// this unification, new(T)'s OpWasm3MakeFieldPtr-built fat
+		// pointer could not be stored into a chan slot typed
+		// $go.box.scalar (the legacy single-field-wrapper type).
+		return wasmgc.RefStorage(int(wasm3PtrClassFor(elem.Kind(), p)), true)
 	}
 	// Pointer to a composite value (array, string, slice, ...). Box the
 	// pointee into its own go.object subtype so the pointer is a single
 	// reference (doc/wasm3-design.md §7, selective boxing).
 	return wasmgc.RefStorage(c.collectBox(elem), true)
+}
+
+// wasm3PtrClassFor maps a scalar leaf type kind (and its primitive
+// storage class) to the matching $go.ptr.<class> prelude type index.
+// Integers/bool use the i64 class (sub-word values widen at the
+// accessor boundary); unsafe.Pointer uses the ref class; floats use
+// f32/f64. Mirrors wasm3InteriorPtrClass in ssa.go but at the type-
+// collector layer where we don't yet have an ssa.Value.
+func wasm3PtrClassFor(k types.Kind, p wasmgc.Prim) uint32 {
+	if k == types.TUNSAFEPTR {
+		return wasmgc.TypeGoPtrRef
+	}
+	switch p {
+	case wasmgc.F32:
+		return wasmgc.TypeGoPtrF32
+	case wasmgc.F64:
+		return wasmgc.TypeGoPtrF64
+	}
+	return wasmgc.TypeGoPtrI64
 }
 
 // collectStruct reserves and returns the table index of the wasm struct

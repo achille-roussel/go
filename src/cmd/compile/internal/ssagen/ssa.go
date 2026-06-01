@@ -1067,6 +1067,32 @@ func (s *state) newObject(typ *types.Type) *ssa.Value {
 		// lowering, and the spill store crashes (Store SSA PTR STRING/...).
 		return s.newValue0A(ssa.OpWasm3BoxNewDefault, types.NewPtr(typ), typ)
 	}
+	if wrap := reflectdata.Wasm3ScalarPtrWrap(typ); wrap != nil {
+		// new(scalar T) on wasm3: route through the existing struct +
+		// MakeFieldPtr path via a pre-built `struct{V T}` wrapper. The
+		// wrapper is created at InitConfig time (sized before
+		// CalcSizeDisabled fires), so the SSA backend's downstream uses
+		// — WasmGCFieldGetter / Setter for the accessor pair, the
+		// type-collector for the wasm struct index — see a fully sized
+		// container and never re-trigger CalcSize from a worker.
+		//
+		// OpWasm3StructNewDefault allocates a (ref $go.struct.<wrap>);
+		// OpWasm3MakeFieldPtr at byte offset 0 builds the
+		// $go.ptr.<class> fat pointer to the V field, with the
+		// accessor pair generated lazily by reflectdata. The result
+		// is a *T value that flows through the same PtrLoad / PtrStore
+		// path used for interior pointers into existing struct fields
+		// — no new SSA op or codegen needed.
+		//
+		// Replaces the linear-memory runtime.newobject fallthrough,
+		// which on wasm3 (a) traps at runtime (newobject is a stub
+		// throw) and (b) passes the rtype as an i64 address where the
+		// callee expects an anyref — the "call[0] expected anyref,
+		// found i64" validation failure on programs taking the
+		// address of any escaping scalar.
+		structRef := s.newValue0A(ssa.OpWasm3StructNewDefault, types.NewPtr(wrap), wrap)
+		return s.curBlock.NewValue1IA(s.peekPos(), ssa.OpWasm3MakeFieldPtr, types.NewPtr(typ), 0, wrap, structRef)
+	}
 	rtype := s.reflectType(typ)
 	if specialMallocSym := s.specializedMallocSym(typ.Size(), typ.HasPointers()); specialMallocSym != nil {
 		return s.rtcall(specialMallocSym, true, []*types.Type{types.NewPtr(typ)},

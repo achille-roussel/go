@@ -3856,17 +3856,31 @@ func wasm3ArrayComponentAtOffset(s *ssagen.State, t *types.Type, off, base int64
 // i64/i32/f32/f64). Mirrors wasm3PointerIsRef's logic from the SSA
 // layer's local-typing — used at the call site to decide whether an
 // OpWasm3LoweredAddr arg needs the descriptor-ref-global routing.
+//
+// All pointer-shaped Go types lower to anyref on wasm3 per the WasmGC-
+// only memory model: pointers reference heap objects which are WasmGC
+// refs, never linear-memory addresses. The previous restriction to
+// *struct / *array / unsafe.Pointer missed *uint8 (used as an opaque
+// type-descriptor placeholder by reflectdata.TypePtrAt /
+// reflectdata.ConvIfaceSrcRType) and missed maps / chans / funcs /
+// interfaces (all heap-object refs at the wasm3 ABI). M5 iface phase B:
+// broaden the gate so the OpWasm3LoweredAddr-of-descriptor routing
+// fires at every iface conversion site, not just the few that happen
+// to take *struct or unsafe.Pointer.
 func wasm3ParamIsRef(t *types.Type) bool {
 	if t == nil {
 		return false
 	}
-	if t.IsPtr() && t.Elem() != nil {
-		e := t.Elem()
-		if e.IsStruct() || e.IsArray() {
-			return true
-		}
+	if t.IsPtr() {
+		return true
 	}
 	if t.IsUnsafePtr() {
+		return true
+	}
+	if t.IsMap() || t.IsChan() || t.IsInterface() {
+		return true
+	}
+	if t.Kind() == types.TFUNC {
 		return true
 	}
 	return false

@@ -241,22 +241,23 @@ func (c *typeCollector) pointerStorage(elem *types.Type) wasmgc.Storage {
 }
 
 // wasm3PtrClassFor maps a scalar leaf type kind (and its primitive
-// storage class) to the matching $go.ptr.<class> prelude type index.
-// Integers/bool use the i64 class (sub-word values widen at the
-// accessor boundary); unsafe.Pointer uses the ref class; floats use
-// f32/f64. Mirrors wasm3InteriorPtrClass in ssa.go but at the type-
-// collector layer where we don't yet have an ssa.Value.
+// storage class) to the matching $go.ptr.poly.<class> polymorphic
+// fat-pointer prelude type index. Integers/bool use the i64 class
+// (sub-word values widen at the accessor boundary); unsafe.Pointer
+// uses the ref class; floats use f32/f64. Mirrors
+// wasm3InteriorPtrClass in ssa.go but at the type-collector layer
+// where we don't yet have an ssa.Value.
 func wasm3PtrClassFor(k types.Kind, p wasmgc.Prim) uint32 {
 	if k == types.TUNSAFEPTR {
-		return wasmgc.TypeGoPtrRef
+		return wasmgc.TypeGoPtrPolyRef
 	}
 	switch p {
 	case wasmgc.F32:
-		return wasmgc.TypeGoPtrF32
+		return wasmgc.TypeGoPtrPolyF32
 	case wasmgc.F64:
-		return wasmgc.TypeGoPtrF64
+		return wasmgc.TypeGoPtrPolyF64
 	}
-	return wasmgc.TypeGoPtrI64
+	return wasmgc.TypeGoPtrPolyI64
 }
 
 // collectStruct reserves and returns the table index of the wasm struct

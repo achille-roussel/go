@@ -902,17 +902,23 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		v.Fatalf("OpWasm3PolyPtrStore: codegen not yet implemented (polyptr migration step 2)")
 
 	case ssa.OpWasm3PtrStore:
-		// Write through $go.ptr.i64: call_ref the setter with (base,
-		// offset, value). arg0=ptr, arg1=value, arg2=mem.
+		// Polymorphic write through $go.ptr.poly.<X>: extract (base,
+		// off) from the ptr, read the class's set funcref, call_ref
+		// with (base, off, value). arg0=ptr, arg1=value, arg2=mem.
 		wasm3EnsureCollector(s.FuncInfo())
-		ptrIdx, _, setterIdx, _ := wasm3InteriorPtrClass(v.Args[1].Type)
+		polyIdx, refclassIdx, _, setterIdx, _ := wasm3InteriorPtrClass(v.Args[1].Type)
 		tmp := wasm3AllocAnyrefTempLocal(s)
 		getValue64(s, v.Args[0])
 		localSetIdx(s, tmp)
-		wasm3PtrField(s, tmp, 0, ptrIdx) // base (anyref)
-		wasm3PtrField(s, tmp, 1, ptrIdx) // offset (i32)
-		getValue64(s, v.Args[1])         // value (i64 or anyref)
-		wasm3PtrField(s, tmp, 3, ptrIdx) // set funcref
+		// Stack target: [base, off, value, setter-funcref]; call_ref
+		// pops in reverse.
+		wasm3PtrField(s, tmp, 1, polyIdx) // base (anyref)
+		wasm3PtrField(s, tmp, 2, polyIdx) // off (i32)
+		getValue64(s, v.Args[1])          // value (i64/anyref/f32/f64)
+		wasm3PtrField(s, tmp, 0, polyIdx) // class
+		pGetSet := s.Prog(wasm.AStructGet)
+		pGetSet.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(refclassIdx)}
+		pGetSet.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1} // class.set
 		pc := s.Prog(wasm.ACallRef)
 		pc.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(setterIdx)}
 
@@ -1986,28 +1992,38 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		if leaf == nil {
 			v.Fatalf("OpWasm3MakeFieldPtr: no field at byte offset %d in %v", v.AuxInt, st)
 		}
-		ptrIdx, _, _, _ := wasm3InteriorPtrClass(leaf.Type)
-		getValue64(s, v.Args[0])
-		i32Const(s, 0)
+		polyIdx, refclassIdx, _, _, _ := wasm3InteriorPtrClass(leaf.Type)
+		// Build the polymorphic fat pointer. Field order is
+		// {class, base, off}, so the inline class struct.new pops
+		// first (deepest), then base (the container arg), then off.
 		pg := s.Prog(wasm.ARefFunc)
 		pg.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: reflectdata.WasmGCFieldGetter(st, v.AuxInt).Linksym()}
 		ps := s.Prog(wasm.ARefFunc)
 		ps.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: reflectdata.WasmGCFieldSetter(st, v.AuxInt).Linksym()}
+		pcls := s.Prog(wasm.AStructNew)
+		pcls.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(refclassIdx)}
+		getValue64(s, v.Args[0]) // base = container ref
+		i32Const(s, 0)            // off (unused for struct-field accessors; baked into the body)
 		pn := s.Prog(wasm.AStructNew)
-		pn.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(ptrIdx)}
+		pn.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(polyIdx)}
 
 	case ssa.OpWasm3PtrLoad:
-		// Read through $go.ptr.i64: call_ref the getter with (base,
-		// offset). The ptr is read three times (base/offset/get fields),
-		// so stash it in a scratch anyref local first.
+		// Polymorphic read through $go.ptr.poly.<X>: extract (base,
+		// off), read class.get funcref via class indirection,
+		// call_ref with (base, off). The ptr is read multiple times,
+		// so stash in a scratch anyref local first.
 		wasm3EnsureCollector(s.FuncInfo())
-		ptrIdx, getterIdx, _, _ := wasm3InteriorPtrClass(v.Type)
+		polyIdx, refclassIdx, getterIdx, _, _ := wasm3InteriorPtrClass(v.Type)
 		tmp := wasm3AllocAnyrefTempLocal(s)
 		getValue64(s, v.Args[0])
 		localSetIdx(s, tmp)
-		wasm3PtrField(s, tmp, 0, ptrIdx) // base (anyref)
-		wasm3PtrField(s, tmp, 1, ptrIdx) // offset (i32)
-		wasm3PtrField(s, tmp, 2, ptrIdx) // get funcref
+		// Stack target: [base, off, getter-funcref]; call_ref pops in reverse.
+		wasm3PtrField(s, tmp, 1, polyIdx) // base (anyref)
+		wasm3PtrField(s, tmp, 2, polyIdx) // off (i32)
+		wasm3PtrField(s, tmp, 0, polyIdx) // class
+		pGetGet := s.Prog(wasm.AStructGet)
+		pGetGet.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(refclassIdx)}
+		pGetGet.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0} // class.get
 		pc := s.Prog(wasm.ACallRef)
 		pc.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(getterIdx)}
 
@@ -3912,31 +3928,50 @@ func wasm3FieldAtOffset(st *types.Type, off int64) *types.Field {
 	return nil
 }
 
-// wasm3InteriorPtrClass returns the $go.ptr.<class> wrapper, getter, and
-// setter prelude type indices for an interior pointer whose pointee is t,
-// plus whether it is the ref/anyref class. Integer/bool pointees use the
-// i64 class (the converting accessors widen sub-word ints); unsafe.Pointer
-// and other reference pointees use the ref class (anyref-valued
-// accessors). See doc/wasm3-pointer-cutover.
-func wasm3InteriorPtrClass(t *types.Type) (ptrIdx, getterIdx, setterIdx uint32, isRef bool) {
+// wasm3InteriorPtrClass returns the polymorphic-fat-pointer prelude
+// type indices for an interior pointer whose pointee is t:
+//   polyIdx     — $go.ptr.poly.<class>, the polymorphic ptr struct
+//                  with {class, base, off} layout.
+//   refclassIdx — $go.refclass.<class>, the {get, set} vtable struct
+//                  the polyptr's class field references.
+//   getterIdx   — $go.getter.<class>, the legacy funcref sig the
+//                  vtable's get field holds; signature is (anyref
+//                  base, i32 off) -> leaf so the dispatcher can
+//                  call_ref it with (base, off) extracted from the
+//                  polyptr.
+//   setterIdx   — $go.setter.<class>, the legacy setter funcref sig.
+//   isRef       — true if the pointee uses the ref/anyref class.
+//
+// Integer/bool pointees use the i64 class (converting accessors widen
+// sub-word ints); unsafe.Pointer and other reference pointees use the
+// ref class (anyref-valued accessors); floats use f32/f64.
+//
+// Replaces the OLD $go.ptr.<class> design (which embedded the get/set
+// funcrefs per pointer) with the class-indirected polymorphic design
+// — class instances are shared across all pointers of a (container,
+// field) pair, saving a ref's worth of storage per pointer in trade
+// for one extra struct.get in the dispatch.
+func wasm3InteriorPtrClass(t *types.Type) (polyIdx, refclassIdx, getterIdx, setterIdx uint32, isRef bool) {
 	if t != nil && (t.IsUnsafePtr() || t.IsPtr() || t.IsInterface() || t.IsSlice() || t.IsString()) {
-		return wasmgc.TypeGoPtrRef, wasmgc.TypeGoGetterRef, wasmgc.TypeGoSetterRef, true
+		return wasmgc.TypeGoPtrPolyRef, wasmgc.TypeGoRefClassRef, wasmgc.TypeGoGetterRef, wasmgc.TypeGoSetterRef, true
 	}
 	if t != nil && t.IsFloat() {
 		if t.Kind() == types.TFLOAT32 {
-			return wasmgc.TypeGoPtrF32, wasmgc.TypeGoGetterF32, wasmgc.TypeGoSetterF32, false
+			return wasmgc.TypeGoPtrPolyF32, wasmgc.TypeGoRefClassF32, wasmgc.TypeGoGetterF32, wasmgc.TypeGoSetterF32, false
 		}
-		return wasmgc.TypeGoPtrF64, wasmgc.TypeGoGetterF64, wasmgc.TypeGoSetterF64, false
+		return wasmgc.TypeGoPtrPolyF64, wasmgc.TypeGoRefClassF64, wasmgc.TypeGoGetterF64, wasmgc.TypeGoSetterF64, false
 	}
-	return wasmgc.TypeGoPtrI64, wasmgc.TypeGoGetterI64, wasmgc.TypeGoSetterI64, false
+	return wasmgc.TypeGoPtrPolyI64, wasmgc.TypeGoRefClassI64, wasmgc.TypeGoGetterI64, wasmgc.TypeGoSetterI64, false
 }
 
-// wasm3PtrField emits the read of field `field` of the $go.ptr.<class>
-// fat pointer (type index ptrIdx) stashed in anyref local `tmp`:
-// local.get tmp; ref.cast (ref $go.ptr.<class>); struct.get
-// $go.ptr.<class> field. Used by the interior-pointer deref codegen
-// (PtrLoad/PtrStore). Both the i64 and ref classes share the {base,
-// offset, get, set} layout, so only the type index varies.
+// wasm3PtrField emits the read of field `field` of the
+// $go.ptr.poly.<class> polymorphic fat pointer (type index ptrIdx)
+// stashed in anyref local `tmp`: local.get tmp; ref.cast (ref
+// $go.ptr.poly.<class>); struct.get $go.ptr.poly.<class> field.
+// Used by the interior-pointer deref codegen (PtrLoad/PtrStore).
+// All four classes share the {class, base, off} layout; only the
+// type index varies. Pass field=0 for class, field=1 for base,
+// field=2 for off.
 func wasm3PtrField(s *ssagen.State, tmp uint32, field int64, ptrIdx uint32) {
 	pg := s.Prog(wasm.ALocalGet)
 	pg.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(tmp)}

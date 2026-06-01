@@ -67,7 +67,7 @@ func TestAppendLeb128(t *testing.T) {
 func TestEncodePreludeTypeSection(t *testing.T) {
 	payload := Table(PreludeTypes()).EncodeTypeSection()
 
-	// Prelude: 42 singleton rec groups in table order:
+	// Prelude rec groups in table order:
 	//   * object, bytes, string
 	//   * 7 go.iptr.<class> fat-pointer wrappers (i8..ref)
 	//   * go.iface
@@ -75,9 +75,12 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 	//   * M4 stack-switching pair go.goroutine.entry + go.cont
 	//   * M4 chan base go.chan
 	//   * polymorphic fat-pointer hierarchy
-	//     (doc/wasm3-fat-ptr-class-prototype): 4 families x 4 types
-	//     each — refclass.<X>, ptr.poly.<X>, ptr.array.<X>,
-	//     ptr.struct.<X> — for X in {i64, ref, f32, f64}.
+	//     (doc/wasm3-fat-ptr-class-prototype): 4 leaf classes, each
+	//     emitted as one cycle-of-4 rec group (polygetter.<X> ↔
+	//     polysetter.<X> ↔ ptr.poly.<X> ↔ refclass.<X>) plus two
+	//     singleton subtypes (ptr.array.<X>, ptr.struct.<X>).
+	// Total: 26 singletons + 4 cycles + 8 variant singletons = 38
+	// rec groups.
 	// Typed-ref heap references emit the plain (non-exact) encoding
 	// (0x64 / 0x63 followed by typeidx) — the exact-heap-type prefix
 	// opExactHeap=0x62 was dropped to match wasmfxtime / wasmparser
@@ -85,7 +88,7 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 	// heaptype helper in typesec.go for rationale. Pin the exact
 	// bytes — this is the module preamble every wasm3 binary starts with.
 	want := []byte{
-		0x2a, // 42 rec groups
+		0x26, // 38 rec groups
 
 		// rec { go.object }: sub, 0 supertypes, struct with 0 fields.
 		opRec, 0x01,
@@ -189,66 +192,70 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 		valI32, fieldVar, valI32, fieldVar, valI32, fieldVar, valI32, fieldVar,
 		valI32, fieldVar, valI32, fieldVar, valI32, fieldVar,
 
-		// rec { go.refclass.i64 }: vtable struct {(ref getter.i64)=index 11,
-		// (ref setter.i64)=index 12}. Carries the funcrefs that polymorphic
-		// dereferences call_ref against.
-		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02,
-		opRef, 0x0b, fieldConst,
-		opRef, 0x0c, fieldConst,
-		// rec { go.ptr.poly.i64 }: polymorphic base, sub go.object, struct
-		// with one field (ref refclass.i64)=index 26.
-		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x01,
-		opRef, 0x1a, fieldConst,
-		// rec { go.ptr.array.i64 }: sub ptr.poly.i64=index 27, struct
-		// {class (inherited), anyref backing, i32 offset}.
-		opRec, 0x01, opSub, 0x01, 0x1b, opStruct, 0x03,
-		opRef, 0x1a, fieldConst, valAnyref, fieldConst, valI32, fieldConst,
-		// rec { go.ptr.struct.i64 }: sub ptr.poly.i64=index 27, struct
-		// {class (inherited), anyref container}.
-		opRec, 0x01, opSub, 0x01, 0x1b, opStruct, 0x02,
-		opRef, 0x1a, fieldConst, valAnyref, fieldConst,
+		// Four polymorphic fat-pointer cycles, one per leaf class.
+		// Each cycle is a rec group of 4 types — polygetter, refclass,
+		// ptr.poly, polysetter — that mutually reference each other.
+		// The two variant subtypes (ptr.array.<X>, ptr.struct.<X>)
+		// are emitted as singletons AFTER all four cycles, in class
+		// order, because they reference ptr.poly.<X> and refclass.<X>
+		// from their respective cycles.
 
-		// rec { go.refclass.ref }: vtable {(ref getter.ref)=14, (ref setter.ref)=15}.
-		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02,
-		opRef, 0x0e, fieldConst,
-		opRef, 0x0f, fieldConst,
-		// rec { go.ptr.poly.ref }: {(ref refclass.ref)=30}.
-		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x01,
-		opRef, 0x1e, fieldConst,
-		// rec { go.ptr.array.ref }: sub poly.ref=31, {class, anyref, i32}.
-		opRec, 0x01, opSub, 0x01, 0x1f, opStruct, 0x03,
-		opRef, 0x1e, fieldConst, valAnyref, fieldConst, valI32, fieldConst,
-		// rec { go.ptr.struct.ref }: sub poly.ref=31, {class, anyref}.
-		opRec, 0x01, opSub, 0x01, 0x1f, opStruct, 0x02,
-		opRef, 0x1e, fieldConst, valAnyref, fieldConst,
+		// Each cycle emits four types in SCC order: polysetter,
+		// refclass, ptr.poly, polygetter. Final remap (per-cycle):
+		// polysetter=N+0, refclass=N+1, ptr.poly=N+2, polygetter=N+3.
 
-		// rec { go.refclass.f32 }: vtable {(ref getter.f32)=20, (ref setter.f32)=21}.
-		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02,
-		opRef, 0x14, fieldConst,
-		opRef, 0x15, fieldConst,
-		// rec { go.ptr.poly.f32 }: {(ref refclass.f32)=34}.
-		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x01,
-		opRef, 0x22, fieldConst,
-		// rec { go.ptr.array.f32 }: sub poly.f32=35, {class, anyref, i32}.
-		opRec, 0x01, opSub, 0x01, 0x23, opStruct, 0x03,
-		opRef, 0x22, fieldConst, valAnyref, fieldConst, valI32, fieldConst,
-		// rec { go.ptr.struct.f32 }: sub poly.f32=35, {class, anyref}.
-		opRec, 0x01, opSub, 0x01, 0x23, opStruct, 0x02,
-		opRef, 0x22, fieldConst, valAnyref, fieldConst,
+		// rec { polysetter.i64, refclass.i64, ptr.poly.i64, polygetter.i64 }
+		opRec, 0x04,
+		// polysetter.i64 (idx 0x1a): final func (param (ref ptr.poly.i64=0x1c), i64)
+		opSubFinal, 0x00, opFunc, 0x02, opRef, 0x1c, valI64, 0x00,
+		// refclass.i64 (idx 0x1b): sub go.object, struct {(ref polygetter.i64=0x1d), (ref polysetter.i64=0x1a)}
+		opSub, 0x01, 0x00, opStruct, 0x02, opRef, 0x1d, fieldConst, opRef, 0x1a, fieldConst,
+		// ptr.poly.i64 (idx 0x1c): sub go.object, struct {(ref refclass.i64=0x1b)}
+		opSub, 0x01, 0x00, opStruct, 0x01, opRef, 0x1b, fieldConst,
+		// polygetter.i64 (idx 0x1d): final func (param (ref ptr.poly.i64=0x1c)) -> i64
+		opSubFinal, 0x00, opFunc, 0x01, opRef, 0x1c, 0x01, valI64,
 
-		// rec { go.refclass.f64 }: vtable {(ref getter.f64)=17, (ref setter.f64)=18}.
-		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x02,
-		opRef, 0x11, fieldConst,
-		opRef, 0x12, fieldConst,
-		// rec { go.ptr.poly.f64 }: {(ref refclass.f64)=38}.
-		opRec, 0x01, opSub, 0x01, 0x00, opStruct, 0x01,
-		opRef, 0x26, fieldConst,
-		// rec { go.ptr.array.f64 }: sub poly.f64=39, {class, anyref, i32}.
-		opRec, 0x01, opSub, 0x01, 0x27, opStruct, 0x03,
-		opRef, 0x26, fieldConst, valAnyref, fieldConst, valI32, fieldConst,
-		// rec { go.ptr.struct.f64 }: sub poly.f64=39, {class, anyref}.
-		opRec, 0x01, opSub, 0x01, 0x27, opStruct, 0x02,
-		opRef, 0x26, fieldConst, valAnyref, fieldConst,
+		// rec { polysetter.ref, refclass.ref, ptr.poly.ref, polygetter.ref }
+		opRec, 0x04,
+		opSubFinal, 0x00, opFunc, 0x02, opRef, 0x20, valAnyref, 0x00,
+		opSub, 0x01, 0x00, opStruct, 0x02, opRef, 0x21, fieldConst, opRef, 0x1e, fieldConst,
+		opSub, 0x01, 0x00, opStruct, 0x01, opRef, 0x1f, fieldConst,
+		opSubFinal, 0x00, opFunc, 0x01, opRef, 0x20, 0x01, valAnyref,
+
+		// rec { polysetter.f32, refclass.f32, ptr.poly.f32, polygetter.f32 }
+		opRec, 0x04,
+		opSubFinal, 0x00, opFunc, 0x02, opRef, 0x24, valF32, 0x00,
+		opSub, 0x01, 0x00, opStruct, 0x02, opRef, 0x25, fieldConst, opRef, 0x22, fieldConst,
+		opSub, 0x01, 0x00, opStruct, 0x01, opRef, 0x23, fieldConst,
+		opSubFinal, 0x00, opFunc, 0x01, opRef, 0x24, 0x01, valF32,
+
+		// rec { polysetter.f64, refclass.f64, ptr.poly.f64, polygetter.f64 }
+		opRec, 0x04,
+		opSubFinal, 0x00, opFunc, 0x02, opRef, 0x28, valF64, 0x00,
+		opSub, 0x01, 0x00, opStruct, 0x02, opRef, 0x29, fieldConst, opRef, 0x26, fieldConst,
+		opSub, 0x01, 0x00, opStruct, 0x01, opRef, 0x27, fieldConst,
+		opSubFinal, 0x00, opFunc, 0x01, opRef, 0x28, 0x01, valF64,
+
+		// Now the eight variant subtypes — array + struct per class.
+		// They depend on the cycles above (ptr.poly and refclass) but
+		// aren't themselves recursive, so each is its own rec group.
+
+		// ptr.array.i64: sub ptr.poly.i64=0x1c, {class refclass.i64=0x1b, anyref, i32}
+		opRec, 0x01, opSub, 0x01, 0x1c, opStruct, 0x03, opRef, 0x1b, fieldConst, valAnyref, fieldConst, valI32, fieldConst,
+		// ptr.struct.i64: sub ptr.poly.i64=0x1c, {class, anyref}
+		opRec, 0x01, opSub, 0x01, 0x1c, opStruct, 0x02, opRef, 0x1b, fieldConst, valAnyref, fieldConst,
+		// ptr.array.ref: sub ptr.poly.ref=0x20
+		opRec, 0x01, opSub, 0x01, 0x20, opStruct, 0x03, opRef, 0x1f, fieldConst, valAnyref, fieldConst, valI32, fieldConst,
+		// ptr.struct.ref
+		opRec, 0x01, opSub, 0x01, 0x20, opStruct, 0x02, opRef, 0x1f, fieldConst, valAnyref, fieldConst,
+		// ptr.array.f32: sub ptr.poly.f32=0x24
+		opRec, 0x01, opSub, 0x01, 0x24, opStruct, 0x03, opRef, 0x23, fieldConst, valAnyref, fieldConst, valI32, fieldConst,
+		// ptr.struct.f32
+		opRec, 0x01, opSub, 0x01, 0x24, opStruct, 0x02, opRef, 0x23, fieldConst, valAnyref, fieldConst,
+		// ptr.array.f64: sub ptr.poly.f64=0x28
+		opRec, 0x01, opSub, 0x01, 0x28, opStruct, 0x03, opRef, 0x27, fieldConst, valAnyref, fieldConst, valI32, fieldConst,
+		// ptr.struct.f64
+		opRec, 0x01, opSub, 0x01, 0x28, opStruct, 0x02, opRef, 0x27, fieldConst, valAnyref, fieldConst,
 	}
 	if !bytes.Equal(payload, want) {
 		t.Fatalf("prelude type section mismatch:\n got % x\nwant % x", payload, want)

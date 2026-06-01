@@ -184,7 +184,24 @@ const (
 	// those signatures are generated lazily per-(container,leaf) by
 	// reflectdata; class-instance globals are emitted per-(container,leaf)
 	// too.
-	TypeGoRefClassI64   // go.refclass.i64:    {get, set} — vtable struct for i64-class pointers
+	// Per-leaf-class polymorphic-dispatch funcref signatures.
+	// PolyGetter<X>: func(ptr (ref go.ptr.poly.<X>)) (result <leaf>).
+	// PolySetter<X>: func(ptr (ref go.ptr.poly.<X>)) (param <leaf>).
+	// Unlike the legacy Getter<X>/Setter<X> (which take base anyref +
+	// off i32), the polymorphic shape takes the whole fat-pointer ref
+	// and lets the variant impl downcast inside — required because the
+	// dispatcher knows only the polymorphic base type, not which
+	// concrete subtype the value actually is.
+	TypeGoPolyGetterI64 // go.polygetter.i64
+	TypeGoPolySetterI64 // go.polysetter.i64
+	TypeGoPolyGetterRef // go.polygetter.ref
+	TypeGoPolySetterRef // go.polysetter.ref
+	TypeGoPolyGetterF32 // go.polygetter.f32
+	TypeGoPolySetterF32 // go.polysetter.f32
+	TypeGoPolyGetterF64 // go.polygetter.f64
+	TypeGoPolySetterF64 // go.polysetter.f64
+
+	TypeGoRefClassI64   // go.refclass.i64:    {polygetter, polysetter} — vtable struct for i64-class pointers
 	TypeGoPtrPolyI64    // go.ptr.poly.i64:    (sub go.object (struct (ref refclass.i64))) — polymorphic base
 	TypeGoPtrArrayI64   // go.ptr.array.i64:   (sub go.ptr.poly.i64 (struct class, anyref base, i32 offset))
 	TypeGoPtrStructI64  // go.ptr.struct.i64:  (sub go.ptr.poly.i64 (struct class, anyref container))
@@ -474,14 +491,37 @@ func PreludeTypes() []Type {
 	// a polymorphic dispatcher needs no ref.cast before reading it.
 	// WasmGC subtype rules require the prefix to repeat exactly, so
 	// each subtype redeclares the parent's field first.
-	defPolyPtrFamily := func(refclass, poly, array, strct int, getter, setter int) {
+	// PolyGetter / PolySetter funcref signatures. Take the
+	// polymorphic ptr ref as the only structural arg; the variant
+	// impl downcasts internally. One per leaf storage class.
+	defPolyAccessor := func(getter, setter, poly int, name string, leaf Storage) {
+		t[getter] = Type{
+			Name:    "go.polygetter." + name,
+			Kind:    KindFunc,
+			Super:   -1,
+			Params:  []Storage{RefStorage(poly, false)},
+			Results: []Storage{leaf},
+		}
+		t[setter] = Type{
+			Name:   "go.polysetter." + name,
+			Kind:   KindFunc,
+			Super:  -1,
+			Params: []Storage{RefStorage(poly, false), leaf},
+		}
+	}
+	defPolyAccessor(TypeGoPolyGetterI64, TypeGoPolySetterI64, TypeGoPtrPolyI64, "i64", PrimStorage(I64))
+	defPolyAccessor(TypeGoPolyGetterRef, TypeGoPolySetterRef, TypeGoPtrPolyRef, "ref", AnyRefStorage())
+	defPolyAccessor(TypeGoPolyGetterF32, TypeGoPolySetterF32, TypeGoPtrPolyF32, "f32", PrimStorage(F32))
+	defPolyAccessor(TypeGoPolyGetterF64, TypeGoPolySetterF64, TypeGoPtrPolyF64, "f64", PrimStorage(F64))
+
+	defPolyPtrFamily := func(refclass, poly, array, strct int, polygetter, polysetter int) {
 		t[refclass] = Type{
 			Name:  "go.refclass." + className(refclass),
 			Kind:  KindStruct,
 			Super: TypeGoObject,
 			Fields: []Field{
-				{Storage: RefStorage(getter, false)},
-				{Storage: RefStorage(setter, false)},
+				{Storage: RefStorage(polygetter, false)},
+				{Storage: RefStorage(polysetter, false)},
 			},
 		}
 		t[poly] = Type{
@@ -512,10 +552,10 @@ func PreludeTypes() []Type {
 			},
 		}
 	}
-	defPolyPtrFamily(TypeGoRefClassI64, TypeGoPtrPolyI64, TypeGoPtrArrayI64, TypeGoPtrStructI64, TypeGoGetterI64, TypeGoSetterI64)
-	defPolyPtrFamily(TypeGoRefClassRef, TypeGoPtrPolyRef, TypeGoPtrArrayRef, TypeGoPtrStructRef, TypeGoGetterRef, TypeGoSetterRef)
-	defPolyPtrFamily(TypeGoRefClassF32, TypeGoPtrPolyF32, TypeGoPtrArrayF32, TypeGoPtrStructF32, TypeGoGetterF32, TypeGoSetterF32)
-	defPolyPtrFamily(TypeGoRefClassF64, TypeGoPtrPolyF64, TypeGoPtrArrayF64, TypeGoPtrStructF64, TypeGoGetterF64, TypeGoSetterF64)
+	defPolyPtrFamily(TypeGoRefClassI64, TypeGoPtrPolyI64, TypeGoPtrArrayI64, TypeGoPtrStructI64, TypeGoPolyGetterI64, TypeGoPolySetterI64)
+	defPolyPtrFamily(TypeGoRefClassRef, TypeGoPtrPolyRef, TypeGoPtrArrayRef, TypeGoPtrStructRef, TypeGoPolyGetterRef, TypeGoPolySetterRef)
+	defPolyPtrFamily(TypeGoRefClassF32, TypeGoPtrPolyF32, TypeGoPtrArrayF32, TypeGoPtrStructF32, TypeGoPolyGetterF32, TypeGoPolySetterF32)
+	defPolyPtrFamily(TypeGoRefClassF64, TypeGoPtrPolyF64, TypeGoPtrArrayF64, TypeGoPtrStructF64, TypeGoPolyGetterF64, TypeGoPolySetterF64)
 
 	return t
 }

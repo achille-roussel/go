@@ -18,11 +18,14 @@ import (
 	"cmd/compile/internal/reflectdata"
 	"cmd/compile/internal/ssa"
 	"cmd/compile/internal/ssagen"
+	"cmd/compile/internal/typecheck"
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
 	"cmd/internal/obj/wasm"
 	"cmd/internal/src"
 	"cmd/internal/wasmgc"
+	"go/constant"
+	"sync"
 )
 
 /*
@@ -153,6 +156,18 @@ func Init(arch *ssagen.ArchInfo) {
 	arch.LoadRegResult = loadRegResult
 
 	arch.PrepareFunc = attachWasmType
+
+	// Lazy polymorphic-fat-pointer accessor materialisation. The wasm3
+	// SSA backend generates accessor LSyms on demand at caller-side
+	// genssa (when the accessor's own FuncInfo doesn't yet exist) and
+	// records the (elemT, isSet) meta in a side-table. The obj-side
+	// assemble3 calls this hook at the start of every wasm3 function
+	// body assembly; the hook checks the side-table and, on match,
+	// registers the accessor's (ref (array T)) backing in s.Func()'s
+	// wasmgc.Table and installs the Wasm3PolyAccessor on the FuncInfo.
+	// assemble3 then sees the marker and dispatches to
+	// assembleWasm3PolyAccessor, replacing the trivial SSA body.
+	obj.Wasm3SetupPolyAccessor = wasm3SetupPolyAccessor
 }
 
 // spillArgReg and loadRegResult bridge register-resident arguments and
@@ -1179,19 +1194,20 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: idx}
 
 	case ssa.OpWasm3StoreInterior:
-		// Write through a fat pointer (doc/wasm3-fat-pointers-design.md).
-		// arg0 is the fat-pointer ref; arg1 is the value; arg2 is mem.
-		// v.Aux is the container's *types.Type. Dual of LoadInterior;
-		// must live in ssaGenValue (not ssaGenValueOnStack) because it
-		// is a memory op — the ssaGenValue default returns early for
-		// IsMemory() values before the on-stack path runs.
-		//   1. Recover the typed container (local.tee the iptr; ref.cast
-		//      + struct.get 0 + ref.cast to (ref $container_type));
-		//   2. Get the offset (local.get iptr; ref.cast + struct.get 1);
-		//   3. Push the value (narrowed if packed);
-		//   4. array.set $container_type.
+		// Write through a polymorphic fat pointer. arg0 is the polyptr
+		// ref (always $go.ptr.poly.<X> since OpWasm3InteriorPtr
+		// migrated); arg1 is the value; arg2 is mem. v.Aux is the
+		// container *types.Type. Dual of LoadInterior; lives in
+		// ssaGenValue (not ssaGenValueOnStack) because it is a
+		// memory op — ssaGenValue's default returns early for memory
+		// before delegating to ssaGenValueOnStack.
+		//   1. Recover the typed container (local.tee the polyptr;
+		//      ref.cast + struct.get 1 + ref.cast to container);
+		//   2. Get the offset (local.get; ref.cast + struct.get 2);
+		//   3. Push the value (narrowed/downcast as appropriate);
+		//   4. array.set $container.
 		containerType := v.Aux.(*types.Type)
-		wrapIdx := wasm3IptrTypeIdx(containerType.Elem())
+		polyIdx, _, _, _, _ := wasm3InteriorPtrClass(containerType.Elem())
 		containerIdx := int64(wasm3RegisterArrayBacking(s.FuncInfo(), containerType.Elem()))
 		elemSize := containerType.Elem().Size()
 		if elemSize > 8 {
@@ -1201,22 +1217,23 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		getValue64(s, v.Args[0])
 		pTee := s.Prog(wasm.ALocalTee)
 		pTee.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(iptrTmp)}
-		// 1: typed container
+		// 1: typed container — polyptr field 1 (base anyref) then
+		// downcast to (ref $container).
 		pCast1 := s.Prog(wasm.ARefCast)
-		pCast1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
+		pCast1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(polyIdx)}
 		pGet0 := s.Prog(wasm.AStructGet)
-		pGet0.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
-		pGet0.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+		pGet0.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(polyIdx)}
+		pGet0.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
 		pCastC := s.Prog(wasm.ARefCast)
 		pCastC.From = obj.Addr{Type: obj.TYPE_CONST, Offset: containerIdx}
-		// 2: offset
+		// 2: offset — polyptr field 2.
 		pGetTmp := s.Prog(wasm.ALocalGet)
 		pGetTmp.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(iptrTmp)}
 		pCast2 := s.Prog(wasm.ARefCast)
-		pCast2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
+		pCast2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(polyIdx)}
 		pGet1 := s.Prog(wasm.AStructGet)
-		pGet1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
-		pGet1.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
+		pGet1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(polyIdx)}
+		pGet1.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 2}
 		// 3: value. Integer values narrow to i32 if packed; float values
 		// are already f32/f64 and pass through unchanged; reference
 		// (pointer) values are anyref per-value locals and must be
@@ -2753,72 +2770,81 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		pGet.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(tmp)}
 
 	case ssa.OpWasm3InteriorPtr:
-		// doc/wasm3-fat-pointers-design.md Piece 2: materialise a fat
-		// pointer for an interior slot of a wasmgc container.
-		// v.Aux is the container's *types.Type (a slice or array);
-		// arg0 is the container ref (anyref-typed at the SSA level);
-		// arg1 is the i32 element offset. Wrapper-type index is
-		// derived from the element's storage class.
+		// Polymorphic fat-pointer for an interior slot of a wasmgc
+		// container (slice/array element). v.Aux is the container's
+		// *types.Type; arg0 is the container ref (anyref at the SSA
+		// level); arg1 is the i64 element offset (narrowed to i32).
 		//
-		// Emits: <container>; <offset i32>; struct.new $go.iptr.<class>
+		// Build a $go.ptr.poly.<X> with an inline $go.refclass.<X>
+		// holding refs to the per-T array-element accessors
+		// (assembleWasm3PolyAccessor emits their hand-assembled
+		// `ref.cast (ref (array T)); array.get/set` bodies). The
+		// emitted layout is {class, base, off}. Pointer transit
+		// through chan slots, returns, and globals all see this
+		// uniform polyptr shape, removing the iptr-vs-polyptr
+		// mismatch the prior split caused. Local `*p = v` / `*p`
+		// still goes through LoadInterior/StoreInterior, which now
+		// consume the polyptr layout (fields 1/2 instead of the old
+		// iptr's 0/1) — see those cases below.
 		containerType := v.Aux.(*types.Type)
-		wrapIdx := wasm3IptrTypeIdx(containerType.Elem())
-		// Even though wrapIdx is a fixed prelude index, the linker's
-		// R_WASMTYPE remap reads from the function's WasmType.Table —
-		// which must be initialised with the prelude entries before
-		// any prelude index is referenced.
+		elemT := containerType.Elem()
+		polyIdx, refclassIdx, _, _, _ := wasm3InteriorPtrClass(elemT)
 		wasm3EnsureCollector(s.FuncInfo())
+		getterSym := wasm3GetOrGenArrayAccessor(elemT, false)
+		setterSym := wasm3GetOrGenArrayAccessor(elemT, true)
+		pgRef := s.Prog(wasm.ARefFunc)
+		pgRef.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: getterSym}
+		psRef := s.Prog(wasm.ARefFunc)
+		psRef.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: setterSym}
+		pcls := s.Prog(wasm.AStructNew)
+		pcls.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(refclassIdx)}
 		getValue64(s, v.Args[0])
 		getValue64(s, v.Args[1])
 		s.Prog(wasm.AI32WrapI64)
 		pNew := s.Prog(wasm.AStructNew)
-		pNew.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
+		pNew.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(polyIdx)}
 
 	case ssa.OpWasm3LoadInterior:
-		// Read through a fat pointer. arg0 is the fat-pointer ref;
-		// v.Aux is the container's *types.Type (slice or array).
-		// Emits the canonical sequence of:
-		//   1. ref.cast iptr to (ref $go.iptr.<class>); struct.get 0
-		//      -> container as anyref;
+		// Read through a polymorphic fat pointer. arg0 is the polyptr
+		// ref (always $go.ptr.poly.<X> since OpWasm3InteriorPtr
+		// migrated); v.Aux is the container's *types.Type. Emits:
+		//   1. ref.cast anyref to (ref $go.ptr.poly.<X>);
+		//      struct.get field 1 -> base anyref;
 		//   2. ref.cast to (ref $container_wasmgc_type);
-		//   3. ref.cast iptr again; struct.get 1 -> offset i32;
-		//   4. array.get_u / array.get on $container_wasmgc_type.
-		// The result is widened back to i64 for the per-value local
-		// (i64 by wasm3ValueType), matching OpWasm3ArrayGet's
-		// extension polarity.
+		//   3. ref.cast polyptr again; struct.get field 2 -> off i32;
+		//   4. array.get_s/_u/plain on $container.
+		// Skips the class indirection (no struct.get class; call_ref)
+		// because the container element type is known statically here
+		// — the polymorphic path through PtrLoad's call_ref is for
+		// callers that don't know the elem type at the deref site
+		// (e.g. ptr-typed function parameters).
 		containerType := v.Aux.(*types.Type)
-		wrapIdx := wasm3IptrTypeIdx(containerType.Elem())
+		polyIdx, _, _, _, _ := wasm3InteriorPtrClass(containerType.Elem())
 		containerIdx := int64(wasm3RegisterArrayBacking(s.FuncInfo(), containerType.Elem()))
 		elemSize := containerType.Elem().Size()
 		signed := v.Type.IsSigned()
-		// Stash the iptr in an anyref temp local — we need to read
-		// both of its fields (container at 0, offset at 1) but
-		// getValue64 is one-shot for OnWasmStack values (a second
-		// call would re-execute the producer's codegen). Local.tee
-		// stores the iptr while keeping it on the stack for the
-		// first use; the second use comes from local.get.
 		iptrTmp := wasm3AllocAnyrefTempLocal(s)
 		getValue64(s, v.Args[0])
 		pTee := s.Prog(wasm.ALocalTee)
 		pTee.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(iptrTmp)}
-		// 1: container ref — cast iptr from anyref to iptr-typed, then
-		// struct.get field 0.
+		// 1: base ref — cast polyptr from anyref to polyptr-typed,
+		// struct.get field 1 (base, anyref).
 		pCast1 := s.Prog(wasm.ARefCast)
-		pCast1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
+		pCast1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(polyIdx)}
 		pGet0 := s.Prog(wasm.AStructGet)
-		pGet0.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
-		pGet0.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+		pGet0.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(polyIdx)}
+		pGet0.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
 		// 2: typed container ref
 		pCastC := s.Prog(wasm.ARefCast)
 		pCastC.From = obj.Addr{Type: obj.TYPE_CONST, Offset: containerIdx}
-		// 3: offset — re-fetch iptr (anyref) and re-cast.
+		// 3: offset — re-fetch polyptr (anyref) and re-cast; field 2.
 		pGetTmp := s.Prog(wasm.ALocalGet)
 		pGetTmp.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(iptrTmp)}
 		pCast2 := s.Prog(wasm.ARefCast)
-		pCast2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
+		pCast2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(polyIdx)}
 		pGet1 := s.Prog(wasm.AStructGet)
-		pGet1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wrapIdx)}
-		pGet1.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
+		pGet1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(polyIdx)}
+		pGet1.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 2}
 		// 4: array.get with the right packed/unpacked variant. Float
 		// elements ((array f32) / (array f64)) use plain array.get and
 		// stay f32/f64 — no packed get_s/get_u and no i64-extension, since
@@ -3962,6 +3988,177 @@ func wasm3InteriorPtrClass(t *types.Type) (polyIdx, refclassIdx, getterIdx, sett
 		return wasmgc.TypeGoPtrPolyF64, wasmgc.TypeGoRefClassF64, wasmgc.TypeGoGetterF64, wasmgc.TypeGoSetterF64, false
 	}
 	return wasmgc.TypeGoPtrPolyI64, wasmgc.TypeGoRefClassI64, wasmgc.TypeGoGetterI64, wasmgc.TypeGoSetterI64, false
+}
+
+// wasm3ArrayAccessorMeta is the side-table entry for a pending
+// polymorphic-fat-pointer accessor LSym: it records what
+// wasm3SetupPolyAccessor (the assemble3 hook) needs to install on
+// the accessor's FuncInfo once it exists — the element Go type, the
+// leaf class/size/signedness, and the get-vs-set flag. The element
+// Go type is needed at hook time to register the (ref (array T))
+// backing in the accessor's own wasmgc.Table.
+type wasm3ArrayAccessorMeta struct {
+	elemT  *types.Type
+	leaf   byte // 0=i64, 1=ref, 2=f32, 3=f64
+	isSet  bool
+	signed bool
+}
+
+// wasm3ArrayAccessorCache memoises the per-(elemT, isSet) array-elem
+// accessor LSyms so multiple OpWasm3InteriorPtr sites for the same
+// element type share one accessor pair. Key is `<kind>.<linkstring>`.
+// Serialization of the DeclFunc path is via the shared
+// reflectdata.Wasm3AccessorMu (also used by WasmGCFieldGetter/Setter)
+// — necessary because ir.CurFunc/funcStack are globals and a race
+// between two such generators trips enqueueFunc's CurFunc guard.
+var wasm3ArrayAccessorCache sync.Map // string -> *obj.LSym
+
+// wasm3ArrayAccessorMetaTable maps each generated accessor LSym to
+// the meta wasm3SetupPolyAccessor uses to lazily wire it. Populated
+// by wasm3GetOrGenArrayAccessor; consumed (once) by the hook.
+var wasm3ArrayAccessorMetaTable sync.Map // *obj.LSym -> *wasm3ArrayAccessorMeta
+
+// wasm3GetOrGenArrayAccessor returns the obj.LSym of the per-T array-
+// element accessor (get if !isSet, set if isSet) used as the
+// $go.refclass.<X> vtable funcref for OpWasm3InteriorPtr's
+// polymorphic fat pointer.
+//
+// The accessor's body is hand-assembled by assembleWasm3PolyAccessor
+// (obj/wasm/wasm3obj.go) — `ref.cast (ref (array T))` and
+// `array.get/set` aren't expressible in Go IR. The function is still
+// registered as an ir.Func so the link symbol exists and the compile
+// queue picks it up; the trivial Go body it carries is thrown away
+// at assemble time.
+//
+// FuncInfo wiring (set Wasm3PolyAccessor, register the array backing
+// in the accessor's own wasmgc.Table) is deferred to
+// wasm3SetupPolyAccessor — it can't happen here because the LSym's
+// FuncInfo isn't created until the accessor's own compile pass.
+func wasm3GetOrGenArrayAccessor(elemT *types.Type, isSet bool) *obj.LSym {
+	kind := "arrayget"
+	if isSet {
+		kind = "arrayset"
+	}
+	cacheKey := kind + "." + elemT.LinkString()
+	if cached, ok := wasm3ArrayAccessorCache.Load(cacheKey); ok {
+		return cached.(*obj.LSym)
+	}
+	reflectdata.Wasm3AccessorMu.Lock()
+	defer reflectdata.Wasm3AccessorMu.Unlock()
+	if cached, ok := wasm3ArrayAccessorCache.Load(cacheKey); ok {
+		return cached.(*obj.LSym)
+	}
+
+	int64T := types.Types[types.TINT64]
+	int32T := types.Types[types.TINT32]
+	unsafePtrT := types.Types[types.TUNSAFEPTR]
+
+	leafClass := byte(0) // i64 class — default for integer/bool
+	leafType := int64T
+	if elemT.IsFloat() {
+		if elemT.Kind() == types.TFLOAT32 {
+			leafClass = 2
+			leafType = types.Types[types.TFLOAT32]
+		} else {
+			leafClass = 3
+			leafType = types.Types[types.TFLOAT64]
+		}
+	} else if elemT.IsUnsafePtr() || elemT.IsPtr() || elemT.IsInterface() ||
+		elemT.IsSlice() || elemT.IsString() {
+		leafClass = 1
+		leafType = unsafePtrT
+	}
+
+	sym := types.TypeSymLookup("." + kind + ".w3." + elemT.LinkString())
+	if sym.Def != nil {
+		ls := sym.Def.(*ir.Name).Func.Linksym()
+		wasm3ArrayAccessorCache.Store(cacheKey, ls)
+		return ls
+	}
+	pos := base.AutogeneratedPos
+	base.Pos = pos
+
+	var params []*types.Field
+	params = append(params,
+		types.NewField(pos, typecheck.Lookup("base"), unsafePtrT),
+		types.NewField(pos, typecheck.Lookup("off"), int32T),
+	)
+	var results []*types.Field
+	if isSet {
+		params = append(params, types.NewField(pos, typecheck.Lookup("v"), leafType))
+	} else {
+		results = append(results, types.NewField(pos, nil, leafType))
+	}
+	fn := ir.NewFunc(pos, pos, sym, types.NewSignature(nil, params, results))
+	sym.Def = fn.Nname
+	fn.Pragma |= ir.Noinline
+	typecheck.DeclFunc(fn)
+	// Trivial body — assemble3's Wasm3PolyAccessor dispatch replaces
+	// the actual emission, so the SSA-compiled output is thrown away.
+	// Crucially, the body must be NON-EMPTY: enqueueFunc treats an
+	// empty body as a bodyless intrinsic and skips compilation, which
+	// means assemble3 never runs and the hand-assembled body never
+	// emits. A single return statement suffices.
+	if isSet {
+		fn.Body.Append(ir.NewReturnStmt(pos, nil))
+	} else {
+		var zero ir.Node
+		switch {
+		case elemT.IsFloat():
+			zero = ir.NewBasicLit(pos, leafType, constant.MakeFloat64(0))
+		case leafClass == 1:
+			zero = typecheck.NodNil()
+		default:
+			zero = ir.NewInt(pos, 0)
+		}
+		fn.Body.Append(ir.NewReturnStmt(pos, []ir.Node{zero}))
+	}
+	typecheck.FinishFuncBody()
+	fn.SetDupok(true)
+	ir.WithFunc(fn, func() { typecheck.Stmts(fn.Body) })
+	fn.SetNilCheckDisabled(true)
+
+	ls := fn.Linksym()
+	wasm3ArrayAccessorMetaTable.Store(ls, &wasm3ArrayAccessorMeta{
+		elemT:  elemT,
+		leaf:   leafClass,
+		isSet:  isSet,
+		signed: elemT.IsSigned(),
+	})
+	wasm3ArrayAccessorCache.Store(cacheKey, ls)
+	return ls
+}
+
+// wasm3SetupPolyAccessor is the obj.Wasm3SetupPolyAccessor hook. It
+// fires from assemble3 at the start of every wasm3 function body
+// assembly. For a pending accessor (one whose LSym is in
+// wasm3ArrayAccessorMetaTable) it (a) registers the (ref (array T))
+// backing in s.Func()'s wasmgc.Table — the body's R_WASMTYPE relocs
+// reference its slot — and (b) installs the Wasm3PolyAccessor on the
+// FuncInfo so the next assemble3 check dispatches to
+// assembleWasm3PolyAccessor. No-op for any other symbol.
+func wasm3SetupPolyAccessor(s *obj.LSym) {
+	mAny, ok := wasm3ArrayAccessorMetaTable.Load(s)
+	if !ok {
+		return
+	}
+	m := mAny.(*wasm3ArrayAccessorMeta)
+	fi := s.Func()
+	if fi == nil {
+		// Accessor's compile pass hasn't created the FuncInfo yet.
+		// Shouldn't happen — assemble3 runs after Compile, which
+		// creates FuncInfo unconditionally. Defensive only.
+		return
+	}
+	arrayIdx := wasm3RegisterArrayBacking(fi, m.elemT)
+	elemSize := int(m.elemT.Size())
+	fi.Wasm3PolyAccessor = &obj.Wasm3PolyAccessor{
+		Set:          m.isSet,
+		LeafClass:    m.leaf,
+		ElemSize:     elemSize,
+		Signed:       m.signed,
+		ArrayTypeIdx: int64(arrayIdx),
+	}
 }
 
 // wasm3PtrField emits the read of field `field` of the

@@ -519,7 +519,62 @@ type FuncInfo struct {
 	// 0x7D=f32, 0x7C=f64) of the Nth per-value local.
 	Wasm3LocalTypes []byte
 
+	// Wasm3PolyAccessor, when non-nil, marks this function as a
+	// hand-synthesised polymorphic-fat-pointer accessor (the get/
+	// set funcref a $go.refclass.<X> vtable instance stores). The
+	// body is emitted by assembleWasm3PolyAccessor in
+	// obj/wasm/wasm3obj.go rather than via the normal SSA pipeline
+	// — `ref.cast (ref (array T))` and `array.get/set` aren't
+	// expressible in Go IR. The struct carries the kind (get/set),
+	// the leaf storage class (i64/ref/f32/f64), element size, and
+	// the per-function wasmgc.Table index of the (ref (array T))
+	// backing the accessor dereferences. Not serialised — these
+	// accessor LSyms are generated locally per compilation.
+	Wasm3PolyAccessor *Wasm3PolyAccessor
+
 	sehUnwindInfoSym *LSym
+}
+
+// Wasm3SetupPolyAccessor, when non-nil, is consulted by assemble3
+// at the start of every wasm3 function body assembly. If the LSym
+// is a pending polymorphic-fat-pointer accessor (one the wasm3
+// compiler backend generated lazily during caller-side genssa, when
+// the accessor's own FuncInfo did not yet exist), the hook
+// (a) registers the accessor's (ref (array T)) backing in the
+// accessor's wasmgc.Table, and (b) installs the Wasm3PolyAccessor
+// metadata on the LSym's FuncInfo so the subsequent
+// assembleWasm3PolyAccessor dispatch fires. Installed from
+// cmd/compile/internal/wasm3 (via the compiler-only `wasm3` package
+// init) so obj package depends only on the function pointer.
+var Wasm3SetupPolyAccessor func(s *LSym)
+
+// Wasm3PolyAccessor describes a per-T array-element accessor func
+// the polymorphic fat-pointer system stores in a $go.refclass.<X>
+// vtable. The accessor's wasm signature is the legacy
+// TypeGoGetter<X>/TypeGoSetter<X>: (anyref base, i32 off) -> leaf
+// for the get form; (anyref base, i32 off, leaf value) for set.
+// Body emitted by assembleWasm3PolyAccessor.
+type Wasm3PolyAccessor struct {
+	// Set is true for setters, false for getters.
+	Set bool
+	// LeafClass selects the wasm leaf type the accessor reads/writes:
+	// 0=i64, 1=ref/anyref, 2=f32, 3=f64.
+	LeafClass byte
+	// ElemSize is the byte width of the array element. For sub-i64
+	// integer/bool elements (1/2/4) the getter widens the read
+	// result to i64 (signed or unsigned per Signed); the setter
+	// narrows the i64 input to the element width via i32.wrap_i64
+	// before array.set.
+	ElemSize int
+	// Signed selects array.get_s vs array.get_u for packed
+	// elements (ElemSize == 1 or 2).
+	Signed bool
+	// ArrayTypeIdx is the per-function wasmgc.Table index of the
+	// (ref (array T)) backing type. The emitted body uses it via
+	// R_WASMTYPE relocations on the ref.cast and array.get/set
+	// instructions; the linker remaps it to the module-wide
+	// type index.
+	ArrayTypeIdx int64
 }
 
 // JumpTable represents a table used for implementing multi-way

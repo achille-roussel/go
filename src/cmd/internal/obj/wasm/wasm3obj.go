@@ -205,6 +205,17 @@ func preprocess3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 	if we := s.Func().WasmExport; we != nil {
 		we.CreateAuxSym()
 	}
+	// Lazy polymorphic-accessor setup: the wasm3 backend may have
+	// generated this LSym as a placeholder during a caller's genssa
+	// (when this accessor's own FuncInfo didn't yet exist) and
+	// recorded the (elemT, isSet) meta in a side-table. The hook
+	// populates s.Func().WasmType.Table with the (ref (array T))
+	// backing AND installs the Wasm3PolyAccessor on FuncInfo. Must
+	// happen BEFORE wt.CreateAuxSym below so the AuxSym serializes
+	// the populated table — CreateAuxSym is a one-shot snapshot.
+	if obj.Wasm3SetupPolyAccessor != nil {
+		obj.Wasm3SetupPolyAccessor(s)
+	}
 	if wt := s.Func().WasmType; wt != nil {
 		wt.CreateAuxSym()
 	}
@@ -243,6 +254,11 @@ func assemble3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 
 	if wi := s.Func().WasmImport; wi != nil {
 		assembleWasm3ImportWrapper(ctxt, s, wi)
+		return
+	}
+
+	if pa := s.Func().Wasm3PolyAccessor; pa != nil {
+		assembleWasm3PolyAccessor(ctxt, s, pa)
 		return
 	}
 
@@ -1721,6 +1737,124 @@ func wasm3LoadStoreAlign(as obj.As) uint64 {
 		return 3
 	}
 	panic("wasm3LoadStoreAlign: bad op")
+}
+
+// assembleWasm3PolyAccessor emits the body of a per-T array-element
+// accessor for the polymorphic fat-pointer system
+// (doc/wasm3-fat-ptr-class-prototype). The accessor lives in a
+// $go.refclass.<X> vtable's get or set funcref slot; the polymorphic
+// dispatcher (OpWasm3PtrLoad / OpWasm3PtrStore) calls it via
+// call_ref after extracting (base, off) from a $go.ptr.poly.<X>.
+//
+// Getter body (LeafClass = i64, ElemSize = 4, Signed = true):
+//
+//	local declaration count: 0
+//	local.get 0                  ; base (anyref)
+//	ref.cast (ref $array)        ; R_WASMTYPE reloc → array backing
+//	local.get 1                  ; off (i32)
+//	array.get $array             ; R_WASMTYPE reloc → array backing
+//	i64.extend_i32_s             ; widen i32 result to i64 (if needed)
+//	end
+//
+// Setter body (LeafClass = i64, ElemSize = 4):
+//
+//	local declaration count: 0
+//	local.get 0                  ; base
+//	ref.cast (ref $array)
+//	local.get 1                  ; off
+//	local.get 2                  ; value (i64)
+//	i32.wrap_i64                 ; narrow to element width (if needed)
+//	array.set $array
+//	end
+//
+// Sub-i64 element widths (1, 2, 4 bytes) use array.get_u / array.get_s
+// and follow with i64.extend; i64-class elements use plain array.get
+// and skip the extend. Ref-class accessors don't need widening but
+// must use array.get directly without _u/_s. Float classes use
+// array.get on (array f32/f64) backings with no width adjustment.
+func assembleWasm3PolyAccessor(ctxt *obj.Link, s *obj.LSym, pa *obj.Wasm3PolyAccessor) {
+	w := new(bytes.Buffer)
+	writeUleb128(w, 0) // local declaration count
+
+	// local.get 0 (base, anyref)
+	writeOpcode(w, ALocalGet)
+	writeUleb128(w, 0)
+
+	// ref.cast (ref $array_backing) — encoded as 0xfb 0x17 <typeidx>.
+	// The typeidx slot is written entirely by the linker via the
+	// R_WASMTYPE reloc; convention is no placeholder byte (the linker
+	// inserts the variable-length sleb at this offset). ref.cast
+	// takes a heap-type immediate (s33), so this is R_WASMHEAPTYPE.
+	writeOpcode(w, ARefCast)
+	relocs := []obj.Reloc{{
+		Type: objabi.R_WASMHEAPTYPE,
+		Off:  int32(w.Len()),
+		Siz:  1,
+		Add:  pa.ArrayTypeIdx,
+	}}
+
+	// local.get 1 (off, i32)
+	writeOpcode(w, ALocalGet)
+	writeUleb128(w, 1)
+
+	if pa.Set {
+		// local.get 2 (value)
+		writeOpcode(w, ALocalGet)
+		writeUleb128(w, 2)
+		// Narrow i64 to element width if needed. For ElemSize < 8
+		// with i64 leaf class, the value is i64 in the per-value
+		// local; array.set expects i32 (or packed i8/i16) — wrap
+		// to i32 first; the wasm array.set then auto-narrows
+		// packed.
+		if pa.LeafClass == 0 && pa.ElemSize < 8 {
+			writeOpcode(w, AI32WrapI64)
+		}
+		// array.set $array_backing — typeidx is uleb in array.* (not
+		// a heap-type), so R_WASMTYPE.
+		writeOpcode(w, AArraySet)
+		relocs = append(relocs, obj.Reloc{
+			Type: objabi.R_WASMTYPE,
+			Off:  int32(w.Len()),
+			Siz:  1,
+			Add:  pa.ArrayTypeIdx,
+		})
+	} else {
+		// Getter: array.get / array.get_u / array.get_s
+		getOp := AArrayGet
+		if pa.LeafClass == 0 && pa.ElemSize < 4 {
+			// Packed integer (i8, i16) — signedness matters.
+			if pa.Signed {
+				getOp = AArrayGetS
+			} else {
+				getOp = AArrayGetU
+			}
+		}
+		writeOpcode(w, getOp)
+		relocs = append(relocs, obj.Reloc{
+			Type: objabi.R_WASMTYPE,
+			Off:  int32(w.Len()),
+			Siz:  1,
+			Add:  pa.ArrayTypeIdx,
+		})
+		// Widen to i64 if needed. The legacy getter signature
+		// returns i64 for the integer/bool leaf class; the array
+		// element may be narrower (i32 for ElemSize=4, packed for
+		// 1/2). Extension polarity follows array.get_s/u or the
+		// signed flag.
+		if pa.LeafClass == 0 && pa.ElemSize < 8 {
+			if pa.Signed {
+				writeOpcode(w, AI64ExtendI32S)
+			} else {
+				writeOpcode(w, AI64ExtendI32U)
+			}
+		}
+	}
+
+	w.WriteByte(0x0b) // end
+	s.P = w.Bytes()
+	for _, r := range relocs {
+		s.AddRel(ctxt, r)
+	}
 }
 
 // assembleWasm3ImportWrapper emits the body of a //go:wasmimport stub

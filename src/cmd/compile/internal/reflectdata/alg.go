@@ -699,7 +699,7 @@ func Wasm3IsScalarLeaf(t *types.Type) bool {
 // matching $go.getter.i64 / $go.getter.ref. The offset param is unused
 // for a struct field (the path is static). Exported so the wasm3
 // interior-pointer lowering can reference the funcs via ref.func.
-// wasm3AccessorMu serializes generation of the per-(struct,field) interior
+// Wasm3AccessorMu serializes generation of the per-(struct,field) interior
 // pointer accessors. Unlike type descriptors' eq/hash functions (generated
 // during the serial reflectdata phase), these accessors are generated lazily
 // from OpWasm3MakeFieldPtr codegen, which runs inside compileFunctions'
@@ -710,11 +710,19 @@ func Wasm3IsScalarLeaf(t *types.Type) bool {
 // workers corrupt Target.Funcs ("too many arguments to return") or leave
 // ir.CurFunc non-nil for the main loop's next enqueueFunc ("enqueueFunc X
 // inside Y").
-var wasm3AccessorMu sync.Mutex
+// Wasm3AccessorMu is the lock to be acquired around any wasm3-only,
+// SSA-time generation of an ir.Func that goes through DeclFunc /
+// FinishFuncBody. The ir.CurFunc/funcStack pair is global; without
+// serialization, two concurrent backend workers calling DeclFunc
+// from genssa (this package's WasmGCFieldGetter/Setter, plus
+// wasm3GetOrGenArrayAccessor in cmd/compile/internal/wasm3)
+// interleave their CurFunc modifications and trip enqueueFunc's
+// "CurFunc != nil" guard or corrupt Target.Funcs.
+var Wasm3AccessorMu sync.Mutex
 
 func WasmGCFieldGetter(t *types.Type, off int64) *ir.Func {
-	wasm3AccessorMu.Lock()
-	defer wasm3AccessorMu.Unlock()
+	Wasm3AccessorMu.Lock()
+	defer Wasm3AccessorMu.Unlock()
 	types.CalcSize(t) // field offsets/sizes must be set for the leaf walk
 	leafT := wasm3LeafFieldType(t, off)
 	refClass := wasm3IsRefClass(leafT)
@@ -778,8 +786,8 @@ func WasmGCFieldGetter(t *types.Type, off int64) *ir.Func {
 
 // WasmGCFieldSetter is the writer half of the pair; see WasmGCFieldGetter.
 func WasmGCFieldSetter(t *types.Type, off int64) *ir.Func {
-	wasm3AccessorMu.Lock()
-	defer wasm3AccessorMu.Unlock()
+	Wasm3AccessorMu.Lock()
+	defer Wasm3AccessorMu.Unlock()
 	types.CalcSize(t) // field offsets/sizes must be set for the leaf walk
 	leafT := wasm3LeafFieldType(t, off)
 	refClass := wasm3IsRefClass(leafT)

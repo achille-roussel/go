@@ -615,6 +615,7 @@ type g struct {
 	// arch-conditioned. See [[wasm3-bag-of-stacks]] in
 	// .claude/plans/goroutines-continuations-bag-of-stacks.md.
 	wasm3Cont unsafe.Pointer
+
 }
 
 // gTrackingPeriod is the number of transitions out of _Grunning between

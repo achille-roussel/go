@@ -171,6 +171,17 @@ func InitConfig() {
 		// closure ref directly. See callGo path below.
 		ir.Syms.NewprocJSWasm3 = typecheck.LookupRuntimeFunc("newprocJSWasm3")
 	}
+	if buildcfg.GOARCH == "wasm3" {
+		// wasm3 M5 phase 1: defer goes through a heap-allocated WasmGC
+		// list (g.wasm3Defer) instead of the open-coded /
+		// linear-memory-stack-frame _defer record path. Each `defer
+		// fn()` site lowers to wasm3DeferPush(fn); each function exit
+		// for a function with defers lowers to wasm3DeferRunAll().
+		// The runtime helpers walk the list LIFO. Panic-unwind defer
+		// firing is a later phase (the try_table wrap).
+		ir.Syms.Wasm3DeferPush = typecheck.LookupRuntimeFunc("wasm3DeferPush")
+		ir.Syms.Wasm3DeferRunAll = typecheck.LookupRuntimeFunc("wasm3DeferRunAll")
+	}
 	ir.Syms.PanicBounds = typecheck.LookupRuntimeFunc("panicBounds")
 	ir.Syms.PanicExtend = typecheck.LookupRuntimeFunc("panicExtend")
 	ir.Syms.Panicdivide = typecheck.LookupRuntimeFunc("panicdivide")
@@ -418,6 +429,12 @@ func buildssa(fn *ir.Func, worker int, isPgoHot bool) *ssa.Func {
 	s.hasOpenDefers = base.Flag.N == 0 && s.hasdefer && !s.curfn.OpenCodedDeferDisallowed()
 	switch {
 	case base.Debug.NoOpenDefer != 0:
+		s.hasOpenDefers = false
+	case buildcfg.GOARCH == "wasm3":
+		// wasm3 M5: open-coded defer uses linear-memory stack-frame
+		// flag bits to track which deferred slots are live —
+		// incompatible with the WasmGC heap model. Route all defers
+		// through the wasm3DeferPush/RunAll heap-list path instead.
 		s.hasOpenDefers = false
 	case s.hasOpenDefers && (base.Ctxt.Flag_shared || base.Ctxt.Flag_dynlink) && base.Ctxt.Arch.Name == "386":
 		// Don't support open-coded defers for 386 ONLY when using shared
@@ -2017,6 +2034,15 @@ func (s *state) stmt(n ir.Node) {
 			if n.Esc() == ir.EscNever && n.DeferAt == nil {
 				d = callDeferStack
 			}
+			// wasm3 M5 phase 1: force the heap path. The stack-
+			// allocated _defer record (deferprocStack) lives in the
+			// linear-memory stack frame, which doesn't exist on
+			// wasm3. The heap path (deferproc — substituted to
+			// wasm3DeferPush in the callDefer case below) just takes
+			// a func() and pushes onto g.wasm3Defer.
+			if buildcfg.GOARCH == "wasm3" {
+				d = callDefer
+			}
 			s.call(n.Call.(*ir.CallExpr), d, false, n.DeferAt)
 		}
 	case ir.OGO:
@@ -2671,7 +2697,16 @@ func (s *state) exit() *ssa.Block {
 			// the deferreturn retrieved from the pcln information.
 			// opendefers would remain a problem, however.
 			s.pushLine(s.curfn.Endlineno)
-			s.rtcall(ir.Syms.Deferreturn, true, nil)
+			// wasm3 M5 phase 1: route function-exit defer firing
+			// through runtime.wasm3DeferRunAll() — pops every entry
+			// off g.wasm3Defer in LIFO order and call_ref's each.
+			// Same () -> () signature as deferreturn so rtcall ABI
+			// matches.
+			defReturn := ir.Syms.Deferreturn
+			if buildcfg.GOARCH == "wasm3" && ir.Syms.Wasm3DeferRunAll != nil {
+				defReturn = ir.Syms.Wasm3DeferRunAll
+			}
+			s.rtcall(defReturn, true, nil)
 			s.popLine()
 		}
 	}
@@ -5537,6 +5572,15 @@ func (s *state) call(n *ir.CallExpr, k callKind, returnResultAddr bool, deferExt
 			sym := ir.Syms.Deferproc
 			if dextra != nil {
 				sym = ir.Syms.Deferprocat
+			}
+			// wasm3 M5 phase 1: route `defer fn()` through
+			// runtime.wasm3DeferPush(fn func()) — pushes onto g.wasm3Defer.
+			// The standard deferproc path runs through newdefer +
+			// _defer record allocation, which trips the excluded GC
+			// subsystem on wasm3. wasm3DeferPush has the same
+			// (fn func()) signature so the call ABI matches.
+			if buildcfg.GOARCH == "wasm3" && ir.Syms.Wasm3DeferPush != nil {
+				sym = ir.Syms.Wasm3DeferPush
 			}
 			aux := ssa.StaticAuxCall(sym, s.f.ABIDefault.ABIAnalyzeTypes(ACArgs, ACResults)) // TODO paramResultInfo for Deferproc(at)
 			call = s.newValue0A(ssa.OpStaticLECall, aux.LateExpansionResultType(), aux)

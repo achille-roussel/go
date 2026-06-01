@@ -49,6 +49,8 @@ type symsStruct struct {
 	Newobject                 *obj.LSym
 	Newproc                   *obj.LSym
 	NewprocJSWasm3            *obj.LSym // GOOS=js GOARCH=wasm3: runtime.newprocJSWasm3(fn func())
+	Wasm3DeferPush            *obj.LSym // GOARCH=wasm3: runtime.wasm3DeferPush(fn func()) — defer's heap-list push (replaces deferproc)
+	Wasm3DeferRunAll          *obj.LSym // GOARCH=wasm3: runtime.wasm3DeferRunAll() — function-exit defer runner (replaces deferreturn)
 	PanicBounds               *obj.LSym
 	PanicExtend               *obj.LSym
 	Panicdivide               *obj.LSym

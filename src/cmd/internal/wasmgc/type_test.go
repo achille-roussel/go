@@ -77,18 +77,8 @@ func TestPreludeRecGroups(t *testing.T) {
 	CheckDependencyOrder(t, table)
 
 	groups := table.RecGroups()
-	// Most prelude types are non-recursive singletons. The exceptions
-	// are the four polymorphic fat-pointer cycles (one per leaf
-	// class): polygetter.<X> ↔ ptr.poly.<X> ↔ refclass.<X> ↔
-	// polygetter.<X>, plus polysetter.<X> in the same cycle. Each
-	// cycle collapses to one rec group of 4 types. The two variant
-	// subtypes (ptr.array.<X>, ptr.struct.<X>) depend on the cycle
-	// but aren't in it, so they stay singletons.
-	// Expected: NumPreludeTypes - 4 classes * 3 (the extra members
-	// past the first) = NumPreludeTypes - 12.
-	wantGroups := NumPreludeTypes - 12
-	if len(groups) != wantGroups {
-		t.Fatalf("prelude produced %d groups, want %d (non-recursive singletons + 4 fat-ptr cycles of 4)", len(groups), wantGroups)
+	if len(groups) != NumPreludeTypes {
+		t.Fatalf("prelude produced %d groups, want %d (all prelude types are non-recursive singletons)", len(groups), NumPreludeTypes)
 	}
 	for _, idx := range []int{
 		TypeGoObject, TypeGoBytes, TypeGoString,
@@ -99,12 +89,15 @@ func TestPreludeRecGroups(t *testing.T) {
 			t.Errorf("prelude type %d (%s) is in a group of size %d, want 1", idx, table[idx].Name, got)
 		}
 	}
-	// Each of the four poly-fat-ptr cycles should be a group of size 4.
+	// The polymorphic fat-pointer ptr.poly.<X> references refclass.<X>
+	// (one-way), which references the legacy getter/setter funcrefs
+	// (also one-way). No cycle — both are singletons.
 	for _, idx := range []int{
 		TypeGoPtrPolyI64, TypeGoPtrPolyRef, TypeGoPtrPolyF32, TypeGoPtrPolyF64,
+		TypeGoRefClassI64, TypeGoRefClassRef, TypeGoRefClassF32, TypeGoRefClassF64,
 	} {
-		if got := groupSize(groups, idx); got != 4 {
-			t.Errorf("fat-ptr cycle %d (%s) is in a group of size %d, want 4 (polygetter + polysetter + ptr.poly + refclass)", idx, table[idx].Name, got)
+		if got := groupSize(groups, idx); got != 1 {
+			t.Errorf("poly-ptr type %d (%s) is in a group of size %d, want 1", idx, table[idx].Name, got)
 		}
 	}
 	// go.string references both go.object (super) and go.bytes (field),

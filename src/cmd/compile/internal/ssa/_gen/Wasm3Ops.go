@@ -686,6 +686,41 @@ func init() {
 		// Returns mem.
 		{name: "PtrStore", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, typ: "Mem"},
 
+		// OpWasm3NewScalarPtr is `new(scalar T)` on wasm3 under the
+		// polymorphic fat-pointer model
+		// (doc/wasm3-fat-ptr-class-prototype): allocates a 1-element
+		// $go.array.<T> backing and returns a ($go.ptr.array.<X>) ref
+		// pointing at element 0. v.Aux is the scalar leaf
+		// *types.Type; the obj backend resolves it to the backing
+		// array type and the matching pointee class (X). Result lands
+		// in an anyref per-value local. Subsequent loads/stores
+		// through the result use PolyPtrLoad / PolyPtrStore.
+		//
+		// Codegen sequence:
+		//   i32.const 1
+		//   array.new_default $go.array.<T>
+		//   global.get $class.array.<T>   ;; per-T singleton, lazy
+		//   <swap to put class first per the struct field order>
+		//   i32.const 0                    ;; offset
+		//   struct.new $go.ptr.array.<X>
+		{name: "NewScalarPtr", argLength: 0, reg: gp01, aux: "Typ", typ: "BytePtr", hasSideEffects: true},
+
+		// OpWasm3PolyPtrLoad reads through any $go.ptr.poly.<X>
+		// (typically a $go.ptr.array.<X> or $go.ptr.struct.<X>
+		// subtype). The dispatch is purely polymorphic — read the
+		// $class field via the supertype view, struct.get the get
+		// funcref, call_ref it with the polymorphic ptr as the only
+		// arg. arg0 = polymorphic ptr ref; v.Type drives the per-
+		// value local shape (i64 / anyref / f32 / f64) and selects
+		// which $go.refclass.<X> / $go.getter.<X> to cast against.
+		{name: "PolyPtrLoad", argLength: 1, reg: gp11},
+
+		// OpWasm3PolyPtrStore writes through a polymorphic ptr. Dual
+		// of PolyPtrLoad: read class, struct.get set funcref, call_ref
+		// with (ptr, value). arg0 = ptr, arg1 = value, arg2 = mem.
+		// Returns mem.
+		{name: "PolyPtrStore", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, typ: "Mem"},
+
 		// M3.5 linear-memory bridge intrinsics — the only place
 		// wasm3 Go code crosses from WasmGC into linear memory.
 		// Used by runtime/wasm.{WriteLinearMemory, ReadLinearMemory,

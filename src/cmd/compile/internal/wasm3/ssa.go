@@ -880,6 +880,27 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(cellIdx)}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
 
+	case ssa.OpWasm3NewScalarPtr:
+		// TODO(polyptr-step-2): emit the construction sequence
+		//   global.get $class.array.<T>
+		//   i32.const 1; array.new_default $go.array.<T>
+		//   i32.const 0  ;; offset
+		//   struct.new $go.ptr.array.<X>
+		// Until the class-instance globals + per-T cell-accessor
+		// generation land, this op is unreachable.
+		v.Fatalf("OpWasm3NewScalarPtr: codegen not yet implemented (polyptr migration step 2)")
+
+	case ssa.OpWasm3PolyPtrLoad:
+		// TODO(polyptr-step-2): polymorphic dispatch
+		//   read $class field via struct.get $go.ptr.poly.<X> 0
+		//   read $get funcref via struct.get $go.refclass.<X> 0
+		//   call_ref $go.getter.<X> with the polymorphic ptr
+		v.Fatalf("OpWasm3PolyPtrLoad: codegen not yet implemented (polyptr migration step 2)")
+
+	case ssa.OpWasm3PolyPtrStore:
+		// TODO(polyptr-step-2): polymorphic dispatch (set funcref).
+		v.Fatalf("OpWasm3PolyPtrStore: codegen not yet implemented (polyptr migration step 2)")
+
 	case ssa.OpWasm3PtrStore:
 		// Write through $go.ptr.i64: call_ref the setter with (base,
 		// offset, value). arg0=ptr, arg1=value, arg2=mem.

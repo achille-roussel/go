@@ -796,25 +796,42 @@ func extendSlice(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 
 	nifnz.Body = append(nifnz.Body, nif)
 
-	// hp := &s[s.len - l2]
-	// TODO: &s[s.len] - hn?
-	ix := ir.NewIndexExpr(base.Pos, s, ir.NewBinaryExpr(base.Pos, ir.OSUB, ir.NewUnaryExpr(base.Pos, ir.OLEN, s), l2))
-	ix.SetBounded(true)
-	hp := typecheck.ConvNop(typecheck.NodAddr(ix), types.Types[types.TUNSAFEPTR])
-
-	// hn := l2 * sizeof(elem(s))
-	hn := typecheck.Conv(ir.NewBinaryExpr(base.Pos, ir.OMUL, l2, ir.NewInt(base.Pos, elemtype.Size())), types.Types[types.TUINTPTR])
-
-	clrname := "memclrNoHeapPointers"
 	hasPointers := elemtype.HasPointers()
 	if hasPointers {
-		clrname = "memclrHasPointers"
 		ir.CurFunc.SetWBPos(n.Pos())
 	}
 
 	var clr ir.Nodes
-	clrfn := mkcall(clrname, nil, &clr, hp, hn)
-	clr.Append(clrfn)
+	if buildcfg.GOARCH == "wasm3" {
+		// wasm3: there is no linear &s[s.len-l2] address — the slice
+		// backing is a WasmGC array. Zero the new region with a
+		// per-element loop instead of runtime.memclr* over flat
+		// bytes. See arrayClear's wasm3 branch for the same shape.
+		//   for i := s.len - l2; i < s.len; i++ { s[i] = zero }
+		idx := typecheck.TempAt(base.Pos, ir.CurFunc, types.Types[types.TINT])
+		start := ir.NewBinaryExpr(base.Pos, ir.OSUB, ir.NewUnaryExpr(base.Pos, ir.OLEN, s), l2)
+		init := ir.NewAssignStmt(base.Pos, idx, start)
+		cond := ir.NewBinaryExpr(base.Pos, ir.OLT, idx, ir.NewUnaryExpr(base.Pos, ir.OLEN, s))
+		post := ir.NewAssignStmt(base.Pos, idx, ir.NewBinaryExpr(base.Pos, ir.OADD, idx, ir.NewInt(base.Pos, 1)))
+		ix := ir.NewIndexExpr(base.Pos, s, idx)
+		ix.SetBounded(true)
+		zero := ir.NewAssignStmt(base.Pos, ix, ir.NewZero(base.Pos, elemtype))
+		clr.Append(ir.NewForStmt(base.Pos, init, cond, post, []ir.Node{zero}, false))
+	} else {
+		// hp := &s[s.len - l2]
+		// TODO: &s[s.len] - hn?
+		ix := ir.NewIndexExpr(base.Pos, s, ir.NewBinaryExpr(base.Pos, ir.OSUB, ir.NewUnaryExpr(base.Pos, ir.OLEN, s), l2))
+		ix.SetBounded(true)
+		hp := typecheck.ConvNop(typecheck.NodAddr(ix), types.Types[types.TUNSAFEPTR])
+		// hn := l2 * sizeof(elem(s))
+		hn := typecheck.Conv(ir.NewBinaryExpr(base.Pos, ir.OMUL, l2, ir.NewInt(base.Pos, elemtype.Size())), types.Types[types.TUINTPTR])
+		clrname := "memclrNoHeapPointers"
+		if hasPointers {
+			clrname = "memclrHasPointers"
+		}
+		clrfn := mkcall(clrname, nil, &clr, hp, hn)
+		clr.Append(clrfn)
+	}
 	if hasPointers {
 		// growslice will have cleared the new entries, so only
 		// if growslice isn't called do we need to do the zeroing ourselves.

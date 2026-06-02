@@ -645,6 +645,10 @@ func arrayClear(wbPos src.XPos, a ir.Node, nrange *ir.RangeStmt) ir.Node {
 		return nil
 	}
 
+	if buildcfg.GOARCH == "wasm3" {
+		return wasm3ArrayClear(wbPos, a, nrange)
+	}
+
 	// Convert to
 	// if len(a) != 0 {
 	// 	hp = &a[0]
@@ -690,4 +694,43 @@ func arrayClear(wbPos src.XPos, a ir.Node, nrange *ir.RangeStmt) ir.Node {
 	n.Cond = typecheck.DefaultLit(n.Cond, nil)
 	typecheck.Stmts(n.Body)
 	return walkStmt(n)
+}
+
+// wasm3ArrayClear emits clear(a) as a per-element zeroing loop. The
+// shape arrayClear normally produces — &a[0] + memclrNoHeapPointers
+// over len*sizeof(elem) bytes — doesn't fit wasm3: there is no linear
+// address &a[0] for a wasm3 slice (the backing is a WasmGC array, and
+// the polymorphic fat-pointer the data-ptr lowering yields can't be
+// passed as a flat byte address). Lower to the language-level
+// equivalent that the wasm3 backend already handles natively:
+//
+//	for i := 0; i < len(a); i++ {
+//	    a[i] = zero
+//	}
+//
+// The a[i] = zero assignment lowers to a typed array.set via the
+// existing slice element-set rules. The loop is small, so even though
+// this is per-element work it stays cheap; large clears are rare.
+func wasm3ArrayClear(wbPos src.XPos, a ir.Node, nrange *ir.RangeStmt) ir.Node {
+	if a.Type().Elem().HasPointers() {
+		ir.CurFunc.SetWBPos(wbPos)
+	}
+	elemType := a.Type().Elem()
+	idx := typecheck.TempAt(base.Pos, ir.CurFunc, types.Types[types.TINT])
+	init := ir.NewAssignStmt(base.Pos, idx, ir.NewInt(base.Pos, 0))
+	cond := ir.NewBinaryExpr(base.Pos, ir.OLT, idx, ir.NewUnaryExpr(base.Pos, ir.OLEN, a))
+	post := ir.NewAssignStmt(base.Pos, idx, ir.NewBinaryExpr(base.Pos, ir.OADD, idx, ir.NewInt(base.Pos, 1)))
+	ix := ir.NewIndexExpr(base.Pos, a, idx)
+	ix.SetBounded(true)
+	zero := ir.NewAssignStmt(base.Pos, ix, ir.NewZero(base.Pos, elemType))
+	loop := ir.NewForStmt(base.Pos, init, cond, post, []ir.Node{zero}, false)
+
+	if nrange == nil {
+		return walkStmt(typecheck.Stmt(loop))
+	}
+	// Mirror the memclr arm's post-loop "i = len(a) - 1" for range-clear.
+	stmts := ir.Nodes{loop}
+	stmts.Append(ir.NewAssignStmt(base.Pos, nrange.Key, typecheck.Conv(ir.NewBinaryExpr(base.Pos, ir.OSUB, ir.NewUnaryExpr(base.Pos, ir.OLEN, a), ir.NewInt(base.Pos, 1)), nrange.Key.Type())))
+	block := ir.NewBlockStmt(base.Pos, stmts)
+	return walkStmt(typecheck.Stmt(block))
 }

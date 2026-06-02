@@ -104,7 +104,15 @@ func phielim(f *Func) {
 			for _, v := range b.Values {
 				// This is an early place in SSA where all values are examined.
 				// Rewrite all 0-sized Go values to remove accessors, dereferences, loads, etc.
-				if t := v.Type; (t.IsStruct() || t.IsArray()) && t.Size() == 0 {
+				//
+				// Guard the Size() call with WidthCalculated(): GOARCH=wasm3
+				// compiles functions concurrently with types.CalcSizeDisabled
+				// set (cmd/compile/internal/gc/compile.go:183), so calling
+				// Size() on a type whose width was never pre-calculated fatals
+				// with "width not calculated". The 0-sized OpEmpty rewrite is
+				// a missed-optimization, not a correctness check; skipping it
+				// for uncalculated types loses no observable behaviour.
+				if t := v.Type; (t.IsStruct() || t.IsArray()) && t.WidthCalculated() && t.Size() == 0 {
 					v.reset(OpEmpty)
 				}
 				// Modify all values so no arg (including args

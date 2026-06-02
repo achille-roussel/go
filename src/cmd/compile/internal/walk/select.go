@@ -407,9 +407,15 @@ func walkSelectCasesWasm3Multi(cases []*ir.CommClause, dflt *ir.CommClause) []ir
 			elem := ci.chType.Elem()
 			ci.vTmp = typecheck.TempAt(pos, ir.CurFunc, elem)
 			ci.okTmp = typecheck.TempAt(pos, ir.CurFunc, types.Types[types.TBOOL])
-			// Zero vTmp so SSA liveness sees a write before any
-			// dispatch-branch read.
+			// Zero vTmp and okTmp so SSA liveness sees a write before
+			// any dispatch-branch read. The poll-phase short-circuit
+			// (`if chosen>=0 break` after each non-final try in a
+			// rotation arm) means okTmp_k for a non-winning case may
+			// never be written, but the dispatch's `userOk = okTmp_k`
+			// is only reached when chosen==k — SSA can't see that
+			// dependency, hence the up-front zero.
 			init = append(init, typecheck.Stmt(ir.NewAssignStmt(pos, ci.vTmp, nil)))
+			init = append(init, typecheck.Stmt(ir.NewAssignStmt(pos, ci.okTmp, nil)))
 		default:
 			base.Fatalf("walkSelectCasesWasm3Multi: unexpected case op %v", n.Op())
 		}

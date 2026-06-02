@@ -631,7 +631,7 @@ func asmb2_3(ctxt *ld.Link, ldr *loader.Loader) {
 	writeDataSec(ctxt)
 	writeProducerSec(ctxt)
 	if !*ld.FlagS {
-		writeNameSec3(ctxt, len(m.imports), m.funcs)
+		writeNameSec3(ctxt, ldr, len(m.imports), m)
 	}
 }
 
@@ -1123,17 +1123,84 @@ func writeCodeSec3(ctxt *ld.Link, fns []*wasm3Func) {
 	writeSecSize(ctxt, sizeOffset)
 }
 
-// writeNameSec3 writes the name custom section for wasm3.
-func writeNameSec3(ctxt *ld.Link, firstFnIndex int, fns []*wasm3Func) {
+// writeNameSec3 writes the name custom section for wasm3. Subsections:
+//   - 0x01 function names: from m.imports + m.funcs.
+//   - 0x04 type names (wasm GC proposal extension): from m.table[i].Name —
+//     these are the human-readable Go-derived labels the type collector
+//     assigned ("go.string", "go.slice.<T>", "main.Box", ...).
+//   - 0x07 global names: derived from m.globalEntries — closure singletons
+//     get the producing function name with a ".closure" suffix; boxed
+//     package-level vars use the symbol name; descriptor / itab-vtab
+//     entries name themselves after the descriptor symbol.
+//
+// Field names (subsection 0x0A) are a future refinement — wasmgc.Field
+// does not yet carry a Name. The fixed bump / CTXT / CTXT_REF globals
+// get explicit names too.
+func writeNameSec3(ctxt *ld.Link, ldr *loader.Loader, firstFnIndex int, m *wasm3Module) {
 	sizeOffset := writeSecHeader(ctxt, sectionCustom)
 	writeName(ctxt.Out, "name")
-	sizeOffset2 := writeSecHeader(ctxt, 0x01) // function names
-	writeUleb128(ctxt.Out, uint64(len(fns)))
-	for i, fn := range fns {
+
+	// 0x01 function names — imports first (indices 0..len(m.imports)-1),
+	// then defined functions (indices firstFnIndex..).
+	sizeOffset2 := writeSecHeader(ctxt, 0x01)
+	writeUleb128(ctxt.Out, uint64(len(m.imports)+len(m.funcs)))
+	for i, fn := range m.imports {
+		writeUleb128(ctxt.Out, uint64(i))
+		writeName(ctxt.Out, fn.Module+"."+fn.Name)
+	}
+	for i, fn := range m.funcs {
 		writeUleb128(ctxt.Out, uint64(firstFnIndex+i))
 		writeName(ctxt.Out, fn.Name)
 	}
 	writeSecSize(ctxt, sizeOffset2)
+
+	// 0x04 type names.
+	sizeOffset2 = writeSecHeader(ctxt, 0x04)
+	named := 0
+	for _, t := range m.table {
+		if t.Name != "" {
+			named++
+		}
+	}
+	writeUleb128(ctxt.Out, uint64(named))
+	for i, t := range m.table {
+		if t.Name == "" {
+			continue
+		}
+		writeUleb128(ctxt.Out, uint64(i))
+		writeName(ctxt.Out, t.Name)
+	}
+	writeSecSize(ctxt, sizeOffset2)
+
+	// 0x07 global names. Three fixed leading globals + per-entry names.
+	sizeOffset2 = writeSecHeader(ctxt, 0x07)
+	writeUleb128(ctxt.Out, uint64(3+len(m.globalEntries)))
+	writeUleb128(ctxt.Out, 0)
+	writeName(ctxt.Out, "runtime.bumpPtr")
+	writeUleb128(ctxt.Out, 1)
+	writeName(ctxt.Out, "runtime.CTXT")
+	writeUleb128(ctxt.Out, 2)
+	writeName(ctxt.Out, "runtime.CTXT_REF")
+	for i, e := range m.globalEntries {
+		idx := uint64(3 + i)
+		writeUleb128(ctxt.Out, idx)
+		var name string
+		switch {
+		case e.boxed:
+			name = "var." + ldr.SymName(e.boxSym)
+		case e.descriptor:
+			if e.itabVtabTypeIdx != 0 {
+				name = "vtab." + ldr.SymName(e.descSym)
+			} else {
+				name = "desc." + ldr.SymName(e.descSym)
+			}
+		default:
+			name = "closure." + ldr.SymName(e.key.sym)
+		}
+		writeName(ctxt.Out, name)
+	}
+	writeSecSize(ctxt, sizeOffset2)
+
 	writeSecSize(ctxt, sizeOffset)
 }
 

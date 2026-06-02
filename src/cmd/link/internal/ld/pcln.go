@@ -978,6 +978,24 @@ func (ctxt *Link) pclntab(container loader.Bitmap) *pclntab {
 	// for pcHeader. This may be raised further by subsymbols.
 	ldr.SetSymAlign(state.carrier, int32(ctxt.Arch.PtrSize))
 
+	if buildcfg.GOARCH == "wasm3" {
+		// wasm3 trades pclntab for binary size. The wasm3 doc/wasm3-design.md
+		// restricted-subset policy (§2) explicitly allows reflect-style /
+		// traceback APIs to break, and pclntab is typically 20-40% of a Go
+		// binary. We emit a structurally-minimal pclntab: a valid pcHeader
+		// with nfunc=0 plus empty string/byte tables and a one-entry functab
+		// holding only the end PC. The matching runtime/symtab.go wasm3
+		// short-circuits skip the verifier's per-function checks and make
+		// findfunc return funcInfo{} immediately, so runtime.Caller /
+		// runtime.FuncForPC / panic tracebacks degrade to "no info" rather
+		// than crashing.
+		state.nfunc = 0
+		state.nfiles = 0
+		state.generatePCHeader(ctxt)
+		state.generateEmptyPclntabWasm3(ctxt)
+		return state
+	}
+
 	state.generatePCHeader(ctxt)
 	nameOffsets := state.generateFuncnametab(ctxt, funcs)
 	cuOffsets := state.generateFilenameTabs(ctxt, compUnits, funcs)
@@ -987,6 +1005,39 @@ func (ctxt *Link) pclntab(container loader.Bitmap) *pclntab {
 	state.generateFuncdata(ctxt, funcs, inlSyms)
 
 	return state
+}
+
+// generateEmptyPclntabWasm3 emits stub funcnametab/cutab/filetab/pctab/functab/
+// funcdata symbols for the wasm3 build. The symbols still need to exist (the
+// pcHeader writer references them by symbol value and the moduledata layout in
+// symtab.go reads each as a slice), but their contents are essentially empty.
+// Each table is given a 1-byte (or 4-byte for word-aligned tables) sentinel so
+// that the pcHeader's writeSymOffset can compute strictly-positive offsets
+// between adjacent symbols; the moduledata layout still reads each as a slice
+// (or fixed-size table) but the runtime/symtab.go wasm3 short-circuits never
+// touch the contents.
+func (state *pclntab) generateEmptyPclntabWasm3(ctxt *Link) {
+	stub1 := func(name string, align int32) loader.Sym {
+		return state.addGeneratedSym(ctxt, name, 1, align, func(_ *Link, _ loader.Sym) {})
+	}
+	state.funcnametab = stub1("runtime.funcnametab", 1)
+	// cutab is []uint32 in symtab.go (slice length divided by 4 by symtab.go).
+	state.cutab = state.addGeneratedSym(ctxt, "runtime.cutab", 4, 4, func(_ *Link, _ loader.Sym) {})
+	state.filetab = stub1("runtime.filetab", 1)
+	state.pctab = stub1("runtime.pctab", 1)
+
+	// functab: with nfunc=0 the size formula is nfunc*2*4 + 4 = 4 bytes (a
+	// single end-PC entry). We zero it; the runtime never reads it because
+	// findfunc on wasm3 returns funcInfo{} before touching ftab.
+	state.pclntab = state.addGeneratedSym(ctxt, "runtime.functab", 4, 4, func(ctxt *Link, s loader.Sym) {
+		sb := ctxt.loader.MakeSymbolUpdater(s)
+		sb.SetUint32(ctxt.Arch, 0, 0)
+	})
+
+	// funcdata: minimal payload. The carrier "go:func.*" still needs to exist
+	// for symtab.go's moduledata to find it via ldr.Lookup.
+	state.funcdata = state.addGeneratedSym(ctxt, "go:func.*", 1, 1, func(_ *Link, _ loader.Sym) {})
+	ctxt.loader.SetAttrNotInSymbolTable(state.funcdata, false)
 }
 
 func expandGoroot(s string) string {
@@ -1008,6 +1059,17 @@ const (
 // findfunctab generates a lookup table to quickly find the containing
 // function for a pc. See src/runtime/symtab.go:findfunc for details.
 func (ctxt *Link) findfunctab(state *pclntab, container loader.Bitmap) {
+	if buildcfg.GOARCH == "wasm3" {
+		// wasm3 skips pclntab generation; findfunc returns funcInfo{} without
+		// ever reading findfunctab. Emit a 1-byte stub solely so the symbol
+		// exists for symtab.go's moduledata pointer field.
+		state.findfunctab = ctxt.createGeneratorSymbol("runtime.findfunctab", 0, sym.SPCLNTAB, 1, func(_ *Link, _ loader.Sym) {})
+		ldr := ctxt.loader
+		ldr.SetSymAlign(state.findfunctab, 4)
+		ldr.SetAttrReachable(state.findfunctab, true)
+		ldr.SetAttrLocal(state.findfunctab, true)
+		return
+	}
 	ldr := ctxt.loader
 
 	// find min and max address

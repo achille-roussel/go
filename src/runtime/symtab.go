@@ -630,6 +630,16 @@ func moduledataverify1(datap *moduledata) {
 		throw("invalid function symbol table")
 	}
 
+	if GOARCH == "wasm3" {
+		// wasm3 emits a stub pclntab with nfunc=0 (see
+		// cmd/link/internal/ld/pcln.go:generateEmptyPclntabWasm3). The per-
+		// function ftab sort check and minpc/maxpc consistency check below
+		// have nothing to verify — there are no functions in the table — and
+		// the modulehash check is also unnecessary since plugins/-buildmode
+		// shared are not supported on wasm3.
+		return
+	}
+
 	// ftab is lookup table for function by program counter.
 	nftab := len(datap.ftab) - 1
 	for i := 0; i < nftab; i++ {
@@ -920,6 +930,14 @@ func badFuncInfoEntry(funcInfo) uintptr
 //go:nosplit
 //go:linkname findfunc
 func findfunc(pc uintptr) funcInfo {
+	if GOARCH == "wasm3" {
+		// wasm3 emits a stub pclntab (see cmd/link/internal/ld/pcln.go and
+		// doc/wasm3-design.md §2). The ftab is empty, so there's nothing to
+		// look up. Returning funcInfo{} makes FuncForPC, the inline unwinder,
+		// and the traceback machinery all degrade to "no info" without
+		// touching the stub tables.
+		return funcInfo{}
+	}
 	datap := findmoduledatap(pc)
 	if datap == nil {
 		return funcInfo{}

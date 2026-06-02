@@ -883,6 +883,20 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 				pe := s.Prog(wasm.AStructSet)
 				pe.From = obj.Addr{Type: obj.TYPE_CONST, Offset: ebIdx}
 				pe.To = obj.Addr{Type: obj.TYPE_CONST, Offset: efi}
+			} else if ebIdx == -1 {
+				// Scalar primitive element ([N]uint8/[N]int32/[N]float32/...):
+				// the array.set with the static element index IS the access.
+				// Stack: arrayref, index, value. Narrow the i64 source to i32
+				// for sub-i64 integer storage (packed i8/i16 + i32) per the
+				// same logic as OpWasm3ArraySet — floats stay at their wasm
+				// width, i64 stays i64.
+				elemT := wasm3FieldArrayElemAtOffset(st, v.AuxInt)
+				getValue64(s, v.Args[1])
+				if elemT != nil && !elemT.IsFloat() && elemT.Size() < 8 {
+					s.Prog(wasm.AI32WrapI64)
+				}
+				pset := s.Prog(wasm.AArraySet)
+				pset.From = obj.Addr{Type: obj.TYPE_CONST, Offset: abIdx}
 			} else {
 				// Whole boxed element (string/slice/interface): array.set the
 				// element ref directly. Stack: arrayref, index, value.
@@ -2191,7 +2205,34 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 			pca := s.Prog(wasm.ARefCast)
 			pca.From = obj.Addr{Type: obj.TYPE_CONST, Offset: abIdx}
 			i32Const(s, int32(ei))
-			pg := s.Prog(wasm.AArrayGet)
+			// Scalar-primitive elements ([N]uint8/[N]int32/...) need
+			// array.get_u/get_s for packed (i8/i16) storage; whole-boxed-
+			// ref and struct-element paths use plain array.get. Mirrors
+			// the OpWasm3ArrayGet logic — pick get_u/get_s/get based on
+			// elem size and signedness, then widen on load.
+			scalarLoad := efi < 0 && ebIdx == -1
+			var scalarElemT *types.Type
+			var scalarSigned bool
+			var scalarSize int64
+			if scalarLoad {
+				scalarElemT = wasm3FieldArrayElemAtOffset(st, v.AuxInt)
+				if scalarElemT != nil {
+					scalarSigned = scalarElemT.IsSigned()
+					scalarSize = scalarElemT.Size()
+				}
+			}
+			var getOp obj.As = wasm.AArrayGet
+			if scalarLoad && scalarElemT != nil && !scalarElemT.IsFloat() {
+				switch scalarSize {
+				case 1, 2:
+					if scalarSigned {
+						getOp = wasm.AArrayGetS
+					} else {
+						getOp = wasm.AArrayGetU
+					}
+				}
+			}
+			pg := s.Prog(getOp)
 			pg.From = obj.Addr{Type: obj.TYPE_CONST, Offset: abIdx}
 			if efi >= 0 {
 				// Struct element: ref.cast + struct.get the element's field.
@@ -2202,8 +2243,18 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 				pe.To = obj.Addr{Type: obj.TYPE_CONST, Offset: efi}
 			}
 			// efi < 0: the element is a whole boxed value (string/slice/
-			// interface); the array.get result IS the value.
-			if needsExtend {
+			// interface) — the array.get result IS the value (a ref) —
+			// or a scalar primitive — the array.get_u/get_s/get result
+			// is the scalar that needs the standard sub-i32 → i64 widen.
+			if scalarLoad && scalarElemT != nil && !scalarElemT.IsFloat() && scalarSize < 8 {
+				// Sub-i64 integer/bool elements live in i64 per-value
+				// locals; widen with the polarity matching get_u/get_s.
+				if scalarSigned {
+					s.Prog(wasm.AI64ExtendI32S)
+				} else {
+					s.Prog(wasm.AI64ExtendI32U)
+				}
+			} else if needsExtend {
 				s.Prog(wasm.AI64ExtendI32U)
 			}
 			break
@@ -3879,6 +3930,21 @@ func wasm3BoxedComponentAtOffset(s *ssagen.State, t *types.Type, off, base int64
 // inlined nested structs to locate the array field. (Static element index
 // only — the [N]T algs the compiler emits for small arrays unroll element
 // accesses to constant offsets.)
+//
+// elemBoxIdx/elemFieldIdx encoding for the caller:
+//
+//   - struct element field: elemBoxIdx >= 0 (element struct's wasm type),
+//     elemFieldIdx >= 0 (field index within that struct). Codegen emits
+//     array.get then struct.get/struct.set on the resolved field.
+//   - whole boxed ref element (string/slice/iface array, array-of-array):
+//     elemBoxIdx == 0, elemFieldIdx == -1. The array.get/array.set result
+//     IS the value (a ref).
+//   - scalar primitive element ([N]uint8/[N]int32/[N]float32/...):
+//     elemBoxIdx == -1, elemFieldIdx == -1. The array.get_u/get_s/get
+//     result is the scalar (needs i64 widening on load, i32-narrowing
+//     on store for sub-i32 packed elements). elemBoxIdx==-1 is the
+//     unambiguous sentinel that distinguishes "scalar" from "whole
+//     boxed ref" so codegen knows whether to ref.cast the value.
 func wasm3ArrayComponentAtOffset(s *ssagen.State, t *types.Type, off, base int64) (arrayFieldWasmIdx, arrayBackingIdx, elemIdx, elemBoxIdx, elemFieldIdx int64, ok bool) {
 	cAny, has := wasm3LiveCollector.Load(s.FuncInfo())
 	if !has {
@@ -3928,6 +3994,33 @@ func wasm3ArrayComponentAtOffset(s *ssagen.State, t *types.Type, off, base int64
 					return
 				}
 				return widx, int64(wasm3RegisterArrayBacking(s.FuncInfo(), elemT)), sub / esz, 0, -1, true
+			case f.Type.IsArray() && wasm3ArrayElemIsScalar(f.Type.Elem()):
+				// Scalar-primitive array element ([N]uint8 / [N]int32 /
+				// [N]float32 / ...). The array lowers to a single
+				// (array i8|i16|i32|i64|f32|f64) backing; the array.get/
+				// array.set with the static element index IS the access
+				// — no trailing struct.get. Use elemBoxIdx = -1 as the
+				// sentinel that distinguishes the scalar path from the
+				// whole-boxed-ref path (elemBoxIdx = 0 there) so codegen
+				// knows to narrow/widen the scalar value rather than
+				// ref.cast it.
+				//
+				// Restrict to sub > 0: a whole-field access (sub == 0)
+				// is a read/write of the array REF itself (e.g.
+				// FieldGet <[N]uint8> for the InteriorPtr base), which
+				// wasm3FieldIndexAtOffset handles via plain struct.get/
+				// struct.set on the array-ref field. Only sub > 0 means
+				// "into the array's bytes" — the abiDesc.inRegPtrs[1]
+				// case at byte offset 177 that this path exists for.
+				if sub == 0 {
+					return
+				}
+				elemT := f.Type.Elem()
+				esz := elemT.Size()
+				if esz == 0 || sub%esz != 0 {
+					return
+				}
+				return widx, int64(wasm3RegisterArrayBacking(s.FuncInfo(), elemT)), sub / esz, -1, -1, true
 			case f.Type.IsStruct():
 				return wasm3ArrayComponentAtOffset(s, f.Type, off-f.Offset, widx)
 			}
@@ -3936,6 +4029,22 @@ func wasm3ArrayComponentAtOffset(s *ssagen.State, t *types.Type, off, base int64
 		widx += n
 	}
 	return
+}
+
+// wasm3ArrayElemIsScalar reports whether elemT is a scalar primitive
+// type ([N]elemT can be lowered to a single (array packed/i32/i64/f32/
+// f64) backing). Mirrors the scalar set the array-backing collector
+// supports — bool/int*/uint*/uintptr/unsafe.Pointer-as-scalar/float*.
+// Note unsafe.Pointer is excluded: it lowers to anyref, not a scalar
+// (array (ref any)) element which lives outside this scalar path.
+func wasm3ArrayElemIsScalar(elemT *types.Type) bool {
+	if elemT == nil {
+		return false
+	}
+	if elemT.IsBoolean() || elemT.IsInteger() || elemT.IsFloat() {
+		return true
+	}
+	return false
 }
 
 // wasm3ParamIsRef reports whether a Go parameter type t lowers to a
@@ -4067,6 +4176,29 @@ func wasm3FieldGetNeedsI64Extend(t *types.Type) bool {
 		return false
 	}
 	return t.Size() <= 4
+}
+
+// wasm3FieldArrayElemAtOffset returns the element type of the array
+// field of struct st that covers byte offset off — recursing into inlined
+// nested struct fields. Used by the array-component codegen to recover
+// the element width/signedness needed to pick array.get_u/get_s/get
+// (load) or whether to narrow the i64 source for array.set (store). The
+// caller already established (via wasm3ArrayComponentAtOffset) that off
+// lands inside a scalar-element array field; this helper just looks up
+// the element type. Returns nil if no array field covers off.
+func wasm3FieldArrayElemAtOffset(st *types.Type, off int64) *types.Type {
+	for _, f := range st.Fields() {
+		if off >= f.Offset && off < f.Offset+f.Type.Size() {
+			if f.Type.IsArray() {
+				return f.Type.Elem()
+			}
+			if f.Type.IsStruct() {
+				return wasm3FieldArrayElemAtOffset(f.Type, off-f.Offset)
+			}
+			return nil
+		}
+	}
+	return nil
 }
 
 // wasm3FieldAtOffset returns the leaf (possibly nested) struct field at

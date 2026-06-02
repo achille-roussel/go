@@ -9,7 +9,36 @@ import (
 	"cmd/compile/internal/ir"
 	"cmd/compile/internal/typecheck"
 	"cmd/compile/internal/types"
+	"cmd/internal/src"
+	"go/constant"
 )
+
+// wasm3ZeroValue returns an ir.Node holding the zero value of t for use
+// as an RHS in synthesized trampoline bodies. Using an explicit zero
+// literal (rather than `NewAssignStmt(_, target, nil)` which means
+// "var target T") avoids leaving an interface-typed PAUTO with a nil-
+// RHS OAS — that trips walk's analyzePreWalk → ReassignOracle fatal
+// (cmd/compile/internal/ir/reassignment.go: "RHS is nil") because
+// analyzePreWalk visits interface PAUTOs and demands their Defn carry
+// a real Y.
+func wasm3ZeroValue(pos src.XPos, t *types.Type) ir.Node {
+	switch {
+	case t.IsFloat():
+		return ir.NewBasicLit(pos, t, constant.MakeFloat64(0))
+	case t.IsString():
+		return ir.NewBasicLit(pos, t, constant.MakeString(""))
+	case t.IsBoolean():
+		return ir.NewBasicLit(pos, t, constant.MakeBool(false))
+	case t.IsInteger():
+		return ir.NewInt(pos, 0)
+	case t.IsPtr() || t.IsUnsafePtr() || t.IsInterface() || t.IsSlice() ||
+		t.IsMap() || t.IsChan() || t.Kind() == types.TFUNC:
+		return typecheck.NodNil()
+	}
+	// Composite (struct, array): typed empty composite literal — the
+	// typechecker expands it to the zero value.
+	return ir.NewCompLitExpr(pos, ir.OCOMPLIT, t, nil)
+}
 
 // Per-(K,V) map operation generators for GOARCH=wasm3.
 //
@@ -701,21 +730,19 @@ func mapDeleteFuncWasm3(t *types.Type) *ir.Func {
 			ir.NewIndexExpr(pos, valsSwapVar, lastVar)))
 	matchBody = append(matchBody, ir.NewIfStmt(pos, swapCond, swapBody, nil))
 
-	// keys[last] = zero K
-	zK := typecheck.TempAt(pos, ir.CurFunc, K)
-	matchBody = append(matchBody, ir.NewAssignStmt(pos, zK, nil))
+	// keys[last] = zero K (explicit zero literal; see wasm3ZeroValue
+	// docstring for why "var zK K" + assign would trip ReassignOracle
+	// when K is interface-typed).
 	matchBody = append(matchBody,
-		ir.NewAssignStmt(pos, ir.NewIndexExpr(pos, keysVar, lastVar), zK))
+		ir.NewAssignStmt(pos, ir.NewIndexExpr(pos, keysVar, lastVar), wasm3ZeroValue(pos, K)))
 
 	// valsEnd := wasm3MapValues(m); valsEnd[last] = zero V
 	valsEndVar := typecheck.TempAt(pos, ir.CurFunc, types.NewSlice(V))
 	matchBody = append(matchBody,
 		ir.NewAssignStmt(pos, valsEndVar,
 			callMapHelper(t, "wasm3MapValues", []ir.Node{nm}, V)))
-	zV := typecheck.TempAt(pos, ir.CurFunc, V)
-	matchBody = append(matchBody, ir.NewAssignStmt(pos, zV, nil))
 	matchBody = append(matchBody,
-		ir.NewAssignStmt(pos, ir.NewIndexExpr(pos, valsEndVar, lastVar), zV))
+		ir.NewAssignStmt(pos, ir.NewIndexExpr(pos, valsEndVar, lastVar), wasm3ZeroValue(pos, V)))
 
 	// wasm3MapUsedSet(m, used - 1)
 	newUsed := ir.NewBinaryExpr(pos, ir.OSUB, usedVar, ir.NewInt(pos, 1))

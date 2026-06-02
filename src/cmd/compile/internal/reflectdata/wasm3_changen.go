@@ -326,10 +326,12 @@ func SelectNbRecvFuncWasm3(t *types.Type) *ir.Func {
 	closedVar := typecheck.TempAt(pos, ir.CurFunc, boolT)
 	zeroVar := typecheck.TempAt(pos, ir.CurFunc, T) // var zero T, reused across miss paths
 	vVar := typecheck.TempAt(pos, ir.CurFunc, T)
-	// Initialise zeroVar explicitly so SSA liveness sees a write
-	// before any read (the closed / not-ready return paths both
-	// read it without writing — `var zero T` is the right semantic).
-	fn.Body.Append(ir.NewAssignStmt(pos, zeroVar, nil))
+	// Initialise zeroVar with an explicit zero literal. A nil-RHS OAS
+	// ("var zero T") trips walk.analyzePreWalk → ReassignOracle when T
+	// is an interface type (e.g. chan error in a select trampoline),
+	// because the oracle fatals on PAUTO interface defns whose Y is
+	// nil. See wasm3ZeroValue in wasm3_mapgen.go for the same fix.
+	fn.Body.Append(ir.NewAssignStmt(pos, zeroVar, wasm3ZeroValue(pos, T)))
 	fn.Body.Append(ir.NewAssignListStmt(pos, ir.OAS2,
 		[]ir.Node{slotVar, okVar, closedVar},
 		[]ir.Node{callRuntimeHelper("wasm3ChanTryRecvBegin", []ir.Node{nc})}))

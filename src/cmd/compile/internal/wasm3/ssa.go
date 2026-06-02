@@ -829,7 +829,19 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			pbc := s.Prog(wasm.ARefCast)
 			pbc.From = obj.Addr{Type: obj.TYPE_CONST, Offset: boxIdx}
 			getValue64(s, v.Args[1])
-			if needsNarrow {
+			// Slice/string boxed-component len/off/cap (comp != 0 for slice
+			// data / string data / iface itab) are i32 fields per the
+			// $go.slice / $go.string layout; narrow the i64 source.
+			boxedCompNeedsNarrow := false
+			if leaf := wasm3FieldAtOffset(st, v.AuxInt); leaf != nil {
+				switch {
+				case leaf.Type.IsSlice() && comp != 0:
+					boxedCompNeedsNarrow = true
+				case leaf.Type.IsString() && comp != 0:
+					boxedCompNeedsNarrow = true
+				}
+			}
+			if needsNarrow || boxedCompNeedsNarrow {
 				s.Prog(wasm.AI32WrapI64)
 			} else if refCastTo >= 0 {
 				pRefCast := s.Prog(wasm.ARefCastNull)
@@ -1082,24 +1094,22 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		pGB.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
 		localSetIdx(s, arrLocal)
 
-		// $sliceOff = i32.wrap(struct.get $go.slice.u8 1)
+		// $sliceOff = struct.get $go.slice.u8 1 (already i32)
 		localGetIdx(s, sliceLocal)
 		pC2 := s.Prog(wasm.ARefCast)
 		pC2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceIdx}
 		pGO := s.Prog(wasm.AStructGet)
 		pGO.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceIdx}
 		pGO.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
-		s.Prog(wasm.AI32WrapI64)
 		localSetIdx(s, sliceOffLocal)
 
-		// $n = i32.wrap(struct.get $go.slice.u8 2)
+		// $n = struct.get $go.slice.u8 2 (already i32)
 		localGetIdx(s, sliceLocal)
 		pC3 := s.Prog(wasm.ARefCast)
 		pC3.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceIdx}
 		pGN := s.Prog(wasm.AStructGet)
 		pGN.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceIdx}
 		pGN.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 2}
-		s.Prog(wasm.AI32WrapI64)
 		localSetIdx(s, nLocal)
 
 		// $srcOff = args[1] (already i32)
@@ -1318,6 +1328,11 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			// ref.cast backing to exact array type for the field slot
 			pVCast := s.Prog(wasm.ARefCastNull)
 			pVCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdx}
+		} else {
+			// MapUsedSet / MapCapSet: the used/cap fields are i32, and
+			// the i64 source value lives in the per-value local — narrow
+			// before struct.set.
+			s.Prog(wasm.AI32WrapI64)
 		}
 		p := s.Prog(wasm.AStructSet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
@@ -1332,21 +1347,19 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			v.Fatalf("OpWasm3MapClear: v.Aux is not a map type: %v", v.Aux)
 		}
 		mapIdx := int64(wasm3RegisterMapStruct(s.FuncInfo(), mapType))
-		// used = 0
+		// used = 0 — i32 (used field is i32 per collectMapStruct)
 		getValue64(s, v.Args[0])
 		pCast1 := s.Prog(wasm.ARefCast)
 		pCast1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
-		pZero1 := s.Prog(wasm.AI64Const)
-		pZero1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+		i32Const(s, 0)
 		pUsed := s.Prog(wasm.AStructSet)
 		pUsed.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
 		pUsed.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
-		// cap = 0
+		// cap = 0 — i32 (cap field is i32 per collectMapStruct)
 		getValue64(s, v.Args[0])
 		pCast2 := s.Prog(wasm.ARefCast)
 		pCast2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
-		pZero2 := s.Prog(wasm.AI64Const)
-		pZero2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
+		i32Const(s, 0)
 		pCap := s.Prog(wasm.AStructSet)
 		pCap.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
 		pCap.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
@@ -1769,6 +1782,15 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 				pc := s.Prog(wasm.ARefCast)
 				pc.From = obj.Addr{Type: obj.TYPE_CONST, Offset: castIdx}
 			}
+			// $go.string / $go.slice.<T> header off/len/cap fields are i32
+			// (see TypeGoString in cmd/internal/wasmgc/type.go and
+			// collectSliceStruct in wasmtype.go). The arg flows as i64 in
+			// the per-value local — narrow with i32.wrap_i64 before
+			// struct.new consumes it. i == 0 is the backing ref (handled
+			// above via castIdx).
+			if i > 0 && aggT != nil && (aggT.IsSlice() || aggT.IsString()) {
+				s.Prog(wasm.AI32WrapI64)
+			}
 			// Sub-word integer/bool struct fields are stored as wasm
 			// i32. The arg lives in an i64 per-value local — narrow it.
 			// Only applies for true Go-struct aggregates where each Go
@@ -1814,8 +1836,11 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// Boxed slice header field reads (doc/wasm3-slice-boxing.md):
 		// struct.get $go.slice.<T> at the field's fixed index. data=0
 		// (backing array ref, left as anyref in the per-value local),
-		// len=2, cap=3 (i64). ref.cast the anyref base to
-		// (ref null exact $go.slice.<T>) before struct.get.
+		// len=2, cap=3 (i32 — see collectSliceStruct comment). ref.cast
+		// the anyref base to (ref null exact $go.slice.<T>) before
+		// struct.get. The SSA len/cap ops are typed Int64 (per-value
+		// local is i64) so widen with i64.extend_i32_u after the
+		// struct.get for len/cap.
 		field := int64(0)
 		switch v.Op {
 		case ssa.OpWasm3SliceLength:
@@ -1830,6 +1855,9 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p := s.Prog(wasm.AStructGet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceTypeIdx}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
+		if v.Op == ssa.OpWasm3SliceLength || v.Op == ssa.OpWasm3SliceCapacity {
+			s.Prog(wasm.AI64ExtendI32U)
+		}
 
 	case ssa.OpWasm3SubString:
 		// `s[i:j]` on a wasm3 string: emit struct.new $go.string
@@ -1838,14 +1866,17 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// arg0 = original string ref, arg1 = i (i64), arg2 = j (i64).
 		// Result on stack: the new $go.string ref (anyref).
 		// Both args are cached in locals because getValue64 on an
-		// OnWasmStack value isn't replayable.
+		// OnWasmStack value isn't replayable. The string off/len
+		// fields are i32 — arithmetic uses i32, narrowing the i64
+		// indices once at cache time.
 		wasm3EnsureCollector(s.FuncInfo())
 		stringIdx := int64(wasmgc.TypeGoString)
 		sLocal := wasm3AllocAnyrefTempLocal(s)
-		iLocal := wasm3AllocTempLocal(s, types.Types[types.TINT64])
+		iLocal := wasm3AllocI32TempLocal(s)
 		getValue64(s, v.Args[0])
 		localSetIdx(s, sLocal)
 		getValue64(s, v.Args[1])
+		s.Prog(wasm.AI32WrapI64)
 		localSetIdx(s, iLocal)
 
 		// field 0: bytes = struct.get $go.string s 0 (ref.cast first)
@@ -1856,7 +1887,7 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		pGB.From = obj.Addr{Type: obj.TYPE_CONST, Offset: stringIdx}
 		pGB.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
 
-		// field 1: new_off = struct.get $go.string s 1 + i
+		// field 1: new_off = struct.get $go.string s 1 + i (all i32)
 		localGetIdx(s, sLocal)
 		pCO := s.Prog(wasm.ARefCastNull)
 		pCO.From = obj.Addr{Type: obj.TYPE_CONST, Offset: stringIdx}
@@ -1864,12 +1895,13 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		pGO.From = obj.Addr{Type: obj.TYPE_CONST, Offset: stringIdx}
 		pGO.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
 		localGetIdx(s, iLocal)
-		s.Prog(wasm.AI64Add)
+		s.Prog(wasm.AI32Add)
 
-		// field 2: new_len = j - i
+		// field 2: new_len = j - i (i32, j arrives as i64; wrap)
 		getValue64(s, v.Args[2])
+		s.Prog(wasm.AI32WrapI64)
 		localGetIdx(s, iLocal)
-		s.Prog(wasm.AI64Sub)
+		s.Prog(wasm.AI32Sub)
 
 		// struct.new $go.string
 		pNew := s.Prog(wasm.AStructNew)
@@ -1883,8 +1915,8 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		//
 		//   $s = arg0 (cached for two field reads)
 		//   <get bytes> = struct.get $go.string 0 (ref.cast $s to $go.string)
-		//   <get off>   = struct.get $go.string 1 (...) ; i64.wrap to i32
-		//   array index = off + i (i32.add after wrap)
+		//   <get off>   = struct.get $go.string 1 (...) ; already i32
+		//   array index = off + i (i32.add after wrap of arg1)
 		//   array.get_u $go.bytes <bytes> <index> ; i64.extend_i32_u
 		wasm3EnsureCollector(s.FuncInfo())
 		bytesIdx := int64(wasmgc.TypeGoBytes)
@@ -1900,14 +1932,13 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		pGB := s.Prog(wasm.AStructGet)
 		pGB.From = obj.Addr{Type: obj.TYPE_CONST, Offset: stringIdx}
 		pGB.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
-		// index = i32.wrap(struct.get $go.string 1) + i32.wrap(arg1)
+		// index = struct.get $go.string 1 (i32) + i32.wrap(arg1)
 		localGetIdx(s, sLocal)
 		pCastO := s.Prog(wasm.ARefCastNull)
 		pCastO.From = obj.Addr{Type: obj.TYPE_CONST, Offset: stringIdx}
 		pGO := s.Prog(wasm.AStructGet)
 		pGO.From = obj.Addr{Type: obj.TYPE_CONST, Offset: stringIdx}
 		pGO.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
-		s.Prog(wasm.AI32WrapI64)
 		getValue64(s, v.Args[1])
 		s.Prog(wasm.AI32WrapI64)
 		s.Prog(wasm.AI32Add)
@@ -1918,9 +1949,11 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		s.Prog(wasm.AI64ExtendI32U)
 
 	case ssa.OpWasm3StringOffset:
-		// struct.get $go.string s 1 — i64 offset field. Used by the
+		// struct.get $go.string s 1 — i32 offset field. Used by the
 		// SliceMake(StringData)+StringOffset rule so a slice aliasing
-		// a substring's bytes uses the right starting offset.
+		// a substring's bytes uses the right starting offset. The SSA
+		// op is typed Int64 (the per-value local is i64) so widen with
+		// i64.extend_i32_u after the struct.get.
 		wasm3EnsureCollector(s.FuncInfo())
 		getValue64(s, v.Args[0])
 		pCast := s.Prog(wasm.ARefCastNull)
@@ -1928,14 +1961,19 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p := s.Prog(wasm.AStructGet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoString)}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
+		s.Prog(wasm.AI64ExtendI32U)
 
 	case ssa.OpWasm3StringData, ssa.OpWasm3StringLength:
 		// Boxed string component reads: struct.get $go.string at the fixed
-		// field index (0=backing $go.bytes ref, 2=length i64). $go.string
+		// field index (0=backing $go.bytes ref, 2=length i32). $go.string
 		// is the prelude type TypeGoString; wasm3EnsureCollector primes the
 		// per-function table so the R_WASMTYPE reloc remaps the index.
 		// ref.cast the anyref base to (ref null exact $go.string) first —
 		// struct.get rejects anyref bases.
+		//
+		// length field is i32 (per the int=i32 prelude). The SSA op is
+		// typed Int64 and the per-value local is i64, so widen with
+		// i64.extend_i32_u after the struct.get for the length case.
 		wasm3EnsureCollector(s.FuncInfo())
 		field := int64(0)
 		if v.Op == ssa.OpWasm3StringLength {
@@ -1947,6 +1985,9 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p := s.Prog(wasm.AStructGet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoString)}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
+		if v.Op == ssa.OpWasm3StringLength {
+			s.Prog(wasm.AI64ExtendI32U)
+		}
 
 	case ssa.OpWasm3IfaceItab, ssa.OpWasm3IfaceData:
 		// Boxed interface component reads: struct.get $go.iface at the
@@ -2120,7 +2161,22 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 			pc := s.Prog(wasm.AStructGet)
 			pc.From = obj.Addr{Type: obj.TYPE_CONST, Offset: boxIdx}
 			pc.To = obj.Addr{Type: obj.TYPE_CONST, Offset: comp}
-			if needsExtend {
+			// Slice/string len/off/cap components (comp != 0) are i32
+			// fields per the $go.slice / $go.string layout; the SSA op's
+			// v.Type is the wider Go int (8 bytes), so needsExtend is
+			// false — but we still must widen the i32 struct.get result
+			// to the i64 per-value local. Iface components are anyref —
+			// no widening.
+			boxedCompNeedsExtend := false
+			if leaf := wasm3FieldAtOffset(st, v.AuxInt); leaf != nil {
+				switch {
+				case leaf.Type.IsSlice() && comp != 0:
+					boxedCompNeedsExtend = true
+				case leaf.Type.IsString() && comp != 0:
+					boxedCompNeedsExtend = true
+				}
+			}
+			if needsExtend || boxedCompNeedsExtend {
 				s.Prog(wasm.AI64ExtendI32U)
 			}
 			break
@@ -2369,12 +2425,14 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 			pCast.As = wasm.ARefCast // ensure non-null cast
 			pNN := s.Prog(wasm.ARefCast)
 			pNN.From = obj.Addr{Type: obj.TYPE_CONST, Offset: arrIdx}
-			// Then the offset (i64 0)
-			i64Const(s, 0)
+			// Then the offset (i32 0 — slice off field is i32).
+			i32Const(s, 0)
 			// Then len = cap (the slice exposes the full backing
 			// length so insert/refresh-in-place loops in mapassign
 			// can index [0, cap)). The map's `used` is tracked
-			// separately and used to bound the loop count.
+			// separately and used to bound the loop count. Both the
+			// map's cap field and the slice's len/cap fields are i32,
+			// so no width conversion is needed.
 			getValue64(s, v.Args[0])
 			pCast2 := s.Prog(wasm.ARefCast)
 			pCast2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
@@ -2406,6 +2464,9 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		p := s.Prog(wasm.AStructGet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: field}
+		// used/cap are i32 fields (see collectMapStruct comment); the
+		// SSA op is typed Int64 so widen for the per-value local.
+		s.Prog(wasm.AI64ExtendI32U)
 
 	case ssa.OpWasm3MakeMap:
 		// M3 per-type maps: allocate a fresh $go.map.<K,V> WasmGC struct
@@ -3166,24 +3227,22 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		pGetBacking.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
 		localSetIdx(s, arrLocal)
 
-		// $sliceOff = i32.wrap(struct.get $go.slice.u8 1)
+		// $sliceOff = struct.get $go.slice.u8 1 (already i32)
 		localGetIdx(s, sliceLocal)
 		pCastSlice2 := s.Prog(wasm.ARefCast)
 		pCastSlice2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceIdx}
 		pGetSliceOff := s.Prog(wasm.AStructGet)
 		pGetSliceOff.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceIdx}
 		pGetSliceOff.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
-		s.Prog(wasm.AI32WrapI64)
 		localSetIdx(s, sliceOffLocal)
 
-		// $n = i32.wrap(struct.get $go.slice.u8 2)
+		// $n = struct.get $go.slice.u8 2 (already i32)
 		localGetIdx(s, sliceLocal)
 		pCastSlice3 := s.Prog(wasm.ARefCast)
 		pCastSlice3.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceIdx}
 		pGetSliceLen := s.Prog(wasm.AStructGet)
 		pGetSliceLen.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceIdx}
 		pGetSliceLen.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 2}
-		s.Prog(wasm.AI32WrapI64)
 		localSetIdx(s, nLocal)
 
 		// $off = global.get 0 (current bump pointer)

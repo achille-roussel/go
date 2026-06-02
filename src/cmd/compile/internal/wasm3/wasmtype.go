@@ -420,18 +420,23 @@ func (c *typeCollector) collectBacking(elem *types.Type) int {
 //
 //	(type go.slice.<T> (struct
 //	    (field (mut (ref go.array.<T>)))  ;; data backing
-//	    (field (mut i64))                 ;; off
-//	    (field (mut i64))                 ;; len
-//	    (field (mut i64))))               ;; cap
+//	    (field (mut i32))                 ;; off
+//	    (field (mut i32))                 ;; len
+//	    (field (mut i32))))               ;; cap
 //
-// off/len/cap are i64 to match the wasm3 per-value-local width for Go
-// ints (no i32<->i64 conversion on struct.get/set; one i32 wrap only
-// at array indexing). The backing array type is collected first so the
-// struct's data field can reference it by index. cap is a stored field
-// (Go-faithful 3-index slices); fields are mutable so the backend may
-// rewrite a header in place. nil slices are a null slice ref, so
-// the data field is non-nullable (a non-nil slice always has a real,
-// possibly zero-length, backing array — mirroring go.string).
+// off/len/cap are i32 to match the int=i32 direction on wasm3 and
+// remove the per-op i32.wrap_i64 tax at every len/cap/index — same
+// rationale as $go.chan's qcount/dataqsiz/sendx/recvx fields (see
+// the TypeGoChan comment in cmd/internal/wasmgc/type.go). Backend
+// codegen does one i64.extend_i32 widening on struct.get for the
+// per-value-local i64 carrier, and one i32.wrap_i64 narrowing on
+// struct.set for stores. The backing array type is collected first
+// so the struct's data field can reference it by index. cap is a
+// stored field (Go-faithful 3-index slices); fields are mutable so
+// the backend may rewrite a header in place. nil slices are a null
+// slice ref, so the data field is non-nullable (a non-nil slice
+// always has a real, possibly zero-length, backing array — mirroring
+// go.string).
 func (c *typeCollector) collectSliceStruct(t *types.Type) int {
 	if !t.IsSlice() {
 		panic("wasm3: collectSliceStruct on non-slice type " + t.Kind().String())
@@ -448,9 +453,9 @@ func (c *typeCollector) collectSliceStruct(t *types.Type) int {
 		Super: wasmgc.TypeGoObject,
 		Fields: []wasmgc.Field{
 			{Storage: wasmgc.RefStorage(arrIdx, false), Mutable: true}, // data
-			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},   // off
-			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},   // len
-			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},   // cap
+			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},   // off
+			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},   // len
+			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},   // cap
 		},
 	})
 	return idx
@@ -468,10 +473,14 @@ func (c *typeCollector) collectSliceStruct(t *types.Type) int {
 // Shape:
 //
 //	(type go.map.<K,V> (struct
-//	    (field (mut i64))                ;; used  (live elements; field 0 by len()-builtin convention)
-//	    (field (mut i64))                ;; cap   (allocated slots)
+//	    (field (mut i32))                ;; used  (live elements; field 0 by len()-builtin convention)
+//	    (field (mut i32))                ;; cap   (allocated slots)
 //	    (field (mut (ref null (array K))))  ;; keys backing
 //	    (field (mut (ref null (array V)))))) ;; values backing
+//
+// used/cap are i32 to match the int=i32 direction on wasm3 — same
+// rationale as $go.chan and $go.slice.<T> (see TypeGoChan comment in
+// cmd/internal/wasmgc/type.go).
 //
 // `used` is intentionally field 0 so the compiler's len()-builtin
 // lowering (referenceTypeBuiltin in ssagen/ssa.go, which emits a
@@ -504,8 +513,8 @@ func (c *typeCollector) collectMapStruct(t *types.Type) int {
 		Kind:  wasmgc.KindStruct,
 		Super: wasmgc.TypeGoObject,
 		Fields: []wasmgc.Field{
-			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // used (field 0 — len() convention)
-			{Storage: wasmgc.PrimStorage(wasmgc.I64), Mutable: true},     // cap
+			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},     // used (field 0 — len() convention)
+			{Storage: wasmgc.PrimStorage(wasmgc.I32), Mutable: true},     // cap
 			{Storage: wasmgc.RefStorage(keyArrIdx, true), Mutable: true}, // keys
 			{Storage: wasmgc.RefStorage(valArrIdx, true), Mutable: true}, // values
 		},

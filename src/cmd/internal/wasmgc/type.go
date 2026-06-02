@@ -278,14 +278,17 @@ func PreludeTypes() []Type {
 	// (type $go.string (sub $go.object (struct
 	//   (field (ref $go.bytes)) (field i32) (field i32))))
 	// The offset field is required because substrings share a backing.
+	// offset/length are i32 to match the int=i32 direction on wasm3 and
+	// remove the per-op i32.wrap_i64 tax at every len(s) / s[i] —
+	// same rationale as $go.chan's qcount/dataqsiz/sendx/recvx fields.
 	t[TypeGoString] = Type{
 		Name:  "go.string",
 		Kind:  KindStruct,
 		Super: TypeGoObject,
 		Fields: []Field{
 			{Storage: RefStorage(TypeGoBytes, false)}, // backing
-			{Storage: PrimStorage(I64)},               // offset
-			{Storage: PrimStorage(I64)},               // length
+			{Storage: PrimStorage(I32)},               // offset
+			{Storage: PrimStorage(I32)},               // length
 		},
 	}
 

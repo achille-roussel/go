@@ -103,15 +103,16 @@ func TestEncodePreludeTypeSection(t *testing.T) {
 		opSub, 0x00, opArray, packedI8, fieldVar,
 
 		// rec { go.string }: sub, supertype go.object (index 0), struct
-		// of { (ref (exact go.bytes))=index 1 const, i64 const, i64
+		// of { (ref (exact go.bytes))=index 1 const, i32 const, i32
 		// const }. The standalone go.string is immutable; its backing is
-		// a non-null exact reference.
+		// a non-null exact reference. offset/length are i32 (int=i32 on
+		// wasm3) — see TypeGoString comment in type.go.
 		opRec, 0x01,
 		opSub, 0x01, 0x00, // 1 supertype: index 0
 		opStruct, 0x03,
 		opRef,0x01, fieldConst, // (ref (exact 1)) const
-		valI64, fieldConst,
-		valI64, fieldConst,
+		valI32, fieldConst,
+		valI32, fieldConst,
 
 		// rec { go.iptr.<class> } x7: each is a singleton sub group of
 		// `(struct (anyref container) (i32 offset))` keyed on the

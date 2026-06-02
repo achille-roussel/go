@@ -1830,12 +1830,6 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// before struct.get, and map the Go field index to the WasmGC field
 		// index via the field's byte offset (lowerFields may expand fields).
 		st := v.Aux.(*types.Type)
-		// Boxed-struct values may be SSA-typed as *T (the polymorphic
-		// pointer rep, e.g. on a parameter/return slot) rather than T;
-		// the codegen below works on the struct type either way.
-		if st.IsPtr() && st.Elem().IsStruct() {
-			st = st.Elem()
-		}
 		structIdx := wasm3RegisterStruct(s.FuncInfo(), st)
 		off := st.Field(int(v.AuxInt)).Offset
 		fieldIdx := wasm3FieldIndexAtOffset(s.FuncInfo(), st, off)

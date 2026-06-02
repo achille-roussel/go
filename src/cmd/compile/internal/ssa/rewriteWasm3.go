@@ -4050,6 +4050,20 @@ func rewriteValueWasm3_OpStore(v *Value) bool {
 		v.copyOf(mem)
 		return true
 	}
+	// match: (Store {t} ptr val mem)
+	// cond: config.arch == "wasm3" && val.Op == OpArgIntReg && val.Type.IsPtr() && val.Type.Elem() == t && t != nil && (t.IsStruct() || t.IsArray()) && t.Size() > 0
+	// result: (KeepAlive val mem)
+	for {
+		t := auxToType(v.Aux)
+		val := v_1
+		mem := v_2
+		if !(config.arch == "wasm3" && val.Op == OpArgIntReg && val.Type.IsPtr() && val.Type.Elem() == t && t != nil && (t.IsStruct() || t.IsArray()) && t.Size() > 0) {
+			break
+		}
+		v.reset(OpKeepAlive)
+		v.AddArg2(val, mem)
+		return true
+	}
 	// match: (Store {_} (ArrayElemRef {at} arr idx) val mem)
 	// cond: config.arch == "wasm3"
 	// result: (ArraySet {at} arr idx val mem)

@@ -171,6 +171,17 @@
 // the actual store. True field-wise copy via struct.set is future work
 // (interior pointers extension per doc/wasm3-fat-pointers-design.md).
 (Store {t} ptr val mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && (val.Type.IsStruct() || val.Type.IsArray()) && val.Type.Size() > 0 => mem
+// wasm3: a struct/array parameter passed by register lives in an
+// SSA *T ref slot (val:*T, ArgIntReg). The compiler-generated
+// `slice[len-1] = ent` or `local = ent` lowers to
+// `Store {T} ptr val mem` with ptr being a linear address (I64Add
+// for slice element, LoweredAddr for local autotmp) and val being
+// the *T parameter. The wasm3 ref carries the whole value — the
+// Store does nothing meaningful at the wasm-stack level (the actual
+// array.set happens at the WasmGC level via the typed backing). Use
+// KeepAlive to preserve val's liveness without emitting any wasm
+// code; ptr is discarded. Match only when val.Type matches t exactly.
+(Store {t} ptr val mem) && config.arch == "wasm3" && val.Op == OpArgIntReg && val.Type.IsPtr() && val.Type.Elem() == t && t != nil && (t.IsStruct() || t.IsArray()) && t.Size() > 0 => (KeepAlive val mem)
 
 // ArrayMake1 (1-element array build) on wasm3: the generic.rules
 // folds it when consumed by Store (line 983) or ArraySelect (line 978),

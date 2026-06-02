@@ -965,12 +965,8 @@
 
 // Putting struct{*byte} and similar into direct interfaces.
 (IMake _typ (StructMake ___)) => imakeOfStructMake(v)
-// Size() may fatal under types.CalcSizeDisabled (GOARCH=wasm3 parallel
-// compile, gc/compile.go:183). Guard with WidthCalculated() — these are
-// missed-optimisation, not correctness, so skipping when uncalculated
-// is safe.
-(StructSelect (IData x)) && v.Type.WidthCalculated() && v.Type.Size() > 0 => (IData x)
-(StructSelect (IData x)) && v.Type.WidthCalculated() && v.Type.Size() == 0 => (Empty)
+(StructSelect (IData x)) && v.Type.Size() > 0 => (IData x)
+(StructSelect (IData x)) && v.Type.Size() == 0 => (Empty)
 
 // un-SSAable values use mem->mem copies
 (Store {t} dst (Load src mem) mem) && !CanSSA(t) =>
@@ -990,9 +986,8 @@
 (IMake _typ (ArrayMake1 val)) => (IMake _typ val)
 (ArraySelect [0] (IData x)) => (IData x)
 
-// zero-sized values. See WidthCalculated() comment above on StructSelect
-// for why the guard is needed (wasm3 CalcSizeDisabled).
-(Load <t> _ _) && t.WidthCalculated() && t.Size() == 0 => (Empty)
+// zero-sized values.
+(Load <t> _ _) && t.Size() == 0 => (Empty)
 (Store _ (Empty) mem) => mem
 
 // string ops

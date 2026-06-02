@@ -13787,11 +13787,11 @@ func rewriteValuegeneric_OpLoad(v *Value) bool {
 		return true
 	}
 	// match: (Load <t> _ _)
-	// cond: t.WidthCalculated() && t.Size() == 0
+	// cond: t.Size() == 0
 	// result: (Empty)
 	for {
 		t := v.Type
-		if !(t.WidthCalculated() && t.Size() == 0) {
+		if !(t.Size() == 0) {
 			break
 		}
 		v.reset(OpEmpty)
@@ -34067,14 +34067,14 @@ func rewriteValuegeneric_OpStructSelect(v *Value) bool {
 		return true
 	}
 	// match: (StructSelect (IData x))
-	// cond: v.Type.WidthCalculated() && v.Type.Size() > 0
+	// cond: v.Type.Size() > 0
 	// result: (IData x)
 	for {
 		if v_0.Op != OpIData {
 			break
 		}
 		x := v_0.Args[0]
-		if !(v.Type.WidthCalculated() && v.Type.Size() > 0) {
+		if !(v.Type.Size() > 0) {
 			break
 		}
 		v.reset(OpIData)
@@ -34082,13 +34082,13 @@ func rewriteValuegeneric_OpStructSelect(v *Value) bool {
 		return true
 	}
 	// match: (StructSelect (IData x))
-	// cond: v.Type.WidthCalculated() && v.Type.Size() == 0
+	// cond: v.Type.Size() == 0
 	// result: (Empty)
 	for {
 		if v_0.Op != OpIData {
 			break
 		}
-		if !(v.Type.WidthCalculated() && v.Type.Size() == 0) {
+		if !(v.Type.Size() == 0) {
 			break
 		}
 		v.reset(OpEmpty)

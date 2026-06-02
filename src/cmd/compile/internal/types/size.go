@@ -710,14 +710,6 @@ func (t *Type) widthCalculated() bool {
 	return t.align > 0
 }
 
-// WidthCalculated reports whether t has had its width and alignment
-// computed. Exported so SSA passes can pre-check before triggering
-// CalcSize (which is unsafe to call concurrently and panics with
-// "width not calculated" under CalcSizeDisabled).
-func (t *Type) WidthCalculated() bool {
-	return t.widthCalculated()
-}
-
 // when a type's width should be known, we call CheckSize
 // to compute it.  during a declaration like
 //

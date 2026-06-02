@@ -467,6 +467,8 @@ func eqFuncWasm3(t *types.Type) *ir.Func {
 		return ir.NewLogicalExpr(pos, ir.OANDAND, a, b)
 	}
 
+	const eqUnrollMax = 4
+
 	// eqExpr builds the equality expression for two values of type ft,
 	// produced fresh by mkp/mkq each call (so a leaf reached through
 	// several struct/array steps gets independent IR nodes). Composite
@@ -478,8 +480,17 @@ func eqFuncWasm3(t *types.Type) *ir.Func {
 	// Recursing bottoms out at scalars/strings/interfaces/pointers, whose
 	// == lowers correctly (scalars to a wasm compare, string via
 	// compare.go to wasm3StringEqual, interface via walkCompareInterface).
-	var eqExpr func(mkp, mkq func() ir.Node, ft *types.Type) ir.Node
-	eqExpr = func(mkp, mkq func() ir.Node, ft *types.Type) ir.Node {
+	//
+	// Arrays with more than eqUnrollMax elements lower to a runtime for
+	// loop instead of unrolling, to keep the SSA size bounded — recursive
+	// unrolling at a [16384]byte nested inside a struct (e.g.
+	// runtime.debugLogBuf) otherwise explodes ssagen.insertPhis into
+	// tens of thousands of blocks/vars and stalls compilation for
+	// minutes. Loop-emitted statements are appended to *stmts; callers
+	// thread the same slice through every recursion level and prepend
+	// the collected statements before the final assignment.
+	var eqExpr func(stmts *ir.Nodes, mkp, mkq func() ir.Node, ft *types.Type) ir.Node
+	eqExpr = func(stmts *ir.Nodes, mkp, mkq func() ir.Node, ft *types.Type) ir.Node {
 		switch ft.Kind() {
 		case types.TSTRUCT:
 			var r ir.Node
@@ -488,7 +499,7 @@ func eqFuncWasm3(t *types.Type) *ir.Func {
 					continue
 				}
 				f := f
-				r = and(r, eqExpr(
+				r = and(r, eqExpr(stmts,
 					func() ir.Node { return ir.NewSelectorExpr(pos, ir.ODOT, mkp(), f.Sym) },
 					func() ir.Node { return ir.NewSelectorExpr(pos, ir.ODOT, mkq(), f.Sym) },
 					f.Type))
@@ -498,10 +509,36 @@ func eqFuncWasm3(t *types.Type) *ir.Func {
 			}
 			return r
 		case types.TARRAY:
+			if ft.NumElem() > eqUnrollMax {
+				// res := true
+				// for idx := 0; idx < N; idx++ {
+				//   if !eqElem(p[idx], q[idx]) { res = false; break }
+				// }
+				// → caller receives `res` as the expression
+				res := typecheck.TempAt(pos, ir.CurFunc, types.Types[types.TBOOL])
+				idx := typecheck.TempAt(pos, ir.CurFunc, types.Types[types.TINT])
+				p := mkp()
+				q := mkq()
+				stmts.Append(ir.NewAssignStmt(pos, res, ir.NewBool(pos, true)))
+				init := ir.NewAssignStmt(pos, idx, ir.NewInt(pos, 0))
+				cond := ir.NewBinaryExpr(pos, ir.OLT, idx, ir.NewInt(pos, ft.NumElem()))
+				post := ir.NewAssignStmt(pos, idx, ir.NewBinaryExpr(pos, ir.OADD, idx, ir.NewInt(pos, 1)))
+				var bodyStmts ir.Nodes
+				elemEq := eqExpr(&bodyStmts,
+					func() ir.Node { return ir.NewIndexExpr(pos, p, idx) },
+					func() ir.Node { return ir.NewIndexExpr(pos, q, idx) },
+					ft.Elem())
+				bodyStmts.Append(ir.NewIfStmt(pos, ir.NewUnaryExpr(pos, ir.ONOT, elemEq), []ir.Node{
+					ir.NewAssignStmt(pos, res, ir.NewBool(pos, false)),
+					ir.NewBranchStmt(pos, ir.OBREAK, nil),
+				}, nil))
+				stmts.Append(ir.NewForStmt(pos, init, cond, post, bodyStmts, false))
+				return res
+			}
 			var r ir.Node
 			for i := int64(0); i < ft.NumElem(); i++ {
 				i := i
-				r = and(r, eqExpr(
+				r = and(r, eqExpr(stmts,
 					func() ir.Node { return ir.NewIndexExpr(pos, mkp(), ir.NewInt(pos, i)) },
 					func() ir.Node { return ir.NewIndexExpr(pos, mkq(), ir.NewInt(pos, i)) },
 					ft.Elem()))
@@ -514,41 +551,14 @@ func eqFuncWasm3(t *types.Type) *ir.Func {
 			return ir.NewBinaryExpr(pos, ir.OEQ, mkp(), mkq())
 		}
 	}
-	const eqUnrollMax = 4
-	if cmpT.IsArray() && cmpT.NumElem() > eqUnrollMax {
-		// Large array: compare in a runtime loop rather than unrolling one
-		// comparison per element. Unrolling explodes the SSA for the huge
-		// fixed-array cast targets internal/abi uses (e.g. [1<<16]Method,
-		// [1<<17]*Type) — hundreds of thousands of blocks — which makes
-		// ssagen.insertPhis pathologically slow.
-		//   nr = true
-		//   for idx := 0; idx < N; idx++ {
-		//     if !eqElem((*pt)[idx], (*qt)[idx]) { nr = false; break }
-		//   }
-		fn.Body.Append(ir.NewAssignStmt(pos, nr, ir.NewBool(pos, true)))
-		idx := typecheck.TempAt(pos, ir.CurFunc, types.Types[types.TINT])
-		init := ir.NewAssignStmt(pos, idx, ir.NewInt(pos, 0))
-		cond := ir.NewBinaryExpr(pos, ir.OLT, idx, ir.NewInt(pos, cmpT.NumElem()))
-		post := ir.NewAssignStmt(pos, idx, ir.NewBinaryExpr(pos, ir.OADD, idx, ir.NewInt(pos, 1)))
-		elemEq := eqExpr(
-			func() ir.Node { return ir.NewIndexExpr(pos, ir.NewStarExpr(pos, ptVar), idx) },
-			func() ir.Node { return ir.NewIndexExpr(pos, ir.NewStarExpr(pos, qtVar), idx) },
-			cmpT.Elem())
-		body := ir.NewIfStmt(pos, ir.NewUnaryExpr(pos, ir.ONOT, elemEq), []ir.Node{
-			ir.NewAssignStmt(pos, nr, ir.NewBool(pos, false)),
-			ir.NewBranchStmt(pos, ir.OBREAK, nil),
-		}, nil)
-		fn.Body.Append(ir.NewForStmt(pos, init, cond, post, []ir.Node{body}, false))
-		fn.Body.Append(ir.NewReturnStmt(pos, nil))
-	} else {
-		r := eqExpr(
-			func() ir.Node { return ir.NewStarExpr(pos, ptVar) },
-			func() ir.Node { return ir.NewStarExpr(pos, qtVar) },
-			cmpT)
-
-		fn.Body.Append(ir.NewAssignStmt(pos, nr, r))
-		fn.Body.Append(ir.NewReturnStmt(pos, nil))
-	}
+	var stmts ir.Nodes
+	r := eqExpr(&stmts,
+		func() ir.Node { return ir.NewStarExpr(pos, ptVar) },
+		func() ir.Node { return ir.NewStarExpr(pos, qtVar) },
+		cmpT)
+	fn.Body.Append(stmts...)
+	fn.Body.Append(ir.NewAssignStmt(pos, nr, r))
+	fn.Body.Append(ir.NewReturnStmt(pos, nil))
 
 	typecheck.FinishFuncBody()
 	fn.SetDupok(true)

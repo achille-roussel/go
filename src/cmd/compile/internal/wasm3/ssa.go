@@ -1370,8 +1370,16 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			v.Fatalf("OpWasm3MapClear: v.Aux is not a map type: %v", v.Aux)
 		}
 		mapIdx := int64(wasm3RegisterMapStruct(s.FuncInfo(), mapType))
-		// used = 0 — i32 (used field is i32 per collectMapStruct)
+		// Stash arg0 (the map ref) in a scratch anyref local: each of
+		// the 4 struct.set sub-ops needs the ref pushed again, and a
+		// single SSA Value can only be consumed by getValue64 once
+		// (OnWasmStack/OnWasmStackSkipped is a one-shot count, per the
+		// contract in ssaGenValue's default branch).
+		mapRefTmp := wasm3AllocAnyrefTempLocal(s)
 		getValue64(s, v.Args[0])
+		pTeeMap := s.Prog(wasm.ALocalTee)
+		pTeeMap.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(mapRefTmp)}
+		// used = 0 — i32 (used field is i32 per collectMapStruct)
 		pCast1 := s.Prog(wasm.ARefCast)
 		pCast1.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
 		i32Const(s, 0)
@@ -1379,7 +1387,8 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		pUsed.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
 		pUsed.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}
 		// cap = 0 — i32 (cap field is i32 per collectMapStruct)
-		getValue64(s, v.Args[0])
+		pGetMap2 := s.Prog(wasm.ALocalGet)
+		pGetMap2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(mapRefTmp)}
 		pCast2 := s.Prog(wasm.ARefCast)
 		pCast2.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
 		i32Const(s, 0)
@@ -1388,7 +1397,8 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		pCap.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 1}
 		// keys = null
 		keyArrIdx := int64(wasm3RegisterArrayBacking(s.FuncInfo(), mapType.Key()))
-		getValue64(s, v.Args[0])
+		pGetMap3 := s.Prog(wasm.ALocalGet)
+		pGetMap3.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(mapRefTmp)}
 		pCast3 := s.Prog(wasm.ARefCast)
 		pCast3.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
 		pNullK := s.Prog(wasm.ARefNull)
@@ -1398,7 +1408,8 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		pKeys.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 2}
 		// values = null
 		valArrIdx := int64(wasm3RegisterArrayBacking(s.FuncInfo(), mapType.Elem()))
-		getValue64(s, v.Args[0])
+		pGetMap4 := s.Prog(wasm.ALocalGet)
+		pGetMap4.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(mapRefTmp)}
 		pCast4 := s.Prog(wasm.ARefCast)
 		pCast4.From = obj.Addr{Type: obj.TYPE_CONST, Offset: mapIdx}
 		pNullV := s.Prog(wasm.ARefNull)

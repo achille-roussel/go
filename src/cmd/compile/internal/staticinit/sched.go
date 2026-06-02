@@ -21,6 +21,7 @@ import (
 	"cmd/internal/obj"
 	"cmd/internal/objabi"
 	"cmd/internal/src"
+	"internal/buildcfg"
 )
 
 type Entry struct {
@@ -268,8 +269,24 @@ func (s *Schedule) staticcopy(l *ir.Name, loff int64, rn *ir.Name, typ *types.Ty
 			if x.Op() == ir.ONAME && s.staticcopy(l, loff+e.Xoffset, x.(*ir.Name), typ) {
 				continue
 			}
-			// Requires computation, but we're
-			// copying someone else's computation.
+			// Requires computation, but we're copying someone else's
+			// computation.
+			//
+			// wasm3: the NameOffsetExpr pair below lowers to a Store
+			// through an OffPtr off a LoweredAddr-of-static-LSym, with
+			// the LSym typed as the field type (typ) but the offset
+			// reaching into a larger surrounding object (a slice
+			// backing or outer struct). The wasm3 latelower rule for
+			// OffPtr -> MakeFieldPtr can't represent that — the field
+			// is at an out-of-bounds offset within typ. Worse, on
+			// wasm3 the static-data layout for non-flat-byte types
+			// (string/slice/interface/struct/...) doesn't exist at
+			// all: those values are wasm3 refs, not linear bytes.
+			// Bail out so walk emits runtime init for the whole
+			// composite.
+			if buildcfg.GOARCH == "wasm3" {
+				return false
+			}
 			ll := ir.NewNameOffsetExpr(base.Pos, l, loff+e.Xoffset, typ)
 			rr := ir.NewNameOffsetExpr(base.Pos, orig, e.Xoffset, typ)
 			ir.SetPos(rr)
@@ -405,6 +422,30 @@ func (s *Schedule) StaticAssign(l *ir.Name, loff int64, r ir.Node, typ *types.Ty
 		s.initplan(r)
 
 		p := s.Plans[r]
+		// wasm3: if any element needs a runtime-side assignment whose
+		// LHS would be a NameOffsetExpr into a non-zero offset of a
+		// non-flat-byte type, bail out — the resulting SSA
+		// `Store {T} OffPtr[off>0] (LoweredAddr {sym})` lowers to an
+		// out-of-bounds MakeFieldPtr, since on wasm3 the static-data
+		// layout for boxed types (string/slice/interface/struct/...)
+		// doesn't exist; those values are wasm3 refs, not linear bytes.
+		// Returning false here makes walk fall back to a full runtime
+		// init via the original CompLitExpr.
+		if buildcfg.GOARCH == "wasm3" {
+			for i := range p.E {
+				e := &p.E[i]
+				if e.Expr.Op() == ir.OLITERAL && !disableGlobalAddrs || e.Expr.Op() == ir.ONIL {
+					continue
+				}
+				if e.Xoffset == 0 {
+					continue
+				}
+				et := e.Expr.Type()
+				if et.IsStruct() || et.IsArray() || et.IsString() || et.IsSlice() || et.IsInterface() || et.IsMap() || et.IsChan() || et.Kind() == types.TFUNC {
+					return false
+				}
+			}
+		}
 		for i := range p.E {
 			e := &p.E[i]
 			if e.Expr.Op() == ir.OLITERAL && !disableGlobalAddrs || e.Expr.Op() == ir.ONIL {

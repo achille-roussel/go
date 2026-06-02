@@ -235,6 +235,21 @@ func CalcSize(t *Type) {
 	}
 
 	if CalcSizeDisabled {
+		// Atomic fast path: an array of already-sized leaves doesn't
+		// need the full recursive CalcSize machinery; the size is just
+		// NumElem * Elem.Size() and the alignment is Elem.Align. This
+		// lets [N]<primitive> types (most commonly fixed-size byte
+		// arrays from runtime.callN's compiler-internal frame layouts
+		// on wasm3) trickle through without crashing the build.
+		// Concurrent writers race to set the same final value to the
+		// same fields, which is benign.
+		if t.IsArray() && t.Elem() != nil && t.Elem().widthCalculated() {
+			t.width = t.NumElem() * t.Elem().width
+			t.align = t.Elem().align
+			t.alg = t.Elem().alg
+			t.ptrBytes = t.Elem().ptrBytes * t.NumElem()
+			return
+		}
 		base.Fatalf("width not calculated: %v", t)
 	}
 

@@ -155,7 +155,7 @@ func mapAccessFullFuncWasm3(t *types.Type) *ir.Func {
 
 	// Miss: return zero value of V.
 	zeroV := typecheck.TempAt(pos, ir.CurFunc, V)
-	fn.Body.Append(ir.NewAssignStmt(pos, zeroV, nil))
+	fn.Body.Append(ir.NewAssignStmt(pos, zeroV, wasm3ZeroValue(pos, V)))
 	fn.Body.Append(ir.NewReturnStmt(pos, []ir.Node{zeroV}))
 
 	typecheck.FinishFuncBody()
@@ -513,7 +513,7 @@ func mapAccess2FuncWasm3(t *types.Type) *ir.Func {
 	fn.Body.Append(ir.NewIfStmt(pos, gtZero, seekBody, nil))
 	// Miss: return (zero V, false).
 	zeroV := typecheck.TempAt(pos, ir.CurFunc, V)
-	fn.Body.Append(ir.NewAssignStmt(pos, zeroV, nil))
+	fn.Body.Append(ir.NewAssignStmt(pos, zeroV, wasm3ZeroValue(pos, V)))
 	fn.Body.Append(ir.NewReturnStmt(pos, []ir.Node{zeroV, ir.NewBool(pos, false)}))
 	typecheck.FinishFuncBody()
 	ir.WithFunc(fn, func() { typecheck.Stmts(fn.Body) })

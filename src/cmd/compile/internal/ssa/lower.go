@@ -4,6 +4,8 @@
 
 package ssa
 
+import "fmt"
+
 // convert to machine-dependent ops.
 func lower(f *Func) {
 	// repeat rewrites until we find no more rewrites
@@ -57,6 +59,12 @@ func checkLower(f *Func) {
 
 			for _, a := range v.Args {
 				s += " " + a.Type.SimpleString()
+			}
+			if v.Aux != nil {
+				s += fmt.Sprintf(" aux=%v", v.Aux)
+			}
+			for i, a := range v.Args {
+				s += fmt.Sprintf(" arg%d.Op=%v.Type=%v", i, a.Op, a.Type)
 			}
 			f.Fatalf("%s", s)
 		}

@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build !wasm3
+
 // Package alias implements memory aliasing tests.
 // This code also exists as golang.org/x/crypto/internal/alias.
 package alias

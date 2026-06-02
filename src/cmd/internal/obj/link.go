@@ -801,8 +801,17 @@ func (w *Wasm3ItabVtab) CreateAuxSym() {
 	}
 	for i, msym := range w.MethodSyms {
 		off := int64(dataLen + i*ptrSize)
+		// Use R_WEAKADDR (mirroring the legacy itab body's
+		// WritePtrWeak(fn) entries): the method LSym does not need
+		// to be reachable through this reloc — it stays reachable
+		// via the linker-emitted ref.func in writeGlobalSec3's
+		// vtab struct.new. R_ADDR would force the writer's
+		// indexed-symbol check to fire on cross-package method
+		// LSyms that haven't been touched by any other path in the
+		// current package (e.g. internal/reflectlite.rtype.AssignableTo
+		// referenced only by the iface dispatch through errors).
 		w.AuxSym.R = append(w.AuxSym.R, Reloc{
-			Type: objabi.R_ADDR,
+			Type: objabi.R_WEAKADDR,
 			Off:  int32(off),
 			Siz:  uint8(ptrSize),
 			Sym:  msym,

@@ -437,6 +437,18 @@ func (ctxt *Link) traverseSyms(flag traverseFlag, fn func(*LSym)) {
 				for _, r := range s.R {
 					fnNoNil(r.Sym)
 				}
+				// wasm3 itab-strip path (commit 6bff224984): the per-itab
+				// vtab aux symbol carries R_WEAKADDR relocations to the
+				// method wrapper LSyms in vtab-slot order. The itab body
+				// itself is empty on wasm3, so its s.R walk above sees no
+				// method refs — without walking the aux sym's relocs the
+				// method LSyms never enter the package reference table and
+				// the writer's makeSymRef panics on emit.
+				if ii := s.ItabInfo(); ii != nil && ii.Wasm3Vtab != nil && ii.Wasm3Vtab.AuxSym != nil {
+					for _, r := range ii.Wasm3Vtab.AuxSym.R {
+						fnNoNil(r.Sym)
+					}
+				}
 			}
 			if flag&traverseAux != 0 {
 				fnNoNil(s.Gotype)

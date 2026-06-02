@@ -198,12 +198,20 @@
 // the BoxLoad/BoxStore rules below.
 (Load <t> (ArrayElemRef {at} arr idx) mem) && config.arch == "wasm3" && (t.IsString() || t.IsSlice() || t.IsInterface()) => (ArrayGet <t> {at} arr idx mem)
 (Store {_} (ArrayElemRef {at} arr idx) val mem) && config.arch == "wasm3" => (ArraySet {at} arr idx val mem)
-(Load <t> ptr mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && (t.IsString() || t.IsSlice() || t.IsInterface()) => (BoxLoad <t> {t} ptr mem)
-// Dual of BoxLoad: a write through a *string/*slice/*interface cell sets
-// field 0. The escaping &localBoxed home (newObject -> a cell) and *p = v
-// both reach here; without it the store falls through to the generic linear
-// Store and is not lowered.
-(Store {t} ptr val mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && (t.IsString() || t.IsSlice() || t.IsInterface()) => (BoxStore {t} ptr val mem)
+// *chan / *map / *func boxes follow the same single-field-cell shape as
+// *string/*slice/*interface (wasmtype.go's TCHAN/TMAP/TFUNC lowering now
+// types the cell field as the concrete typed ref — $go.chan.<T>,
+// $go.map.<K,V>, $go.closure.<sig>), so deref/assign reads/writes field 0
+// via BoxLoad/BoxStore the same way. Without this rule the Load/Store
+// fall through to the generic linear-memory rules and emit
+// `i32.wrap_i64; i64.load` on the anyref cell — exactly the i64-vs-anyref
+// validation gap the typed-cell fix was meant to close.
+(Load <t> ptr mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && (t.IsString() || t.IsSlice() || t.IsInterface() || t.IsChan() || t.IsMap() || t.Kind() == types.TFUNC) => (BoxLoad <t> {t} ptr mem)
+// Dual of BoxLoad: a write through a *string/*slice/*interface/*chan/*map/
+// *func cell sets field 0. The escaping &localBoxed home (newObject -> a
+// cell) and *p = v both reach here; without it the store falls through to
+// the generic linear Store and is not lowered.
+(Store {t} ptr val mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && ptr.Op != OpWasm3InteriorPtr && (t.IsString() || t.IsSlice() || t.IsInterface() || t.IsChan() || t.IsMap() || t.Kind() == types.TFUNC) => (BoxStore {t} ptr val mem)
 
 // wasm3: storing a whole array value (b := a — Load(array)=>Copy above
 // makes the array a single-ref SSA value, so the assignment is a Store,

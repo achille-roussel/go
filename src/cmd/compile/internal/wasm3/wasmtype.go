@@ -217,11 +217,36 @@ func (c *typeCollector) lowerFieldsImpl(t *types.Type) []wasmgc.Field {
 		// the function to fall back to the encodeWasm3Body stub.
 		return []wasmgc.Field{{Storage: wasmgc.RefStorage(c.collectBacking(t.Elem()), true), Mutable: true}}
 
-	case types.TMAP, types.TCHAN, types.TFUNC:
-		// Pointer-shaped runtime types. Their concrete representation is
-		// refined in later milestones (M3/M4); for now they occupy a
-		// single reference to the open base type.
-		return []wasmgc.Field{{Storage: wasmgc.RefStorage(wasmgc.TypeGoObject, true), Mutable: true}}
+	case types.TMAP:
+		// A map field is a single boxed $go.map.<K,V> ref (the per-type
+		// map struct collectMapStruct produces). Nullable so a zero-value
+		// map field is a null ref. Mirrors TSLICE/TSTRING — the box has a
+		// concrete typed shape, not the open $go.object fallback the
+		// pre-M3 placeholder used, so *map[K]V boxing through collectBox
+		// flows a typed (ref $go.map.<K,V>) instead of (ref $go.object)
+		// and the SSA-side struct.get returns a typed ref the map ops
+		// already expect.
+		return []wasmgc.Field{{Storage: wasmgc.RefStorage(c.collectMapStruct(t), true), Mutable: true}}
+
+	case types.TCHAN:
+		// A chan field is a single boxed $go.chan.<T> ref (the per-T
+		// chan struct collectChanStruct produces, which subtypes the
+		// prelude $go.chan). Nullable so a zero-value chan field is a
+		// null ref. Same rationale as TMAP: the box must carry the
+		// concrete typed shape so *chan T boxing produces a typed
+		// (ref $go.chan.<T>) the per-T chan ops can struct.get without
+		// an i64-pointer-to-anyref mismatch.
+		return []wasmgc.Field{{Storage: wasmgc.RefStorage(c.collectChanStruct(t), true), Mutable: true}}
+
+	case types.TFUNC:
+		// A function-typed field is a single boxed $go.closure.<sig>
+		// ref (the per-signature closure struct collectClosureCtx
+		// produces, whose first field is the funcref call_ref consumes
+		// and whose second field is the captures pointer). Nullable so
+		// a zero-value func field is a null ref. Mirrors TSLICE/TMAP/
+		// TCHAN — *func(...) boxing through collectBox now flows a
+		// typed (ref $go.closure.<sig>) instead of (ref $go.object).
+		return []wasmgc.Field{{Storage: wasmgc.RefStorage(c.collectClosureCtx(t), true), Mutable: true}}
 
 	case types.TINTER:
 		// WasmGC memory model (doc/wasm3-slice-boxing.md): an interface is

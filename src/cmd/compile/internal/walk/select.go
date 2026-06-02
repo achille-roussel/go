@@ -494,6 +494,23 @@ func walkSelectCasesWasm3Multi(cases []*ir.CommClause, dflt *ir.CommClause) []ir
 	// in a break (the SSA OSELECT handler at ssagen/ssa.go:2398
 	// asserts this — without it the fall-through gets marked
 	// BlockExit, deleting code after the select).
+	//
+	// Build each dispatch IfStmt by typechecking its cond and the
+	// freshly-synthesised AssignStmts (the userV/userOk bindings) on
+	// their own, then assembling the IfStmt and marking it typechecked.
+	// We must NOT call typecheck.Stmt on the whole IfStmt: the case
+	// body (ci.cas.Body) is already post-walk and may contain INLMARK
+	// nodes (left behind by mid-stack inlining of calls in the case
+	// body). Re-typechecking through Stmts(IfStmt.Body) walks into the
+	// INLMARK, which typecheck1 has no handler for — fatal "typecheck
+	// inlmark".
+	mkDispatchIf := func(cond ir.Node, body ir.Nodes) ir.Node {
+		cond = typecheck.Expr(cond)
+		cond = typecheck.DefaultLit(cond, nil)
+		ifs := ir.NewIfStmt(pos, cond, body, nil)
+		ifs.SetTypecheck(1)
+		return ifs
+	}
 	for _, ci := range infos {
 		var body ir.Nodes
 		if !ci.isSend {
@@ -507,14 +524,14 @@ func walkSelectCasesWasm3Multi(cases []*ir.CommClause, dflt *ir.CommClause) []ir
 		body.Append(ci.cas.Body.Take()...)
 		body.Append(ir.NewBranchStmt(pos, ir.OBREAK, nil))
 		cond := ir.NewBinaryExpr(pos, ir.OEQ, chosenVar, ir.NewInt(pos, int64(ci.idx)))
-		init = append(init, typecheck.Stmt(ir.NewIfStmt(pos, cond, body, nil)))
+		init = append(init, mkDispatchIf(cond, body))
 	}
 	if dflt != nil {
 		var body ir.Nodes
 		body.Append(dflt.Body.Take()...)
 		body.Append(ir.NewBranchStmt(pos, ir.OBREAK, nil))
 		cond := ir.NewBinaryExpr(pos, ir.OLT, chosenVar, ir.NewInt(pos, 0))
-		init = append(init, typecheck.Stmt(ir.NewIfStmt(pos, cond, body, nil)))
+		init = append(init, mkDispatchIf(cond, body))
 	}
 	return init
 }

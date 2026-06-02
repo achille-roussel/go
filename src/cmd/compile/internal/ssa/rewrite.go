@@ -590,6 +590,33 @@ func b2i32(b bool) int32 {
 	return 0
 }
 
+// wasm3HasFieldAtOffset reports whether the Go struct type t has a
+// field starting at byte offset off. Used by the wasm3 (Load|Store
+// (OffPtr [off] base) ...) → (FieldGet|FieldSet ...) rewrites to skip
+// firing when off lands inside a primitive field (e.g. byte 7 of a
+// uintptr) — those accesses have no wasm3 FieldGet/Set lowering, and
+// must fall through to a different rewrite (or stay as a generic Load/
+// Store) so checkLower's exemption picks them up.
+func wasm3HasFieldAtOffset(t *types.Type, off int64) bool {
+	if t == nil || !t.IsStruct() {
+		return false
+	}
+	for _, f := range t.Fields() {
+		if f.Offset == off {
+			return true
+		}
+		if off > f.Offset && off < f.Offset+f.Type.Size() {
+			// Recurse into nested struct.
+			if f.Type.IsStruct() {
+				if wasm3HasFieldAtOffset(f.Type, off-f.Offset) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func canMulStrengthReduce(config *Config, x int64) bool {
 	_, ok := config.mulRecipes[x]
 	return ok

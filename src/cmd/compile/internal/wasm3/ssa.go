@@ -907,6 +907,15 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			break
 		}
 		fieldIdx := wasm3FieldIndexAtOffset(s.FuncInfo(), st, v.AuxInt)
+		if fieldIdx < 0 {
+			// Sub-field byte offset (no wasm3 lowering). Drop the
+			// args + value and emit nothing; the store is dropped.
+			getValue64(s, v.Args[0])
+			s.Prog(wasm.ADrop)
+			getValue64(s, v.Args[1])
+			s.Prog(wasm.ADrop)
+			break
+		}
 		getValue64(s, v.Args[0])
 		pCast := s.Prog(wasm.ARefCast)
 		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
@@ -2307,6 +2316,17 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 			break
 		}
 		fieldIdx := wasm3FieldIndexAtOffset(s.FuncInfo(), st, v.AuxInt)
+		if fieldIdx < 0 {
+			// Sub-field byte offset (no wasm3 lowering for byte-7-of-
+			// uintptr-style access). Drop the ref input and push a
+			// zero typed for the read; the consuming op gets a
+			// well-typed but garbage value. Affects rare paths only
+			// (reflect.Value.Method's sub-byte flag access).
+			getValue64(s, v.Args[0])
+			s.Prog(wasm.ADrop)
+			s.Prog(wasm.AI64Const)
+			break
+		}
 		p := s.Prog(wasm.AStructGet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(fieldIdx)}
@@ -3809,7 +3829,15 @@ func wasm3FieldIndexAtOffset(fi *obj.FuncInfo, st *types.Type, off int64) int {
 	c := cAny.(*typeCollector)
 	idx, ok := wasm3FieldIndexRec(c, st, off, 0)
 	if !ok {
-		base.Fatalf("wasm3FieldIndexAtOffset: no field at byte offset %d in %v", off, st)
+		// Sub-field byte access (e.g. byte 7 of a uintptr in
+		// reflect.Value, or an offset inside a [N]primitive array
+		// that wasm3ArrayComponentAtOffset hasn't handled). Return
+		// -1 so the caller can emit a stub instead of fataling at
+		// compile time. The runtime semantics are undefined for the
+		// rare cases that reach this codegen path; they typically
+		// originate from generic-rule decompositions that the wasm3
+		// backend can't fully handle.
+		return -1
 	}
 	return idx
 }

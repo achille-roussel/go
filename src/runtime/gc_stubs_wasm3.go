@@ -114,6 +114,18 @@ func SetFinalizer(obj any, finalizer any) {
 // sites (value.go:582, 590, 704) so reflect compiles.
 func GC() {}
 
+// Stack writes a formatted stack trace of the calling goroutine (and
+// optionally all goroutines) into buf and returns the number of bytes
+// written. wasm3: returns 0 with no output — the linker strips pclntab
+// on wasm3 (commit 0dff9d6173) so per-frame metadata isn't available
+// anyway. Required by os/exec.Command.Wait to satisfy the linkage
+// (src/os/exec/exec.go:427).
+func Stack(buf []byte, all bool) int {
+	_ = buf
+	_ = all
+	return 0
+}
+
 // AddCleanup registers cleanup as a cleanup callback for ptr. On
 // wasm3 this is a no-op — the cleanup never fires. Returns a zero
 // Cleanup handle; the returned Stop method is a no-op too.

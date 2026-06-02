@@ -170,13 +170,41 @@ func (m *wasm3Module) getOrAllocDescriptorGlobal(ldr *loader.Loader, sym loader.
 // legacy opaque-global mode and writeGlobalSec3 emits the
 // struct.new_default $go.object fallback (matches a Phase D step 3
 // build that hasn't been rebuilt against the new compiler yet).
+//
+// Method LSyms come from the aux symbol's own R_ADDR relocations,
+// one per slot in $go.vtab.<I> (in I.AllMethods order); they live
+// after the (VtabTypeIdx, Table) data payload so the linker can
+// recover them without scanning the itab data symbol's body. The
+// wasm3 backend stopped emitting that body — only the LSym (zero
+// data, zero relocs) survives — so the legacy reloc-scan path
+// would always return empty.
 func (m *wasm3Module) populateItabEntry(ldr *loader.Loader, sym loader.Sym, entry *wasm3GlobalEntry) {
 	auxSym := ldr.Wasm3ItabVtabSym(sym)
 	if auxSym == 0 {
 		return
 	}
+	// Method LSyms are R_ADDR relocations on the aux sym; their order
+	// is preserved by the writer (relocations are sorted by offset).
+	auxRelocs := ldr.Relocs(auxSym)
+	type methReloc struct {
+		off int32
+		sym loader.Sym
+	}
+	var methRelocs []methReloc
+	for ri := 0; ri < auxRelocs.Count(); ri++ {
+		r := auxRelocs.At(ri)
+		if !ldr.SymType(r.Sym()).IsText() {
+			continue
+		}
+		methRelocs = append(methRelocs, methReloc{off: r.Off(), sym: r.Sym()})
+	}
+	sort.Slice(methRelocs, func(i, j int) bool { return methRelocs[i].off < methRelocs[j].off })
+
+	// The aux's data payload is (8-byte VtabTypeIdx + Table bytes +
+	// one ptr-sized zero slot per method reloc). Strip the trailing
+	// method slots before parsing the table.
 	var w obj.Wasm3ItabVtab
-	w.Read(ldr.Data(auxSym))
+	w.Read(ldr.Data(auxSym), len(methRelocs))
 	// Merge the producer-package's wasmgc.Table into the module-wide
 	// table, remap the vtab type index to the module-global index.
 	remap := m.mergeTable(w.Table)
@@ -185,43 +213,9 @@ func (m *wasm3Module) populateItabEntry(ldr *loader.Loader, sym loader.Sym, entr
 		return
 	}
 	entry.itabVtabTypeIdx = remap[pkgIx]
-	// Extract the method LSyms from the itab's Fun array. The wasm3
-	// vtab struct has the type-descriptor at field 0 followed by N
-	// method funcref slots at fields 1..N; we need the N method LSyms
-	// in the same order writeITab emitted them. WritePtrWeak on each
-	// Fun[i] produces an R_ADDR (or weak variant) relocation at offset
-	// itabFunOffset + i*PtrSize whose Sym is the method LSym. Walk
-	// all relocations and grab the ones in the Fun array range, sorted
-	// by their offsets to preserve method order. itabFunOffset for
-	// PtrSize=8 is 24 (Inter@0 + Type@8 + Hash@16 + 4-byte pad).
-	const ptrSize = 8
-	const itabFunOffset = 24
-	relocs := ldr.Relocs(sym)
-	type funReloc struct {
-		off int32
-		sym loader.Sym
-	}
-	var funRelocs []funReloc
-	for ri := 0; ri < relocs.Count(); ri++ {
-		r := relocs.At(ri)
-		if r.Off() < itabFunOffset {
-			continue
-		}
-		if (int64(r.Off())-itabFunOffset)%int64(ptrSize) != 0 {
-			continue
-		}
-		// Only consider relocations whose target is a function
-		// symbol — the Inter/Type pointers and any other relocs
-		// must be filtered out.
-		if !ldr.SymType(r.Sym()).IsText() {
-			continue
-		}
-		funRelocs = append(funRelocs, funReloc{off: r.Off(), sym: r.Sym()})
-	}
-	sort.Slice(funRelocs, func(i, j int) bool { return funRelocs[i].off < funRelocs[j].off })
-	entry.itabMethodSyms = make([]loader.Sym, 0, len(funRelocs))
-	for _, fr := range funRelocs {
-		entry.itabMethodSyms = append(entry.itabMethodSyms, fr.sym)
+	entry.itabMethodSyms = make([]loader.Sym, 0, len(methRelocs))
+	for _, mr := range methRelocs {
+		entry.itabMethodSyms = append(entry.itabMethodSyms, mr.sym)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"internal/abi"
+	"internal/buildcfg"
 	"slices"
 	"sort"
 	"strings"
@@ -1065,6 +1066,32 @@ func writeITab(lsym *obj.LSym, typ, iface *types.Type, allowNonImplement bool) {
 	//   _      [4]byte
 	//   fun    [1]uintptr // variable sized. fun[0]==0 means _type does not implement inter.
 	// }
+	//
+	// wasm3 backend: the linear-memory itab struct is dead weight. Phase D
+	// (commit 8756b8cdde) routes iface dispatch through a per-(I,T) wasmgc
+	// vtab ref-global emitted by the linker from the Wasm3PrepareItabVtabHook
+	// side-table, so no Go code consults *itab.Fun[i] / itab.Inter / itab.Type
+	// at runtime on wasm3. Skip the body emission (still call writeType so
+	// the iface/concrete *_type data is reachable via the usual writeType
+	// paths, and leave the LSym in place so external references to
+	// go:itab.<I>,<T> resolve to a zero-sized symbol that the linker turns
+	// into the vtab ref-global via getOrAllocDescriptorGlobal).
+	if buildcfg.GOARCH == "wasm3" {
+		// Keep the iface and concrete type descriptors emitted (writeType
+		// is idempotent and many other sites already trigger them, but be
+		// explicit here so DCE doesn't silently drop them on programs
+		// whose only reference path was through the itab body).
+		writeType(iface)
+		writeType(typ)
+		objw.Global(lsym, 0, int16(obj.DUPOK|obj.RODATA))
+		lsym.Set(obj.AttrContentAddressable, true)
+		lsym.Align = int16(types.PtrSize)
+		if completeItab && Wasm3PrepareItabVtabHook != nil {
+			Wasm3PrepareItabVtabHook(lsym, iface, entries)
+		}
+		return
+	}
+
 	c := rttype.NewCursor(lsym, 0, rttype.ITab)
 	c.Field("Inter").WritePtr(writeType(iface))
 	c.Field("Type").WritePtr(writeType(typ))
@@ -1086,25 +1113,16 @@ func writeITab(lsym *obj.LSym, typ, iface *types.Type, allowNonImplement bool) {
 	objw.Global(lsym, int32(rttype.ITab.Size()+delta), int16(obj.DUPOK|obj.RODATA))
 	lsym.Set(obj.AttrContentAddressable, true)
 	lsym.Align = int16(types.PtrSize)
-
-	// wasm3 iface phase D step 3: register $go.vtab.<iface> in a per-itab
-	// wasmgc.Table and stash the type index + table on the itab symbol so
-	// the linker (cmd/link/internal/wasm asm3.go) can emit the itab's wasm
-	// global as a typed (ref $go.vtab.<I>) struct.new initialised with the
-	// method funcrefs already referenced by the itab's Fun array (above).
-	// Hooked via Wasm3PrepareItabVtabHook so reflectdata stays
-	// architecture-neutral; the hook is installed by wasm3.init when
-	// GOARCH=wasm3.
-	if completeItab && Wasm3PrepareItabVtabHook != nil {
-		Wasm3PrepareItabVtabHook(lsym, iface)
-	}
 }
 
 // Wasm3PrepareItabVtabHook is installed by the wasm3 package (see
 // wasm3.Wasm3PrepareItabVtab) when GOARCH=wasm3, to attach the per-itab
 // wasmgc vtab side-table the linker needs to emit a typed global for
-// the itab. nil on every other architecture.
-var Wasm3PrepareItabVtabHook func(itabSym *obj.LSym, iface *types.Type)
+// the itab. The entries slice carries the ordered interface-call
+// method wrappers (I.AllMethods order), which the hook stashes onto
+// the aux symbol so the linker can recover them without scanning the
+// (now empty) itab body. nil on every other architecture.
+var Wasm3PrepareItabVtabHook func(itabSym *obj.LSym, iface *types.Type, entries []*obj.LSym)
 
 func WritePluginTable() {
 	ptabs := typecheck.Target.PluginExports

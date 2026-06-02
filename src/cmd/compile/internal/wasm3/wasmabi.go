@@ -593,15 +593,19 @@ func wasm3RegisterIfaceMethodFuncSigFor(fi *obj.FuncInfo, mft *types.Type) uint3
 
 // Wasm3PrepareItabVtab registers $go.vtab.<I> (and transitively the
 // per-method funcref types) in a fresh per-itab typeCollector and
-// stashes the serialized table + the vtab type index on the itab data
-// symbol via lsym.ItabInfo().Wasm3Vtab, so the linker (asm3.go global
-// emission) can emit a typed (ref $go.vtab.<I>) global instead of an
-// opaque (ref $go.object) struct.new_default.
+// stashes the serialized table + the vtab type index + the ordered
+// method LSyms on the itab data symbol via lsym.ItabInfo().Wasm3Vtab,
+// so the linker (asm3.go global emission) can emit a typed
+// (ref $go.vtab.<I>) global instead of an opaque
+// (ref $go.object) struct.new_default. The method LSyms are attached
+// as R_ADDR relocations on the aux symbol (see CreateAuxSym) so the
+// linker can recover them without reading the itab body, which the
+// wasm3 backend no longer emits.
 //
 // Phase D step 3 of the wasm3 iface migration — must be called from
 // writeITab for GOARCH=wasm3 only. Idempotent: a repeat call with the
 // same lsym is a no-op (the first call's stash wins).
-func Wasm3PrepareItabVtab(lsym *obj.LSym, I *types.Type) {
+func Wasm3PrepareItabVtab(lsym *obj.LSym, I *types.Type, methodSyms []*obj.LSym) {
 	if lsym == nil {
 		base.Fatalf("Wasm3PrepareItabVtab: lsym is nil")
 	}
@@ -622,6 +626,7 @@ func Wasm3PrepareItabVtab(lsym *obj.LSym, I *types.Type) {
 	wv := &obj.Wasm3ItabVtab{
 		VtabTypeIdx: int64(idx),
 		Table:       b.Bytes(),
+		MethodSyms:  methodSyms,
 	}
 	wv.CreateAuxSym()
 	ii.Wasm3Vtab = wv

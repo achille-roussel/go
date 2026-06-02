@@ -753,31 +753,75 @@ type Wasm3ItabVtab struct {
 	// shape WasmType.Table carries; the linker reuses mergeTable to
 	// remap.
 	Table []byte
-	// AuxSym is the serialization (8-byte VtabTypeIdx + Table) passed
-	// to the linker as a goobj.AuxWasm3ItabVtab aux symbol.
+	// MethodSyms is the ordered list of per-(I,T) interface-call
+	// method wrappers (one per slot in $go.vtab.<I>'s funcref array,
+	// in I.AllMethods order). The linker emits one ref.func per entry
+	// in the vtab global's struct.new initializer. Used to be recovered
+	// by scanning the itab data symbol's Fun-array relocations, but the
+	// wasm3 backend no longer emits the linear-memory itab body — the
+	// list lives directly on the aux sym (CreateAuxSym writes one
+	// R_ADDR per method) so the linker reads it from the aux.
+	MethodSyms []*LSym
+	// AuxSym is the serialization (8-byte VtabTypeIdx + Table, with
+	// one R_ADDR reloc per MethodSyms entry) passed to the linker as a
+	// goobj.AuxWasm3ItabVtab aux symbol.
 	AuxSym *LSym
 }
 
 // CreateAuxSym serializes w into w.AuxSym for the writer to attach as a
-// goobj.AuxWasm3ItabVtab aux record.
+// goobj.AuxWasm3ItabVtab aux record. The aux symbol's data carries the
+// 8-byte VtabTypeIdx + the producing package's wasmgc.Table bytes; the
+// aux symbol's relocations carry one R_ADDR per MethodSyms entry (in
+// order), so the linker can recover the method LSyms without scanning
+// the itab data symbol's body (which the wasm3 backend no longer emits).
 func (w *Wasm3ItabVtab) CreateAuxSym() {
 	var b bytes.Buffer
 	var buf [8]byte
 	binary.LittleEndian.PutUint64(buf[:], uint64(w.VtabTypeIdx))
 	b.Write(buf[:])
 	b.Write(w.Table)
+	dataLen := b.Len()
+	// Reserve pointer-sized slots after the data for the per-method
+	// R_ADDR relocations. The relocation offsets must be inside the
+	// symbol's data range or the writer's per-symbol relocation walk
+	// flags them as out-of-bounds. Eight bytes per method is dead
+	// weight in the aux, but it's still much smaller than the legacy
+	// itab body (16 header bytes + 8 per method, plus three relocs we
+	// no longer need).
+	const ptrSize = 8
+	for range w.MethodSyms {
+		var zero [ptrSize]byte
+		b.Write(zero[:])
+	}
 	p := b.Bytes()
 	w.AuxSym = &LSym{
 		Type: objabi.SDATA,
 		P:    append([]byte(nil), p...),
 		Size: int64(len(p)),
 	}
+	for i, msym := range w.MethodSyms {
+		off := int64(dataLen + i*ptrSize)
+		w.AuxSym.R = append(w.AuxSym.R, Reloc{
+			Type: objabi.R_ADDR,
+			Off:  int32(off),
+			Siz:  uint8(ptrSize),
+			Sym:  msym,
+		})
+	}
 }
 
 // Read parses the bytes produced by CreateAuxSym back into w's fields.
-func (w *Wasm3ItabVtab) Read(b []byte) {
+// The trailing per-method R_ADDR relocation slots (zero-filled bytes
+// after the wasmgc.Table) are recovered by the linker via the aux
+// symbol's relocation list, not from the data here.
+func (w *Wasm3ItabVtab) Read(b []byte, nMethods int) {
 	w.VtabTypeIdx = int64(binary.LittleEndian.Uint64(b[:8]))
-	w.Table = b[8:]
+	const ptrSize = 8
+	tableEnd := len(b) - nMethods*ptrSize
+	if tableEnd < 8 {
+		tableEnd = 8
+	}
+	w.Table = b[8:tableEnd]
 }
 
 func (s *LSym) NewItabInfo() *ItabInfo {

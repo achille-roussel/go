@@ -171,13 +171,6 @@
 // the actual store. True field-wise copy via struct.set is future work
 // (interior pointers extension per doc/wasm3-fat-pointers-design.md).
 (Store {t} ptr val mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && (val.Type.IsStruct() || val.Type.IsArray()) && val.Type.Size() > 0 => mem
-// Same pattern after ABI explosion: a struct/array value passed in (or
-// returned) lives in an SSA *T slot (the wasm3 boxed-ref rep), and the
-// pre-walk `local = ip` becomes `Store {Addr} &local (ip:*Addr)`. The
-// boxed ref carries the whole value, so the store (which would otherwise
-// linear-copy through OffPtr stores into &local) drops to mem, same as
-// the struct/array-typed-val branch above.
-(Store {t} ptr val mem) && config.arch == "wasm3" && ptr.Op != OpOffPtr && val.Type.IsPtr() && val.Type.Elem() != nil && (val.Type.Elem().IsStruct() || val.Type.Elem().IsArray()) && t.Size() > 0 && (t.IsStruct() || t.IsArray()) => mem
 
 // ArrayMake1 (1-element array build) on wasm3: the generic.rules
 // folds it when consumed by Store (line 983) or ArraySelect (line 978),

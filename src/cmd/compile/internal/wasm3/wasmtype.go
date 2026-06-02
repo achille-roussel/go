@@ -390,6 +390,12 @@ func (c *typeCollector) collectBacking(elem *types.Type) int {
 		st = wasmgc.RefStorage(c.collectSliceStruct(elem), true)
 	} else if elem.IsInterface() {
 		st = wasmgc.RefStorage(wasmgc.TypeGoIface, true)
+	} else if elem.IsChan() {
+		st = wasmgc.RefStorage(c.collectChanStruct(elem), true)
+	} else if elem.IsMap() {
+		st = wasmgc.RefStorage(c.collectMapStruct(elem), true)
+	} else if elem.Kind() == types.TFUNC {
+		st = wasmgc.RefStorage(c.collectClosureCtx(elem), true)
 	} else {
 		// Composite element: an array of boxed elements (rule 5). This
 		// loses contiguous value layout — one allocation per element —

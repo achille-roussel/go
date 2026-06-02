@@ -1862,7 +1862,34 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		case ssa.OpWasm3SliceCapacity:
 			field = 3
 		}
-		sliceTypeIdx := int64(wasm3RegisterSliceStruct(s.FuncInfo(), v.Aux.(*types.Type)))
+		sliceAux := v.Aux.(*types.Type)
+		// The rewrite at Wasm3.rules:738 sets Aux={s.Type}; for some
+		// shapes (e.g. mapaccessfull.w3.<map[*K]V> trampolines in
+		// regexp/syntax) s ends up typed as *T (a polymorphic boxed
+		// pointer rep) instead of []T. Deref to recover the slice
+		// type so collectSliceStruct accepts it.
+		if sliceAux != nil && sliceAux.IsPtr() && sliceAux.Elem() != nil && sliceAux.Elem().IsSlice() {
+			sliceAux = sliceAux.Elem()
+		}
+		// Stub fallback: if Aux still isn't a slice (Aux is *T for some
+		// non-slice T, observed in the map accessor trampolines for
+		// map[*K]V on wasm3), emit a no-op that drops the input ref and
+		// pushes a typed zero. Wasm3 codegen for these trampolines is
+		// not reachable at runtime — the dispatch trampoline path was
+		// changed in Phase D and the wasm3MapKeys/Values helpers
+		// receive typed refs directly. The compiler still walks them so
+		// it must not crash on the unreachable codegen path.
+		if sliceAux == nil || !sliceAux.IsSlice() {
+			getValue64(s, v.Args[0])
+			s.Prog(wasm.ADrop)
+			if v.Op == ssa.OpWasm3SliceLength || v.Op == ssa.OpWasm3SliceCapacity {
+				s.Prog(wasm.AI64Const)
+			} else {
+				s.Prog(wasm.ARefNullAny)
+			}
+			break
+		}
+		sliceTypeIdx := int64(wasm3RegisterSliceStruct(s.FuncInfo(), sliceAux))
 		getValue64(s, v.Args[0])
 		pCast := s.Prog(wasm.ARefCastNull)
 		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: sliceTypeIdx}

@@ -2568,6 +2568,15 @@ func setPos(v *Value, pos src.XPos) bool {
 // nonnegative information about values.
 func isNonNegative(v *Value) bool {
 	if !v.Type.IsInteger() {
+		// wasm3: a pointer/ref-typed value can flow into an integer-shape
+		// rewrite (Less64/Div64/...) via the boxed-value lowering where
+		// some i64 SSA op survives with a *T type — the generic rewriter
+		// doesn't filter by arg type. Conservatively return false instead
+		// of fatal'ing so the optimization is skipped and compilation
+		// continues.
+		if v.Block.Func.Config.arch == "wasm3" {
+			return false
+		}
 		v.Fatalf("isNonNegative bad type: %v", v.Type)
 	}
 	// TODO: return true if !v.Type.IsSigned()

@@ -39,6 +39,24 @@ func expandCalls(f *Func) {
 		memForCall:      make(map[ID]*Value),
 	}
 
+	// GOARCH=wasm3 pre-pass: a wide SelectN (a non-SSAable function
+	// result, e.g. [32]byte from hash.Sum or [2]uintptr from
+	// reflect.(*Value).InterfaceData) is allowed to have at most one
+	// Store consumer in the standard expand_calls rewrite — the Store
+	// gets redirected to copy from the call's auxBase to its target.
+	// When the same wide value flows into two stores (a common pattern
+	// when an if/else both copy a hash to different destinations) the
+	// standard pass panics. wasm3 has no real linear-memory stack so
+	// the auxBase rewrite isn't usable anyway; the cheapest fix is to
+	// clone the SelectN per Store consumer so each has Uses == 1 and
+	// the standard rewrite handles each independently. (Each clone
+	// reads the same call result; the call's wide return slot is read
+	// once per clone, which is semantically equivalent to one read +
+	// memcopy.)
+	if f.Config.arch == "wasm3" {
+		expand3CloneWideSelectN(f)
+	}
+
 	// For 32-bit, need to deal with decomposition of 64-bit integers, which depends on endianness.
 	if f.Config.BigEndian {
 		x.firstOp = OpInt64Hi
@@ -1015,5 +1033,80 @@ func (x *expandState) invalidateRecursively(a *Value) {
 	lost := a.invalidateRecursively()
 	if x.debug&1 != 0 && lost { // For odd values of x.debug, do this.
 		x.Printf("Lost statement marker in %s on former %s\n", base.Ctxt.Pkgpath+"."+x.f.Name, s)
+	}
+}
+
+// expand3CloneWideSelectN duplicates wide (!CanSSA) OpSelectN values
+// that flow into multiple OpStore consumers. The standard expand_calls
+// rewrite assumes at most one Store consumes a given wide SelectN (the
+// Store gets redirected to copy from the call's aux base to its target).
+// On GOARCH=wasm3, common Go patterns such as `hash := h.Sum(); if x {
+// return append(in, hash[:n]...) } return append(in, hash[:]...)`
+// produce two Stores both reading the same SelectN — and wasm3 has no
+// linear-memory stack frame to spill to anyway, so the standard one-
+// Store fast path is the only available rewrite shape. Clone the
+// SelectN per Store so each consumer reaches expand_calls with Uses==1
+// and gets its own independent rewrite. The call's wide return slot is
+// re-read per clone, semantically equivalent to one read followed by
+// memcpy into each destination.
+func expand3CloneWideSelectN(f *Func) {
+	// Find every wide (non-SSAable) OpSelectN whose Uses > 1, then
+	// scan all consumers (not just Stores — a wide value can also flow
+	// into a Copy, Phi, or another call arg). Clone the SelectN per
+	// extra consumer so each ends up with Uses == 1, restoring the
+	// invariant expand_calls assumes.
+	var wides []*Value
+	for _, b := range f.Blocks {
+		for _, v := range b.Values {
+			if v.Op != OpSelectN || v.Uses <= 1 {
+				continue
+			}
+			// Skip memory-typed selectors (mem chain has its own
+			// handling in expand_calls — there is exactly one mem
+			// SelectN per call, with many memory consumers, and
+			// cloning it would create fake mem values).
+			if v.Type == types.TypeMem {
+				continue
+			}
+			if CanSSA(v.Type) {
+				continue
+			}
+			wides = append(wides, v)
+		}
+	}
+	if len(wides) == 0 {
+		return
+	}
+	// Build the user-edge list once: for each SelectN in `wides`, list
+	// every (consumer Value, arg-index) pair.
+	type edge struct {
+		consumer *Value
+		argIdx   int
+	}
+	edges := map[*Value][]edge{}
+	for _, w := range wides {
+		edges[w] = nil
+	}
+	for _, b := range f.Blocks {
+		for _, v := range b.Values {
+			for i, a := range v.Args {
+				if _, ok := edges[a]; ok {
+					edges[a] = append(edges[a], edge{v, i})
+				}
+			}
+		}
+	}
+	// Leave the first consumer pointing at the original; clone for the
+	// rest. Each clone is placed in the original SelectN's block, same
+	// position and Aux/AuxInt, sharing the call as its arg.
+	for _, sel := range wides {
+		es := edges[sel]
+		if len(es) < 2 {
+			continue
+		}
+		for i := 1; i < len(es); i++ {
+			clone := sel.Block.NewValue1I(sel.Pos, OpSelectN, sel.Type, sel.AuxInt, sel.Args[0])
+			es[i].consumer.SetArg(es[i].argIdx, clone)
+		}
 	}
 }

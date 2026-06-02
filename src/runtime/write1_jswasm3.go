@@ -19,6 +19,13 @@ import (
 //go:wasmimport gojs runtime.writeBytes
 func wasmJSWriteBytes(fd uint32, off uint32, n uint32)
 
+// write1Bytes is pulled by syscall.Write on js/wasm3 (which routes
+// stdio writes through the runtime instead of syscall/js — there's
+// no JS bridge on wasm3). The //go:linkname directive marks the
+// symbol as a push-target so the linker's cross-package linkname
+// allow-check passes.
+//
+//go:linkname write1Bytes
 //go:nosplit
 func write1Bytes(fd uintptr, b []byte) int32 {
 	n := uint32(len(b))

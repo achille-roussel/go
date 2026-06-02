@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Copyright 2026 The Go Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style
+# license that can be found in the LICENSE file.
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+	DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+	SOURCE="$(readlink "$SOURCE")"
+	[[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+
+exec node \
+	--experimental-wasm-stack-switching --experimental-wasm-wasmfx \
+	--stack-size=8192 \
+	"$DIR/wasm_exec_wasm3.js" "$@"

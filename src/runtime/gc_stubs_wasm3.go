@@ -154,7 +154,12 @@ type traceBlockReason uint8
 type traceLocker struct{}
 
 // traceAdvance is the runtime/trace advance hook panic.go calls
-// during fatal traces. wasm3 has no tracer — no-op.
+// during fatal traces. wasm3 has no tracer — no-op. The //go:linkname
+// makes this satisfy the linker's IsLinkname allow-check for the
+// runtime/trace package's `runtime_traceAdvance` pull (the !wasm3
+// build of trace.go has the same linkname directive).
+//
+//go:linkname traceAdvance
 func traceAdvance(stopTrace bool) { _ = stopTrace }
 
 // traceReaderAvailable reports whether trace data is ready for the

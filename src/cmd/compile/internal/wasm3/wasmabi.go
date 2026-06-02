@@ -591,6 +591,42 @@ func wasm3RegisterIfaceMethodFuncSigFor(fi *obj.FuncInfo, mft *types.Type) uint3
 	return uint32(idx)
 }
 
+// Wasm3PrepareItabVtab registers $go.vtab.<I> (and transitively the
+// per-method funcref types) in a fresh per-itab typeCollector and
+// stashes the serialized table + the vtab type index on the itab data
+// symbol via lsym.ItabInfo().Wasm3Vtab, so the linker (asm3.go global
+// emission) can emit a typed (ref $go.vtab.<I>) global instead of an
+// opaque (ref $go.object) struct.new_default.
+//
+// Phase D step 3 of the wasm3 iface migration — must be called from
+// writeITab for GOARCH=wasm3 only. Idempotent: a repeat call with the
+// same lsym is a no-op (the first call's stash wins).
+func Wasm3PrepareItabVtab(lsym *obj.LSym, I *types.Type) {
+	if lsym == nil {
+		base.Fatalf("Wasm3PrepareItabVtab: lsym is nil")
+	}
+	if I == nil || !I.IsInterface() || I.IsEmptyInterface() {
+		base.Fatalf("Wasm3PrepareItabVtab: %v is not a non-empty interface", I)
+	}
+	ii := lsym.ItabInfo()
+	if ii == nil {
+		base.Fatalf("Wasm3PrepareItabVtab: lsym %s has no ItabInfo", lsym.Name)
+	}
+	if ii.Wasm3Vtab != nil {
+		return
+	}
+	c := newTypeCollector()
+	idx := c.collectIfaceVtabType(I)
+	var b bytes.Buffer
+	c.table.Write(&b)
+	wv := &obj.Wasm3ItabVtab{
+		VtabTypeIdx: int64(idx),
+		Table:       b.Bytes(),
+	}
+	wv.CreateAuxSym()
+	ii.Wasm3Vtab = wv
+}
+
 // wasm3RegisterPerClosureCtx registers a per-closure subtype of the
 // per-signature closureCtx, with `captureTypes`'s wasm storages
 // appended after the legacy (funcref, captures-ptr-i64) fields.
@@ -1497,16 +1533,49 @@ func (c *typeCollector) collectIfaceMethodFuncSig(mft *types.Type) int {
 	if idx, ok := c.ifaceMethodFuncs[mft]; ok {
 		return idx
 	}
+	// Phase D step 3: the per-method funcref type the vtab field is
+	// typed by, and the trampoline's call_ref targets, must EXACTLY
+	// match the wasm signature of the actual method LSym that ends up
+	// in the vtab — otherwise ref.func $T.M is not assignable to the
+	// (ref null $methodFuncTy) slot at module-load time (wasm GC's
+	// funcref subtyping requires covariant results; anyref is not a
+	// subtype of (ref null $go.string), so a method emitted with
+	// result=anyref cannot back a slot typed (ref null $go.string)).
+	// attachWasmType in the fallthrough case (most one-off methods)
+	// uses flatPrimitiveFields, which collapses strings/slices/ifaces
+	// to anyref and flattens struct receivers into their leaf fields.
+	// Mirror that lowering here so the funcref type the linker
+	// interns and the funcref type the method LSym is declared with
+	// merge into the same module-global index.
 	params := []wasmgc.Storage{wasmgc.AnyRefStorage()}
 	for _, p := range mft.Params() {
-		for _, f := range c.topLevelFields(p.Type) {
-			params = append(params, f.Storage)
+		fs, ok := flatPrimitiveFields(p.Type)
+		if !ok {
+			// Fallthrough lowering for parameter types
+			// flatPrimitiveFields rejects: use the precise
+			// topLevelFields shape. The method LSym is likely
+			// compiled via tryCollectorAttach and will have a
+			// matching ref-typed signature.
+			for _, f := range c.topLevelFields(p.Type) {
+				params = append(params, f.Storage)
+			}
+			continue
+		}
+		for _, f := range fs {
+			params = append(params, wasmFuncTypeStorage(f))
 		}
 	}
 	var results []wasmgc.Storage
 	for _, r := range mft.Results() {
-		for _, f := range c.topLevelFields(r.Type) {
-			results = append(results, f.Storage)
+		fs, ok := flatPrimitiveFields(r.Type)
+		if !ok {
+			for _, f := range c.topLevelFields(r.Type) {
+				results = append(results, f.Storage)
+			}
+			continue
+		}
+		for _, f := range fs {
+			results = append(results, wasmFuncTypeStorage(f))
 		}
 	}
 	idx := len(c.table)

@@ -1723,6 +1723,15 @@ func (l *Loader) WasmTypeSym(s Sym) Sym {
 	return l.aux1(s, goobj.AuxWasmType)
 }
 
+// Wasm3ItabVtabSym returns the goobj.AuxWasm3ItabVtab aux symbol
+// associated with an itab data symbol, or 0 if none. The aux symbol's
+// data is the wasm3 per-itab vtab side table (per-package $go.vtab.<I>
+// type index + producing package's wasmgc.Table bytes); see
+// obj.Wasm3ItabVtab.
+func (l *Loader) Wasm3ItabVtabSym(s Sym) Sym {
+	return l.aux1(s, goobj.AuxWasm3ItabVtab)
+}
+
 // SEHUnwindSym returns the auxiliary SEH unwind symbol associated with
 // a given function symbol.
 func (l *Loader) SEHUnwindSym(fnSymIdx Sym) Sym {

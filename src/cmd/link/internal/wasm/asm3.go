@@ -77,6 +77,16 @@ type wasm3GlobalEntry struct {
 	key        wasm3SingletonKey // closure singleton (when !boxed && !descriptor)
 	boxSym     loader.Sym        // boxed package-level var (when boxed)
 	descSym    loader.Sym        // type-descriptor symbol (when descriptor)
+	// wasm3 iface phase D step 3: a descriptor entry whose descSym
+	// is an itab and whose compiler-side Wasm3ItabVtab aux is present
+	// gets a typed (ref $go.vtab.<I>) global instead of the opaque
+	// struct.new_default $go.object. itabVtabTypeIdx holds the
+	// MODULE-global wasm type index of $go.vtab.<I> (already
+	// remapped); itabMethodSyms is the ordered list of method LSyms
+	// (each one a ref.func target for one vtab field, in I's method
+	// order) extracted from the itab's Fun array relocations.
+	itabVtabTypeIdx int
+	itabMethodSyms  []loader.Sym
 }
 
 // wasm3SingletonKey identifies a closure-singleton uniquely by the
@@ -129,7 +139,14 @@ func (m *wasm3Module) getOrAllocBoxedGlobal(sym loader.Sym) uint64 {
 // types compare distinct under ref.eq. Shares the dynamic-global index
 // space with closure singletons and boxed vars (see globalEntries).
 // See R_WASMDESCRIPTOR / doc/wasm3-iface-boxing-derisk.wat.
-func (m *wasm3Module) getOrAllocDescriptorGlobal(sym loader.Sym) uint64 {
+//
+// Phase D step 3 of the wasm3 iface migration: when sym is an itab
+// data symbol whose compiler-side Wasm3ItabVtab aux is present, the
+// allocation also stores the per-(I,T) vtab type index and the
+// ordered method LSym list on the entry, so writeGlobalSec3 emits a
+// typed (ref $go.vtab.<I>) global initialised with the per-method
+// ref.func operands instead of the opaque struct.new_default.
+func (m *wasm3Module) getOrAllocDescriptorGlobal(ldr *loader.Loader, sym loader.Sym) uint64 {
 	if m.descriptorGlobals == nil {
 		m.descriptorGlobals = map[loader.Sym]uint64{}
 	}
@@ -138,8 +155,74 @@ func (m *wasm3Module) getOrAllocDescriptorGlobal(sym loader.Sym) uint64 {
 	}
 	idx := uint64(3 + len(m.globalEntries))
 	m.descriptorGlobals[sym] = idx
-	m.globalEntries = append(m.globalEntries, wasm3GlobalEntry{descriptor: true, descSym: sym})
+	entry := wasm3GlobalEntry{descriptor: true, descSym: sym, itabVtabTypeIdx: -1}
+	if ldr != nil && strings.HasPrefix(ldr.SymName(sym), "go:itab.") {
+		m.populateItabEntry(ldr, sym, &entry)
+	}
+	m.globalEntries = append(m.globalEntries, entry)
 	return idx
+}
+
+// populateItabEntry fills in entry.itabVtabTypeIdx and
+// entry.itabMethodSyms when the itab data symbol carries the wasm3
+// per-itab vtab side-table aux (see obj.Wasm3ItabVtab,
+// goobj.AuxWasm3ItabVtab). Without the aux the entry stays in the
+// legacy opaque-global mode and writeGlobalSec3 emits the
+// struct.new_default $go.object fallback (matches a Phase D step 3
+// build that hasn't been rebuilt against the new compiler yet).
+func (m *wasm3Module) populateItabEntry(ldr *loader.Loader, sym loader.Sym, entry *wasm3GlobalEntry) {
+	auxSym := ldr.Wasm3ItabVtabSym(sym)
+	if auxSym == 0 {
+		return
+	}
+	var w obj.Wasm3ItabVtab
+	w.Read(ldr.Data(auxSym))
+	// Merge the producer-package's wasmgc.Table into the module-wide
+	// table, remap the vtab type index to the module-global index.
+	remap := m.mergeTable(w.Table)
+	pkgIx := int(w.VtabTypeIdx)
+	if pkgIx < 0 || pkgIx >= len(remap) {
+		return
+	}
+	entry.itabVtabTypeIdx = remap[pkgIx]
+	// Extract the method LSyms from the itab's Fun array. The wasm3
+	// vtab struct has the type-descriptor at field 0 followed by N
+	// method funcref slots at fields 1..N; we need the N method LSyms
+	// in the same order writeITab emitted them. WritePtrWeak on each
+	// Fun[i] produces an R_ADDR (or weak variant) relocation at offset
+	// itabFunOffset + i*PtrSize whose Sym is the method LSym. Walk
+	// all relocations and grab the ones in the Fun array range, sorted
+	// by their offsets to preserve method order. itabFunOffset for
+	// PtrSize=8 is 24 (Inter@0 + Type@8 + Hash@16 + 4-byte pad).
+	const ptrSize = 8
+	const itabFunOffset = 24
+	relocs := ldr.Relocs(sym)
+	type funReloc struct {
+		off int32
+		sym loader.Sym
+	}
+	var funRelocs []funReloc
+	for ri := 0; ri < relocs.Count(); ri++ {
+		r := relocs.At(ri)
+		if r.Off() < itabFunOffset {
+			continue
+		}
+		if (int64(r.Off())-itabFunOffset)%int64(ptrSize) != 0 {
+			continue
+		}
+		// Only consider relocations whose target is a function
+		// symbol — the Inter/Type pointers and any other relocs
+		// must be filtered out.
+		if !ldr.SymType(r.Sym()).IsText() {
+			continue
+		}
+		funRelocs = append(funRelocs, funReloc{off: r.Off(), sym: r.Sym()})
+	}
+	sort.Slice(funRelocs, func(i, j int) bool { return funRelocs[i].off < funRelocs[j].off })
+	entry.itabMethodSyms = make([]loader.Sym, 0, len(funRelocs))
+	for _, fr := range funRelocs {
+		entry.itabMethodSyms = append(entry.itabMethodSyms, fr.sym)
+	}
 }
 
 type wasm3Func struct {
@@ -767,7 +850,11 @@ func writeWasm3FuncBody(ctxt *ld.Link, ldr *loader.Loader, fn loader.Sym, wfn *b
 			// Type-descriptor identity ref: r.Sym names the descriptor.
 			// Allocate (or reuse) one struct.new_default $go.object
 			// identity global and patch the global.get operand to it.
-			writeUleb128(wfn, m.getOrAllocDescriptorGlobal(rs))
+			// (For itab descriptor symbols carrying the wasm3
+			// per-itab vtab side-table aux, the allocator branches
+			// to a typed (ref $go.vtab.<I>) global — see
+			// getOrAllocDescriptorGlobal.)
+			writeUleb128(wfn, m.getOrAllocDescriptorGlobal(ldr, rs))
 		default:
 			ldr.Errorf(fn, "bad reloc type %d for wasm3", r.Type())
 		}
@@ -942,7 +1029,58 @@ func writeGlobalSec3(ctxt *ld.Link, ldr *loader.Loader, m *wasm3Module, hostImpo
 			continue
 		}
 		if e.descriptor {
-			// Type-descriptor identity ref: an immutable
+			// Phase D step 3: an itab descriptor whose compiler-side
+			// Wasm3ItabVtab aux is present gets a typed
+			// (ref $go.vtab.<I>) global initialised with the per-(I,T)
+			// method funcrefs, so the dispatch trampoline's
+			// ref.cast (ref $go.vtab.<I>) on the iface's itab slot
+			// succeeds at runtime.
+			//
+			// Init expression shape (struct.new $go.vtab.<I>):
+			//   ;; field 0: type-descriptor identity ref
+			//   struct.new_default $go.object
+			//   ;; fields 1..N: per-method funcrefs, ordered by
+			//   ;; the itab's Fun array (which matches I.AllMethods)
+			//   ref.func $T.M0
+			//   ref.func $T.M1
+			//   ...
+			//   ;; pack into the vtab struct
+			//   struct.new $go.vtab.<I>
+			//
+			// The field-0 type identity is a fresh struct.new_default
+			// $go.object; using a separate per-(I,T) ref per itab is
+			// fine because two itabs over the same (I,T) pair go
+			// through ITabLsym's CONTENT-ADDRESSABLE dedup at the
+			// compiler side, so we only ever emit one global per
+			// distinct (I,T). Type-identity comparisons happen
+			// against the vtab pointer itself (the iface's itab
+			// slot), not against the inner field-0 ref, so the
+			// per-itab fresh field-0 ref is benign.
+			if e.itabVtabTypeIdx >= 0 {
+				// valtype = (ref $go.vtab.<I>)
+				ctxt.Out.WriteByte(0x64) // ref (non-null) prefix
+				writeSleb128(ctxt.Out, int64(e.itabVtabTypeIdx))
+				ctxt.Out.WriteByte(0x00) // immutable
+				// init: struct.new_default $go.object  (field 0)
+				ctxt.Out.WriteByte(0xFB) // GC prefix
+				ctxt.Out.WriteByte(0x01) // struct.new_default sub-opcode
+				writeUleb128(ctxt.Out, uint64(wasmgc.TypeGoObject))
+				// init: ref.func $T.Mi  (fields 1..N)
+				for _, msym := range e.itabMethodSyms {
+					// ref.func operand = module-global funcidx,
+					// uleb128. Same encoding as R_WASMREFFUNC.
+					funcidx := int64(len(hostImportMap)) + ldr.SymValue(msym)>>16 - funcValueOffset
+					ctxt.Out.WriteByte(0xD2) // ref.func
+					writeUleb128(ctxt.Out, uint64(funcidx))
+				}
+				// struct.new $go.vtab.<I>
+				ctxt.Out.WriteByte(0xFB) // GC prefix
+				ctxt.Out.WriteByte(0x00) // struct.new sub-opcode
+				writeUleb128(ctxt.Out, uint64(e.itabVtabTypeIdx))
+				ctxt.Out.WriteByte(0x0b) // end
+				continue
+			}
+			// Legacy opaque descriptor ref: an immutable
 			// (global (ref $go.object) (struct.new_default $go.object)).
 			// The exact-heap-type prefix (0x62) was dropped to match
 			// wasmfxtime; see typesec.go heaptype helper for rationale.

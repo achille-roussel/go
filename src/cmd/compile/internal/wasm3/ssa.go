@@ -175,6 +175,13 @@ func Init(arch *ssagen.ArchInfo) {
 	// itab.Fun-load + indirect-call sequence. The trampoline body
 	// is hand-assembled by assembleWasm3IfaceDispatch.
 	ssagen.Arch.Wasm3IfaceDispatchTrampoline = wasm3GetOrGenIfaceDispatchTrampoline
+
+	// Phase D step 3: register $go.vtab.<I> in a per-itab wasmgc
+	// collector and stash its type index + serialized table on the
+	// itab LSym, so the linker can emit a typed (ref $go.vtab.<I>)
+	// global initialised with the per-(I,T) method funcrefs. Hook
+	// lives in reflectdata.writeITab.
+	reflectdata.Wasm3PrepareItabVtabHook = Wasm3PrepareItabVtab
 }
 
 // spillArgReg and loadRegResult bridge register-resident arguments and
@@ -1967,6 +1974,20 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// R_WASMDESCRIPTOR rather than its i64 linear address (an i64 can't
 		// be boxed into an anyref field). Other words are already refs.
 		wasm3EnsureCollector(s.FuncInfo())
+		// Phase D step 2: register $go.vtab.<I> (and transitively the
+		// per-method funcref types) and $go.iface.<I> at the construction
+		// site so the linker's type table contains them even for an
+		// interface I whose only use is construction (e.g. stored into a
+		// struct field and never dispatched on in this object). The
+		// linker's typed-vtab-global emission (step 3) depends on the
+		// presence of $go.vtab.<I> in the module-wide type table.
+		// Construction's v.Type is the static interface type (preserved
+		// by the IMake -> IfaceMake rewrite via Value.reset, which does
+		// not touch Type).
+		if v.Type != nil && v.Type.IsInterface() && !v.Type.IsEmptyInterface() && len(v.Type.AllMethods()) > 0 {
+			wasm3RegisterIfaceVtab(s.FuncInfo(), v.Type)
+			wasm3RegisterIfaceSubtype(s.FuncInfo(), v.Type)
+		}
 		emitWord := func(a *ssa.Value) {
 			// ConstNil of itab/data slots: a Go SSA value of type uintptr
 			// (the standard itab repr) or unsafe.Pointer rewrites to

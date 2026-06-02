@@ -454,6 +454,13 @@ const (
 	AuxWasmImport
 	AuxWasmType
 	AuxSehUnwindInfo
+	// AuxWasm3ItabVtab (GOARCH=wasm3 only) carries the wasmgc type
+	// info needed by the linker to emit a typed (ref $go.vtab.<I>)
+	// global for an itab data symbol: an 8-byte per-package wasmgc
+	// type index of $go.vtab.<I>, followed by the producing package's
+	// serialized wasmgc.Table bytes (same self-delimiting encoding
+	// used by AuxWasmType).
+	AuxWasm3ItabVtab
 )
 
 func (a *Aux) Type() uint8 { return a[0] }

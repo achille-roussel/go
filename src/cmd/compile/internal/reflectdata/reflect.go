@@ -1086,7 +1086,25 @@ func writeITab(lsym *obj.LSym, typ, iface *types.Type, allowNonImplement bool) {
 	objw.Global(lsym, int32(rttype.ITab.Size()+delta), int16(obj.DUPOK|obj.RODATA))
 	lsym.Set(obj.AttrContentAddressable, true)
 	lsym.Align = int16(types.PtrSize)
+
+	// wasm3 iface phase D step 3: register $go.vtab.<iface> in a per-itab
+	// wasmgc.Table and stash the type index + table on the itab symbol so
+	// the linker (cmd/link/internal/wasm asm3.go) can emit the itab's wasm
+	// global as a typed (ref $go.vtab.<I>) struct.new initialised with the
+	// method funcrefs already referenced by the itab's Fun array (above).
+	// Hooked via Wasm3PrepareItabVtabHook so reflectdata stays
+	// architecture-neutral; the hook is installed by wasm3.init when
+	// GOARCH=wasm3.
+	if completeItab && Wasm3PrepareItabVtabHook != nil {
+		Wasm3PrepareItabVtabHook(lsym, iface)
+	}
 }
+
+// Wasm3PrepareItabVtabHook is installed by the wasm3 package (see
+// wasm3.Wasm3PrepareItabVtab) when GOARCH=wasm3, to attach the per-itab
+// wasmgc vtab side-table the linker needs to emit a typed global for
+// the itab. nil on every other architecture.
+var Wasm3PrepareItabVtabHook func(itabSym *obj.LSym, iface *types.Type)
 
 func WritePluginTable() {
 	ptabs := typecheck.Target.PluginExports

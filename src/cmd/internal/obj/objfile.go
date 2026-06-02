@@ -653,6 +653,9 @@ func (w *writer) Aux(s *LSym) {
 			w.aux1(goobj.AuxDwarfInfo, v.dwarfInfoSym)
 		}
 	}
+	if ii := s.ItabInfo(); ii != nil && ii.Wasm3Vtab != nil {
+		w.aux1(goobj.AuxWasm3ItabVtab, ii.Wasm3Vtab.AuxSym)
+	}
 }
 
 // Emits flags of referenced indexed symbols.
@@ -772,6 +775,12 @@ func nAuxSym(s *LSym) int {
 			n++
 		}
 	}
+	if ii := s.ItabInfo(); ii != nil && ii.Wasm3Vtab != nil {
+		if ii.Wasm3Vtab.AuxSym == nil || ii.Wasm3Vtab.AuxSym.Size == 0 {
+			panic("wasm3 itab vtab aux sym must exist and have non-zero size")
+		}
+		n++
+	}
 	return n
 }
 
@@ -850,6 +859,32 @@ func genFuncInfoSyms(ctxt *Link) {
 			s.Set(AttrOnList, true)
 			symidx++
 			infosyms = append(infosyms, s)
+		}
+	}
+	// Index the wasm3 per-itab vtab aux symbols attached to itab data
+	// symbols (phase D step 3). These live on Data syms, not Text, so
+	// the per-Text loop above doesn't see them; sweep ctxt.defs (the
+	// data-symbol bucket also goes through the same Indexed contract).
+	allDefs := [][]*LSym{ctxt.defs, ctxt.hashed64defs, ctxt.hasheddefs, ctxt.nonpkgdefs}
+	for _, list := range allDefs {
+		for _, s := range list {
+			ii := s.ItabInfo()
+			if ii == nil || ii.Wasm3Vtab == nil {
+				continue
+			}
+			aux := ii.Wasm3Vtab.AuxSym
+			if aux == nil || aux.Size == 0 {
+				continue
+			}
+			if aux.OnList() {
+				continue
+			}
+			aux.PkgIdx = goobj.PkgIdxSelf
+			aux.SymIdx = symidx
+			aux.Set(AttrIndexed, true)
+			aux.Set(AttrOnList, true)
+			symidx++
+			infosyms = append(infosyms, aux)
 		}
 	}
 	ctxt.defs = append(ctxt.defs, infosyms...)

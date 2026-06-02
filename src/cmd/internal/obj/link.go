@@ -731,6 +731,53 @@ func (s *LSym) TypeInfo() *TypeInfo {
 // that contains a runtime.itab.
 type ItabInfo struct {
 	Type any // a *cmd/compile/internal/types.Type
+
+	// Wasm3Vtab carries (GOARCH=wasm3 only) the per-package wasmgc
+	// type index of $go.vtab.<I> and the producing package's serialized
+	// wasmgc.Table, so the linker can emit the itab's wasm global as a
+	// typed (ref $go.vtab.<I>) struct.new instead of an opaque
+	// (ref $go.object) struct.new_default. Surfaced to the linker via
+	// the goobj.AuxWasm3ItabVtab aux record.
+	Wasm3Vtab *Wasm3ItabVtab
+}
+
+// Wasm3ItabVtab is the wasm3-only per-itab side-table that lets the
+// linker emit a typed vtab global for an itab data symbol. See
+// goobj.AuxWasm3ItabVtab and ItabInfo.Wasm3Vtab.
+type Wasm3ItabVtab struct {
+	// VtabTypeIdx is the per-package wasmgc type index of $go.vtab.<I>
+	// in the producing package's wasmgc.Table (the linker remaps it to
+	// the module-global type index via the table merge).
+	VtabTypeIdx int64
+	// Table is the producing package's wasmgc.Table bytes, the same
+	// shape WasmType.Table carries; the linker reuses mergeTable to
+	// remap.
+	Table []byte
+	// AuxSym is the serialization (8-byte VtabTypeIdx + Table) passed
+	// to the linker as a goobj.AuxWasm3ItabVtab aux symbol.
+	AuxSym *LSym
+}
+
+// CreateAuxSym serializes w into w.AuxSym for the writer to attach as a
+// goobj.AuxWasm3ItabVtab aux record.
+func (w *Wasm3ItabVtab) CreateAuxSym() {
+	var b bytes.Buffer
+	var buf [8]byte
+	binary.LittleEndian.PutUint64(buf[:], uint64(w.VtabTypeIdx))
+	b.Write(buf[:])
+	b.Write(w.Table)
+	p := b.Bytes()
+	w.AuxSym = &LSym{
+		Type: objabi.SDATA,
+		P:    append([]byte(nil), p...),
+		Size: int64(len(p)),
+	}
+}
+
+// Read parses the bytes produced by CreateAuxSym back into w's fields.
+func (w *Wasm3ItabVtab) Read(b []byte) {
+	w.VtabTypeIdx = int64(binary.LittleEndian.Uint64(b[:8]))
+	w.Table = b[8:]
 }
 
 func (s *LSym) NewItabInfo() *ItabInfo {

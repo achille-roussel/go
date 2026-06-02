@@ -131,14 +131,17 @@ func hashFuncWasm3(t *types.Type) *ir.Func {
 					return ir.NewIndexExpr(pos, mkVal(), ir.NewInt(pos, i))
 				}, ft.Elem())
 			}
-		case types.TPTR, types.TUNSAFEPTR, types.TINTER:
+		case types.TPTR, types.TUNSAFEPTR, types.TINTER,
+			types.TCHAN, types.TMAP, types.TFUNC, types.TSLICE:
 			// Reference-shaped values: a WasmGC ref has no stable integer
 			// address to mix, so do not contribute it to the hash. This is
 			// sound — the hash contract only requires equal values to hash
 			// equal, and a value's reference fields are unchanged between two
 			// equal values, so skipping them cannot make equal values hash
 			// differently (it only increases collisions). mkVal is not
-			// evaluated, matching the field being unused.
+			// evaluated, matching the field being unused. Extended to chan/
+			// map/func/slice for the same reason (e.g. struct fields holding
+			// `chan<- os.Signal` in os/signal's Handler type).
 		default:
 			base.Fatalf("genhashWasm3: unsupported field kind %v in %v", ft.Kind(), t)
 		}

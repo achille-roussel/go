@@ -3392,6 +3392,17 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		localGetIdx(s, offLocal)
 		s.Prog(wasm.AI64ExtendI32U)
 
+	case ssa.OpEmpty:
+		// Zero-sized value sentinel (e.g. a struct{} or [0]T arg passed
+		// to a call). The SSA generic rules elide most consumers via
+		// `(Store _ (Empty) mem) => mem` etc., but some survive — most
+		// notably call args via per-T chan trampolines (chan struct{}
+		// in internal/gate) and generic instantiations (net/netip via
+		// unique.canonmap). Emit nothing; codegen for a zero-sized
+		// value is a no-op. checkLower's wasm3 exemption (see
+		// cmd/compile/internal/ssa/lower.go) lets these survive that
+		// far when t.Size() == 0.
+
 	case ssa.OpWasm3ContNew, ssa.OpWasm3ContBind, ssa.OpWasm3Resume, ssa.OpWasm3ResumeThrow, ssa.OpWasm3Switch:
 		// M4 Phase 1: the stack-switching SSA ops are declared so the
 		// SSA framework generates the constants and the assembler

@@ -41,6 +41,18 @@ func checkLower(f *Func) {
 					continue // ok not to lower
 				}
 			}
+			// GOARCH=wasm3: an unlowered struct/array value with size 0
+			// (Empty / StructMake / ArrayMake of a zero-sized type) is
+			// a harmless leftover — codegen emits nothing for zero-sized
+			// values regardless. Common path: `chan struct{}`'s per-T
+			// chansend trampoline passes a struct{} value as a call
+			// arg, and the generic-rule chain doesn't rewrite empty-
+			// typed call args away. WidthCalculated() guards the Size()
+			// call (same reason as the copyelim guard in commit 5b803de3cc).
+			if f.Config.arch == "wasm3" && (v.Type.IsStruct() || v.Type.IsArray()) &&
+				v.Type.WidthCalculated() && v.Type.Size() == 0 {
+				continue
+			}
 			s := "not lowered: " + v.String() + ", " + v.Op.String() + " " + v.Type.SimpleString()
 
 			for _, a := range v.Args {

@@ -3517,6 +3517,28 @@ func (s *state) exprCheckPtr(n ir.Node, checkPtrOK bool) *ssa.Value {
 		n := n.(*ir.ConvExpr)
 		to := n.Type()
 		from := n.X.Type()
+		// wasm3: refuse to compile any conversion between unsafe.Pointer
+		// (a $go.object WasmGC ref) and uintptr (an i64). On other
+		// architectures the two are interchangeable scalar addresses;
+		// on wasm3 the ref has no scalar form, so `uintptr(p)` has no
+		// meaningful value and the inverse `unsafe.Pointer(u)` has no
+		// way to reconstruct the ref. The standard idiom
+		// `unsafe.Pointer(uintptr(p) + n)` for offset arithmetic
+		// likewise can't lower — the SSA backend would otherwise emit
+		// `i64.add` with an anyref operand and the wasm validator
+		// would reject the module. Force an early build error pointing
+		// at the user code; the affected stdlib helpers need wasm3
+		// shadow implementations using runtime/wasm linear-memory
+		// staging or unsafe.SliceData/StringData accessors.
+		//
+		// Must run BEFORE the IsPtrShaped() != check below — TUINTPTR
+		// is not ptr-shaped while TUNSAFEPTR is, so that check takes
+		// an OpConvert early-return that hides this case.
+		if buildcfg.GOARCH == "wasm3" {
+			if (to.IsUnsafePtr() && from.IsUintptr()) || (from.IsUnsafePtr() && to.IsUintptr()) {
+				base.FatalfAt(n.Pos(), "wasm3: conversion between unsafe.Pointer and uintptr is not supported (no scalar address for WasmGC refs); rewrite using runtime/wasm or unsafe.SliceData/StringData")
+			}
+		}
 
 		// Assume everything will work out, so set up our return value.
 		// Anything interesting that happens from here is a fatal.
@@ -3545,6 +3567,19 @@ func (s *state) exprCheckPtr(n ir.Node, checkPtrOK bool) *ssa.Value {
 			return v
 		}
 
+		// wasm3: refuse to compile any conversion between unsafe.Pointer
+		// (a $go.object WasmGC ref) and uintptr (an i64). On other
+		// architectures the two are interchangeable scalar addresses;
+		// on wasm3 the ref has no scalar form, so `uintptr(p)` has no
+		// meaningful value and the inverse `unsafe.Pointer(u)` has no
+		// way to reconstruct the ref. The standard idiom
+		// `unsafe.Pointer(uintptr(p) + n)` for offset arithmetic
+		// likewise can't lower — the SSA backend would otherwise emit
+		// `i64.add` with an anyref operand and the wasm validator
+		// would reject the module. Force an early build error pointing
+		// at the user code; the affected stdlib helpers need wasm3
+		// shadow implementations using runtime/wasm linear-memory
+		// staging or unsafe.SliceData/StringData accessors.
 		// unsafe.Pointer <--> *T
 		if to.IsUnsafePtr() && from.IsPtrShaped() || from.IsUnsafePtr() && to.IsPtrShaped() {
 			if s.checkPtrEnabled && checkPtrOK && to.IsPtr() && from.IsUnsafePtr() {

@@ -16,6 +16,17 @@ package abi
 
 import "unsafe"
 
+// NoEscape on wasm3 must NOT be inlined. The non-wasm3 body uses the
+// `unsafe.Pointer(uintptr(p) ^ 0)` launder so that when the inliner
+// expands NoEscape into the caller, escape analysis sees the
+// uintptr step "lose" the pointer. On wasm3 that conversion is
+// rejected at compile time and my body is an identity — if the
+// inliner expanded it, escape analysis would propagate the escape
+// straight through `return p`. Keep the call live and let the
+// escape-analyzer wasm3 carve-out in cmd/compile/internal/escape
+// discard the argument's escape contribution at the CallExpr level.
+//
+//go:noinline
 //go:nosplit
 //go:nocheckptr
 func NoEscape(p unsafe.Pointer) unsafe.Pointer {

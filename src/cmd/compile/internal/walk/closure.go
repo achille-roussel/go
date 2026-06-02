@@ -498,8 +498,17 @@ func wasm3CaptureAsUintptr(captured ir.Node) ir.Node {
 	if t.IsChan() || t.IsMap() || t.Kind() == types.TFUNC {
 		return typecheck.ConvNop(captured, types.Types[types.TUINTPTR])
 	}
-	via := typecheck.ConvNop(captured, types.Types[types.TUNSAFEPTR])
-	return typecheck.Conv(via, types.Types[types.TUINTPTR])
+	// Real pointer types (TPTR, TUNSAFEPTR): the historical idiom was
+	// `uintptr(unsafe.Pointer(p))` — a ConvNop to unsafe.Pointer then
+	// a Conv to uintptr. On wasm3 the second step is rejected at SSA
+	// gen (anyref has no scalar form). Match the chan/map/func case
+	// instead: a single ConvNop straight to uintptr. The typechecker
+	// accepts it because both sides are pointer-shaped same-size; the
+	// wasm3 backend's OpWasm3MakeClosureRefInline reads the real
+	// per-capture type from the side channel
+	// (Wasm3ClosureBodyCaptures) and never inspects the uintptr-typed
+	// slot at lowering, so no real conversion happens at SSA.
+	return typecheck.ConvNop(captured, types.Types[types.TUINTPTR])
 }
 
 // closureArgs returns a slice of expressions that can be used to

@@ -10,6 +10,7 @@ import (
 	"cmd/compile/internal/typecheck"
 	"cmd/compile/internal/types"
 	"cmd/internal/src"
+	"internal/buildcfg"
 	"strings"
 )
 
@@ -89,6 +90,23 @@ func (e *escape) call(ks []hole, call ir.Node) {
 			e.expr(calleeK, call.Fun)
 		} else {
 			recvArg = call.Fun.(*ir.SelectorExpr).X
+		}
+
+		// internal/abi.NoEscape promises not to let its argument
+		// escape. On every arch except wasm3 the body achieves this
+		// via the `unsafe.Pointer(uintptr(p) ^ 0)` launder — escape
+		// analysis follows the inlined body and the uintptr step
+		// "loses" the pointer. On wasm3 the body is an identity
+		// (see internal/abi/escape_wasm3.go) because the uintptr
+		// conversion is rejected at compile time (anyref has no
+		// scalar form). Reinstate the no-escape semantics here at
+		// the analyzer level so callers like internal/runtime/maps'
+		// runtime_mapdelete_fast32 still keep their stack-allocated
+		// keys from escaping.
+		if buildcfg.GOARCH == "wasm3" && fn != nil && fn.Sym().Pkg.Path == "internal/abi" && fn.Sym().Name == "NoEscape" {
+			argumentParam = func(param *types.Field, arg ir.Node) {
+				argument(e.discardHole(), arg)
+			}
 		}
 
 		// internal/abi.EscapeNonString forces its argument to be on

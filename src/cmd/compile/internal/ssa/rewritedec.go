@@ -45,12 +45,14 @@ func rewriteValuedec(v *Value) bool {
 }
 func rewriteValuedec_OpArrayMake1(v *Value) bool {
 	v_0 := v.Args[0]
+	b := v.Block
+	config := b.Func.Config
 	// match: (ArrayMake1 x)
-	// cond: x.Type.IsPtrShaped()
+	// cond: x.Type.IsPtrShaped() && config.arch != "wasm3"
 	// result: x
 	for {
 		x := v_0
-		if !(x.Type.IsPtrShaped()) {
+		if !(x.Type.IsPtrShaped() && config.arch != "wasm3") {
 			break
 		}
 		v.copyOf(x)
@@ -61,15 +63,16 @@ func rewriteValuedec_OpArrayMake1(v *Value) bool {
 func rewriteValuedec_OpArraySelect(v *Value) bool {
 	v_0 := v.Args[0]
 	b := v.Block
+	config := b.Func.Config
 	// match: (ArraySelect [0] x)
-	// cond: x.Type.IsPtrShaped()
+	// cond: x.Type.IsPtrShaped() && config.arch != "wasm3"
 	// result: x
 	for {
 		if auxIntToInt64(v.AuxInt) != 0 {
 			break
 		}
 		x := v_0
-		if !(x.Type.IsPtrShaped()) {
+		if !(x.Type.IsPtrShaped() && config.arch != "wasm3") {
 			break
 		}
 		v.copyOf(x)
@@ -874,15 +877,17 @@ func rewriteValuedec_OpStringPtr(v *Value) bool {
 	return false
 }
 func rewriteValuedec_OpStructMake(v *Value) bool {
+	b := v.Block
+	config := b.Func.Config
 	// match: (StructMake x)
-	// cond: x.Type.IsPtrShaped()
+	// cond: x.Type.IsPtrShaped() && config.arch != "wasm3"
 	// result: x
 	for {
 		if len(v.Args) != 1 {
 			break
 		}
 		x := v.Args[0]
-		if !(x.Type.IsPtrShaped()) {
+		if !(x.Type.IsPtrShaped() && config.arch != "wasm3") {
 			break
 		}
 		v.copyOf(x)
@@ -893,6 +898,7 @@ func rewriteValuedec_OpStructMake(v *Value) bool {
 func rewriteValuedec_OpStructSelect(v *Value) bool {
 	v_0 := v.Args[0]
 	b := v.Block
+	config := b.Func.Config
 	// match: (StructSelect (IData x))
 	// cond: v.Type.Size() > 0
 	// result: (IData x)
@@ -933,11 +939,11 @@ func rewriteValuedec_OpStructSelect(v *Value) bool {
 		return true
 	}
 	// match: (StructSelect x)
-	// cond: x.Type.IsPtrShaped()
+	// cond: x.Type.IsPtrShaped() && config.arch != "wasm3"
 	// result: x
 	for {
 		x := v_0
-		if !(x.Type.IsPtrShaped()) {
+		if !(x.Type.IsPtrShaped() && config.arch != "wasm3") {
 			break
 		}
 		v.copyOf(x)

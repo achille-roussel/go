@@ -112,12 +112,20 @@
 // More annoying case: (ArraySelect[0] (StructSelect[0] isAPtr))
 // There, result of the StructSelect is an Array (not a pointer) and
 // the pre-rewrite input to the ArraySelect is a struct, not a pointer.
-(StructSelect x) && x.Type.IsPtrShaped()  => x
-(ArraySelect [0] x) && x.Type.IsPtrShaped()  => x
+// wasm3: a boxed struct/array stays as one WasmGC ref even when its
+// single field is itself ptr-shaped — `IsPtrShaped` is a linear-memory
+// notion ("the struct value IS the pointer field"), which doesn't hold
+// when the struct ref and the field ref are distinct WasmGC objects.
+// Collapsing here turns `StructSelect [i] structRef` into the structRef
+// itself and downstream ops (e.g. SliceLen on a []rune field) end up
+// applied to the wrapping struct ref, with the wrong static type. See
+// doc/wasm3-slice-boxing.md.
+(StructSelect x) && x.Type.IsPtrShaped() && config.arch != "wasm3" => x
+(ArraySelect [0] x) && x.Type.IsPtrShaped() && config.arch != "wasm3" => x
 
 // These, too.  Bits is bits.
-(ArrayMake1 x) && x.Type.IsPtrShaped() => x
-(StructMake x) && x.Type.IsPtrShaped() => x
+(ArrayMake1 x) && x.Type.IsPtrShaped() && config.arch != "wasm3" => x
+(StructMake x) && x.Type.IsPtrShaped() && config.arch != "wasm3" => x
 
 
 (Store _ (StructMake ___) _) => rewriteStructStore(v)

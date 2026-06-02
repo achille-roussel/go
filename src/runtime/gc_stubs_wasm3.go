@@ -108,6 +108,12 @@ func SetFinalizer(obj any, finalizer any) {
 	_ = finalizer
 }
 
+// GC triggers a garbage collection. wasm3: no-op (the WasmGC host
+// owns collection and runs it implicitly; there is no Go GC to
+// kick). Required by reflect.Value to satisfy `runtime.GC` reference
+// sites (value.go:582, 590, 704) so reflect compiles.
+func GC() {}
+
 // AddCleanup registers cleanup as a cleanup callback for ptr. On
 // wasm3 this is a no-op — the cleanup never fires. Returns a zero
 // Cleanup handle; the returned Stop method is a no-op too.

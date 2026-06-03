@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build !wasm3
+
 package runtime
 
 import (
@@ -491,11 +493,7 @@ func moveSliceNoCapNoScan(elemSize uintptr, old unsafe.Pointer, len int) (unsafe
 	capmem := roundupsize(lenmem, true)
 	new := mallocgc(capmem, nil, false)
 	memmove(new, old, lenmem)
-	// On wasm3 mallocgc's array.new_default already zero-fills the
-	// WasmGC backing, and add(p, off) on a typed-ref backing has
-	// no sound lowering. Gate the trailing clear out — same shape
-	// as the conditional at line 249 in growslice.
-	if capmem > lenmem && goarch.IsWasm3 == 0 {
+	if capmem > lenmem {
 		memclrNoHeapPointers(add(new, lenmem), capmem-lenmem)
 	}
 	return new, len, int(capmem / elemSize)

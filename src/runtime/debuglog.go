@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build !wasm3
+
 // This file provides an internal debug logging facility. The debug
 // log is a lightweight, in-memory, per-M ring buffer. By default, the
 // runtime prints the debug log on panic.

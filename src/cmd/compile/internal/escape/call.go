@@ -92,18 +92,24 @@ func (e *escape) call(ks []hole, call ir.Node) {
 			recvArg = call.Fun.(*ir.SelectorExpr).X
 		}
 
-		// internal/abi.NoEscape promises not to let its argument
-		// escape. On every arch except wasm3 the body achieves this
-		// via the `unsafe.Pointer(uintptr(p) ^ 0)` launder — escape
+		// internal/abi.NoEscape and runtime.noescape both promise
+		// not to let their argument escape. On every arch except
+		// wasm3 the bodies achieve this via the
+		// `unsafe.Pointer(uintptr(p) ^ 0)` launder — escape
 		// analysis follows the inlined body and the uintptr step
-		// "loses" the pointer. On wasm3 the body is an identity
-		// (see internal/abi/escape_wasm3.go) because the uintptr
-		// conversion is rejected at compile time (anyref has no
-		// scalar form). Reinstate the no-escape semantics here at
-		// the analyzer level so callers like internal/runtime/maps'
-		// runtime_mapdelete_fast32 still keep their stack-allocated
-		// keys from escaping.
-		if buildcfg.GOARCH == "wasm3" && fn != nil && fn.Sym().Pkg.Path == "internal/abi" && fn.Sym().Name == "NoEscape" {
+		// "loses" the pointer. On wasm3 the bodies are identity
+		// (see internal/abi/escape_wasm3.go and
+		// runtime/stubs_wasm3.go) because the uintptr conversion
+		// is rejected at compile time (anyref has no scalar form).
+		// Reinstate the no-escape semantics here at the analyzer
+		// level so callers (internal/runtime/maps' mapdelete
+		// helpers, runtime.alg.go's int32Hash / int64Hash /
+		// efaceHash / ifaceHash, runtime.traceback's cgo callers
+		// buffer, ...) still keep their stack-allocated arguments
+		// from escaping.
+		if buildcfg.GOARCH == "wasm3" && fn != nil &&
+			((fn.Sym().Pkg.Path == "internal/abi" && fn.Sym().Name == "NoEscape") ||
+				(fn.Sym().Pkg.Path == "runtime" && fn.Sym().Name == "noescape")) {
 			argumentParam = func(param *types.Field, arg ir.Node) {
 				argument(e.discardHole(), arg)
 			}

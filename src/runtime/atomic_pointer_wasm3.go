@@ -100,13 +100,9 @@ func sync_atomic_StoreUintptr(ptr *uintptr, new uintptr)
 //go:linkname sync_atomic_StorePointer sync/atomic.StorePointer
 //go:nosplit
 func sync_atomic_StorePointer(ptr *unsafe.Pointer, new unsafe.Pointer) {
-	if writeBarrier.enabled {
-		atomicwb(ptr, new)
-	}
-	if goexperiment.CgoCheck2 {
-		cgoCheckPtrWrite(ptr, new)
-	}
-	sync_atomic_StoreUintptr((*uintptr)(unsafe.Pointer(ptr)), uintptr(new))
+	// wasm3: see sync_atomic_SwapPointer above — plain store on
+	// the ref slot, no write barriers needed.
+	*ptr = new
 }
 
 //go:linkname sync_atomic_SwapUintptr sync/atomic.SwapUintptr
@@ -115,13 +111,11 @@ func sync_atomic_SwapUintptr(ptr *uintptr, new uintptr) uintptr
 //go:linkname sync_atomic_SwapPointer sync/atomic.SwapPointer
 //go:nosplit
 func sync_atomic_SwapPointer(ptr *unsafe.Pointer, new unsafe.Pointer) unsafe.Pointer {
-	if writeBarrier.enabled {
-		atomicwb(ptr, new)
-	}
-	if goexperiment.CgoCheck2 {
-		cgoCheckPtrWrite(ptr, new)
-	}
-	old := unsafe.Pointer(sync_atomic_SwapUintptr((*uintptr)(noescape(unsafe.Pointer(ptr))), uintptr(new)))
+	// wasm3: single-threaded, no write barriers; swap is a plain
+	// load-then-store on the ref slot. The uintptr-routed
+	// upstream body trips the wasm3 SSA-gen fatal.
+	old := *ptr
+	*ptr = new
 	return old
 }
 
@@ -131,11 +125,13 @@ func sync_atomic_CompareAndSwapUintptr(ptr *uintptr, old, new uintptr) bool
 //go:linkname sync_atomic_CompareAndSwapPointer sync/atomic.CompareAndSwapPointer
 //go:nosplit
 func sync_atomic_CompareAndSwapPointer(ptr *unsafe.Pointer, old, new unsafe.Pointer) bool {
-	if writeBarrier.enabled {
-		atomicwb(ptr, new)
+	// wasm3: cast unsafe.Pointer↔uintptr is rejected. Wasm3 is
+	// single-threaded; CAS degenerates to a plain compare-and-set
+	// on the ref slot. No write barriers (host WasmGC tracks
+	// refs), and goexperiment.CgoCheck2 is always false on wasm3.
+	if *ptr == old {
+		*ptr = new
+		return true
 	}
-	if goexperiment.CgoCheck2 {
-		cgoCheckPtrWrite(ptr, new)
-	}
-	return sync_atomic_CompareAndSwapUintptr((*uintptr)(noescape(unsafe.Pointer(ptr))), uintptr(old), uintptr(new))
+	return false
 }

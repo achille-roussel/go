@@ -5,7 +5,6 @@
 package runtime
 
 import (
-	"internal/goarch"
 	"internal/runtime/sys"
 	"unsafe"
 )
@@ -24,14 +23,17 @@ func wasmTruncU()
 //go:wasmimport gojs runtime.wasmExit
 func wasmExit(code int32)
 
-// adjust Gobuf as it if executed a call to fn with context ctxt
-// and then stopped before the first instruction in fn.
+// gostartcall on non-wasm3 adjusts the Gobuf as if it had
+// executed a call to fn with context ctxt and stopped before the
+// first instruction in fn. On wasm3 the gobuf has no real
+// PC/SP — goroutines run as JSPI continuations and V8 owns the
+// frame; gobuf.pc isn't dispatched from. Skip the stack-frame-
+// pointer write and the `uintptr(fn)` cast; stash ctxt only.
+//
+// stack_wasm3.go's gostartcallfn (called by newproc) uses ctxt
+// for the funcval reference, which is the only thing actually
+// needed when the wasm3 scheduler resumes the goroutine.
 func gostartcall(buf *gobuf, fn, ctxt unsafe.Pointer) {
-	sp := buf.sp
-	sp -= goarch.PtrSize
-	*(*uintptr)(unsafe.Pointer(sp)) = buf.pc
-	buf.sp = sp
-	buf.pc = uintptr(fn)
 	buf.ctxt = ctxt
 }
 

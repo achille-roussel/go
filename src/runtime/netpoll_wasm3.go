@@ -649,7 +649,13 @@ func netpollunblock(pd *pollDesc, mode int32, ioready bool, delta *int32) *g {
 			} else if old != pdNil {
 				*delta -= 1
 			}
-			return (*g)(unsafe.Pointer(old))
+			// wasm3: netpoll never recovers a *g from the
+			// pdWasm3Blocked sentinel (the wake comes through
+			// JSPI WasmReady, not by reading a *g from the
+			// semaphore). Return nil; callers handle the empty
+			// case.
+			_ = old
+			return nil
 		}
 	}
 }

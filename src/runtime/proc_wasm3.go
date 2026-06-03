@@ -2769,7 +2769,13 @@ func cgoBindM() {
 //
 //go:linkname getm
 func getm() uintptr {
-	return uintptr(unsafe.Pointer(getg().m))
+	// wasm3: anyref has no scalar address for the *m. The function
+	// is //go:linkname'd surface for external packages (fortio.org/
+	// log, gvisor, ...) that use it to identify the current OS
+	// thread; on wasm3 there's only one M (single-threaded), so
+	// returning a constant nonzero discriminator is adequate for
+	// the "are we on the same M" check most callers do.
+	return 1
 }
 
 var (
@@ -2818,7 +2824,12 @@ func lockextra(nilokay bool) *m {
 			continue
 		}
 		if extraM.CompareAndSwap(old, locked) {
-			return (*m)(unsafe.Pointer(old))
+			// wasm3: extraM holds a uintptr that's never populated
+			// with a real *m (the extra-M list is for cgo callbacks,
+			// which wasm3 doesn't support — see unlockextra above).
+			// Return nil; callers handle the empty case.
+			_ = old
+			return nil
 		}
 		osyield_no_g()
 		continue
@@ -5353,9 +5364,10 @@ func malg(stacksize int32) *g {
 		})
 		newg.stackguard0 = newg.stack.lo + stackGuard
 		newg.stackguard1 = ^uintptr(0)
-		// Clear the bottom word of the stack. We record g
-		// there on gsignal stack during VDSO on ARM and ARM64.
-		*(*uintptr)(unsafe.Pointer(newg.stack.lo)) = 0
+		// wasm3: no addressable stack to clear the bottom word
+		// of. The non-wasm3 store is for VDSO g-spill on ARM/ARM64
+		// signal handlers — neither applies on wasm3 (no signals,
+		// no stack pointer).
 	}
 	return newg
 }

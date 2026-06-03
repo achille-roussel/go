@@ -268,39 +268,43 @@ type maybeTraceablePtr struct {
 // untrack unsets the pointer but preserves the address.
 // This is used to hide the pointer from the GC.
 //
+// wasm3 adaptation: the non-wasm3 file maintains both vp (a
+// GC-visible typed pointer) and vu (the same address as a
+// uintptr, used to hide the pointer from the GC scanner during
+// trace-toggle windows). On wasm3 the host WasmGC tracks every
+// ref slot and there's no scanner toggle to hide from; the
+// uintptr shadow is unused. The methods all operate on vp only;
+// vu stays at its zero value forever.
+
 //go:nosplit
 func (p *maybeTraceablePtr) setUntraceable() {
 	p.vp = nil
 }
 
-// setTraceable resets the pointer to the stored address.
-// This is used to make the pointer visible to the GC.
-//
 //go:nosplit
 func (p *maybeTraceablePtr) setTraceable() {
-	p.vp = unsafe.Pointer(p.vu)
+	// no-op on wasm3 — vp is the source of truth; no shadow vu
+	// to re-promote.
 }
 
-// set sets the pointer to the data element and updates the address.
-//
 //go:nosplit
 func (p *maybeTraceablePtr) set(v unsafe.Pointer) {
 	p.vp = v
-	p.vu = uintptr(v)
 }
 
-// get retrieves the pointer to the data element.
-//
 //go:nosplit
 func (p *maybeTraceablePtr) get() unsafe.Pointer {
-	return unsafe.Pointer(p.vu)
+	return p.vp
 }
 
-// uintptr returns the uintptr address of the pointer.
-//
 //go:nosplit
 func (p *maybeTraceablePtr) uintptr() uintptr {
-	return p.vu
+	// wasm3: vu is unused; there's no scalar address to return.
+	// Callers comparing this against another `uintptr(unsafe.Pointer(
+	// addr))` (e.g. the sema treap) are all in subsystems we've
+	// gated off or replaced — returning 0 keeps the symbol live
+	// without exposing a meaningless value.
+	return 0
 }
 
 // maybeTraceableChan extends conditionally trackable pointers (maybeTraceablePtr)

@@ -504,10 +504,14 @@ func findnull(s *byte) int {
 
 	offset := 0
 	ptr := unsafe.Pointer(s)
-	// IndexByteString uses wide reads, so we need to be careful
-	// with page boundaries. Call IndexByteString on
-	// [ptr, endOfPage) interval.
-	safeLen := int(pageSize - uintptr(ptr)%pageSize)
+	// wasm3: no scalar address for page-alignment math. The
+	// `pageSize - uintptr(ptr)%pageSize` calc on non-wasm3 keeps
+	// the first IndexByteString from straddling a page boundary
+	// where the next page might be unmapped. anyref has no
+	// address space at all — every read goes through bounds-
+	// checked array.get — so straddling is impossible. Use the
+	// full pageSize on the first iteration.
+	safeLen := pageSize
 
 	for {
 		t := *(*string)(unsafe.Pointer(&stringStruct{ptr, safeLen}))

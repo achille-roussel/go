@@ -7303,7 +7303,9 @@ func mget() *m {
 func mgetSpecific(mp *m) *m {
 	assertLockHeld(&sched.lock)
 
-	if mp.idleNode.prev == 0 && mp.idleNode.next == 0 {
+	// wasm3: idleNode.prev / .next are unsafe.Pointer (not uintptr)
+	// per list_manual_wasm3.go — compare to nil instead of 0.
+	if mp.idleNode.prev == nil && mp.idleNode.next == nil {
 		// Not on the list.
 		return nil
 	}

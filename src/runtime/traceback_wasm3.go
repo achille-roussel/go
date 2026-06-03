@@ -131,6 +131,22 @@ func (u *unwinder) init(gp *g, flags unwindFlags) {
 }
 
 func (u *unwinder) initAt(pc0, sp0, lr0 uintptr, gp *g, flags unwindFlags) {
+	// On wasm3 there's no traditional stack to walk: the host (V8)
+	// owns continuation frames and the runtime has no scalar
+	// addresses to read return PCs from. Set u.frame to its zero
+	// value so valid() returns false immediately and the
+	// traceback loop exits without invoking next() (which would
+	// also trip the wasm3 SSA-gen fatal on stack-frame reads).
+	// Higher-level callers see "no frames" and degrade — same
+	// outcome as if findfunc returned funcInfo{} for every PC.
+	u.g = gp.guintptr()
+	u.flags = flags
+	u.frame = stkframe{}
+	return
+
+	// The non-wasm3 body below is retained verbatim for reference
+	// but is unreachable on wasm3.
+
 	// Don't call this "g"; it's too easy get "g" and "gp" confused.
 	if ourg := getg(); ourg == gp && ourg == ourg.m.curg {
 		// The starting sp has been passed in as a uintptr, and the caller may

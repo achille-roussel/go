@@ -1915,20 +1915,20 @@ func mstart0() {
 
 	osStack := gp.stack.lo == 0
 	if osStack {
-		// Initialize stack bounds from system stack.
-		// Cgo may have left stack size in stack.hi.
-		// minit may update the stack bounds.
-		//
-		// Note: these bounds may not be very accurate.
-		// We set hi to &size, but there are things above
-		// it. The 1024 is supposed to compensate this,
-		// but is somewhat arbitrary.
+		// wasm3: no traditional system stack to probe — the
+		// goroutine runs as a JSPI continuation, V8 owns the
+		// frame. The non-wasm3 body uses `uintptr(noescape(
+		// unsafe.Pointer(&size)))` to take the address of a
+		// local var as a proxy for the system-stack high end;
+		// `uintptr(unsafe.Pointer)` trips the SSA-gen fatal.
+		// Set arbitrary non-zero bounds so the stack-guard
+		// arithmetic below doesn't underflow.
 		size := gp.stack.hi
 		if size == 0 {
 			size = 16384 * sys.StackGuardMultiplier
 		}
-		gp.stack.hi = uintptr(noescape(unsafe.Pointer(&size)))
-		gp.stack.lo = gp.stack.hi - size + 1024
+		gp.stack.hi = size + 1024
+		gp.stack.lo = 1024
 	}
 	// Initialize stack guard so that we can start calling regular
 	// Go code.
@@ -2828,7 +2828,12 @@ func lockextra(nilokay bool) *m {
 //go:nosplit
 func unlockextra(mp *m, delta int32) {
 	extraMLength.Add(delta)
-	extraM.Store(uintptr(unsafe.Pointer(mp)))
+	// wasm3: extraM is the head of the extra-M list used by the
+	// cgo callback machinery. cgo is unsupported on wasm3 (iscgo
+	// is always false), so the extra-M list is never used and the
+	// store is dead. The `uintptr(unsafe.Pointer(mp))` cast trips
+	// the SSA-gen fatal regardless; skip the store entirely.
+	_ = mp
 }
 
 // Return an M from the extra M list. Returns last == true if the list becomes
@@ -2960,22 +2965,11 @@ func newm(fn func(), pp *p, id int64) {
 }
 
 func newm1(mp *m) {
-	if iscgo && _cgo_thread_start != nil {
-		var ts cgothreadstart
-		ts.g.set(mp.g0)
-		ts.tls = (*uint64)(unsafe.Pointer(&mp.tls[0]))
-		ts.fn = unsafe.Pointer(abi.FuncPCABI0(mstart))
-		if msanenabled {
-			msanwrite(unsafe.Pointer(&ts), unsafe.Sizeof(ts))
-		}
-		if asanenabled {
-			asanwrite(unsafe.Pointer(&ts), unsafe.Sizeof(ts))
-		}
-		execLock.rlock() // Prevent process clone.
-		asmcgocall(_cgo_thread_start, unsafe.Pointer(&ts))
-		execLock.runlock()
-		return
-	}
+	// wasm3: cgo is unsupported (iscgo is always false), so the
+	// `if iscgo && _cgo_thread_start != nil` branch upstream is
+	// dead. Drop it entirely — the `ts.fn = unsafe.Pointer(
+	// abi.FuncPCABI0(mstart))` cast inside trips the SSA-gen
+	// fatal at compile time, even unreachable.
 	execLock.rlock() // Prevent process clone.
 	newosproc(mp)
 	execLock.runlock()

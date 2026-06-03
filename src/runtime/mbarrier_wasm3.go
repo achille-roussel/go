@@ -276,12 +276,14 @@ func reflectcallmove(typ *_type, dst, src unsafe.Pointer, size uintptr, regs *ab
 	}
 	memmove(dst, src, size)
 
-	// Move pointers returned in registers to a place where the GC can see them.
-	for i := range regs.Ints {
-		if regs.ReturnIsPtr.Get(i) {
-			regs.Ptrs[i] = unsafe.Pointer(regs.Ints[i])
-		}
-	}
+	// wasm3: skip the register-spill loop. On non-wasm3 the
+	// reflectcall ABI returns pointers in regs.Ints[] which the GC
+	// can't see; copying them to regs.Ptrs[] makes them visible.
+	// wasm3 has no separate Ints/Ptrs banks — IntArgRegs and
+	// FloatArgRegs are 0 (see internal/abi/abi_wasm3.go), so the
+	// loop iterates zero times, but `unsafe.Pointer(regs.Ints[i])`
+	// still trips the SSA-gen fatal at compile time.
+	_ = regs
 }
 
 // typedslicecopy should be an internal detail,

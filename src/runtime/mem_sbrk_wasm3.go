@@ -78,3 +78,30 @@ func sysReserveOS(v unsafe.Pointer, n uintptr, _ string) unsafe.Pointer {
 }
 
 func needZeroAfterSysUnusedOS() bool { return true }
+
+// sbrk grows the wasm linear-memory arena by n bytes (rounded up
+// to the page size) and returns a pointer to the new region.
+// Used by mem_wasm3.go's stub allocators and any other consumer
+// that needs to extend the bridge buffer at runtime.
+//
+// This is the wasm3 counterpart of mem_wasm.go's sbrk for the
+// wasm (non-wasm3) target — same shape, same growMemory primitive.
+func sbrk(n uintptr) unsafe.Pointer {
+	bl := bloc
+	n = memRound(n)
+	if bl+n > blocMax {
+		grow := (bl + n - blocMax) / physPageSize
+		size := growMemory(int32(grow))
+		if size < 0 {
+			return nil
+		}
+		resetMemoryDataView()
+		blocMax = bl + n
+	}
+	bloc += n
+	return unsafe.Pointer(bl)
+}
+
+// growMemory / currentMemory are implemented in src/runtime/sys_wasm.s.
+func growMemory(pages int32) int32
+func currentMemory() int32

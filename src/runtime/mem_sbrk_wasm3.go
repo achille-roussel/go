@@ -79,27 +79,19 @@ func sysReserveOS(v unsafe.Pointer, n uintptr, _ string) unsafe.Pointer {
 
 func needZeroAfterSysUnusedOS() bool { return true }
 
-// sbrk grows the wasm linear-memory arena by n bytes (rounded up
-// to the page size) and returns a pointer to the new region.
-// Used by mem_wasm3.go's stub allocators and any other consumer
-// that needs to extend the bridge buffer at runtime.
+// sbrk is the wasm linear-memory arena grower. On wasm3 sbrk is
+// unreachable from the runtime — mem_sbrk.go (the only caller)
+// is gated !wasm3, and the WasmGC-only heap path doesn't use a
+// linear-memory bump arena. The `return unsafe.Pointer(bl)`
+// uintptr → unsafe.Pointer cast that mem_wasm.go has would trip
+// the wasm3 SSA-gen fatal; we throw instead.
 //
-// This is the wasm3 counterpart of mem_wasm.go's sbrk for the
-// wasm (non-wasm3) target — same shape, same growMemory primitive.
+// If the linear-memory bridge ever needs sbrk-style growth, it
+// will route through a wasm3-specific intrinsic in runtime/wasm
+// rather than reviving this function.
 func sbrk(n uintptr) unsafe.Pointer {
-	bl := bloc
-	n = memRound(n)
-	if bl+n > blocMax {
-		grow := (bl + n - blocMax) / physPageSize
-		size := growMemory(int32(grow))
-		if size < 0 {
-			return nil
-		}
-		resetMemoryDataView()
-		blocMax = bl + n
-	}
-	bloc += n
-	return unsafe.Pointer(bl)
+	throw("runtime.sbrk unreachable on wasm3 (WasmGC heap, no linear-memory bump arena)")
+	return nil
 }
 
 // growMemory / currentMemory are implemented in src/runtime/sys_wasm.s.

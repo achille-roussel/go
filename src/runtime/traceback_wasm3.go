@@ -946,8 +946,11 @@ func traceback2(u *unwinder, showRuntime bool, skip, max int) (n, lastN int) {
 			if iu.isInlined(uf) {
 				print("...")
 			} else {
-				argp := unsafe.Pointer(u.frame.argp)
-				printArgs(f, argp, u.symPC())
+				// wasm3: u.frame.argp is a uintptr stack-frame
+				// argument pointer; `unsafe.Pointer(uintptr)` is
+				// rejected by the SSA-gen fatal. printArgs is a
+				// no-op on wasm3 anyway (no stack frames to read
+				// args from), so skip the call entirely.
 			}
 			print(")\n")
 			print("\t", file, ":", line)

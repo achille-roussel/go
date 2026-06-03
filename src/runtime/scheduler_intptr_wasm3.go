@@ -87,3 +87,18 @@ func (mp *muintptr) set(m *m) { mp.p = m }
 //go:nosplit
 //go:nowritebarrier
 func setMNoWB(mp **m, new *m) { *mp = new }
+
+// noG, noM, noP are zero-value sentinels matching the non-wasm3
+// constants of the same name in scheduler_intptr.go. They exist so
+// scheduler code can write `pp.runnext = noG` / `gp.lockedm != noM`
+// portably across both representations.
+//
+// On non-wasm3 these are typed-zero uintptr consts; here they are
+// zero-value struct-wrapper vars. They are never mutated — the
+// `var` form is dictated by Go disallowing struct const-expressions,
+// not by intentional runtime state.
+var (
+	noG guintptr
+	noM muintptr
+	noP puintptr
+)

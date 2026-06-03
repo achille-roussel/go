@@ -368,7 +368,7 @@ func init() {
 // queued for gp.
 func wantAsyncPreempt(gp *g) bool {
 	// Check both the G and the P.
-	return (gp.preempt || gp.m.p != 0 && gp.m.p.ptr().preempt) && readgstatus(gp)&^_Gscan == _Grunning
+	return (gp.preempt || gp.m.p != noP && gp.m.p.ptr().preempt) && readgstatus(gp)&^_Gscan == _Grunning
 }
 
 // isAsyncSafePoint reports whether gp at instruction PC is an
@@ -398,7 +398,7 @@ func isAsyncSafePoint(gp *g, pc, sp, lr uintptr) (bool, uintptr) {
 	}
 
 	// Check M state.
-	if mp.p == 0 || !canPreemptM(mp) {
+	if mp.p == noP || !canPreemptM(mp) {
 		return false, 0
 	}
 

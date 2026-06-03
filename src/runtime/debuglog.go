@@ -130,7 +130,7 @@ func dlogImpl() *dloggerImpl {
 	l.w.uvarint(tick - l.w.tick)
 	l.w.uvarint(nano - l.w.nano)
 	gp := getg()
-	if gp != nil && gp.m != nil && gp.m.p != 0 {
+	if gp != nil && gp.m != nil && gp.m.p != noP {
 		l.w.varint(int64(gp.m.p.ptr().id))
 	} else {
 		l.w.varint(-1)

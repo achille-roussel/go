@@ -161,12 +161,12 @@ func gcComputeStartingStackSize() {}
 // function pointer in gobuf.pc and leave the rest as the caller set.
 // At M4 this will be replaced by a wasm-cont.new-driven shim.
 func gostartcallfn(gobuf *gobuf, fv *funcval) {
-	var fn unsafe.Pointer
+	// gobuf.pc is unused on wasm3 (continuation-based scheduler has
+	// no PC; the function reference is recovered from ctxt at the
+	// point we'd otherwise resume from pc). Leave it zero.
 	if fv != nil {
-		fn = unsafe.Pointer(fv.fn)
+		gobuf.ctxt = unsafe.Pointer(fv)
 	}
-	gobuf.pc = uintptr(fn)
-	gobuf.ctxt = unsafe.Pointer(fv)
 }
 
 // isShrinkStackSafe answers whether it is safe to shrink gp's stack

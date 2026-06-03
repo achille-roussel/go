@@ -679,7 +679,7 @@ func switchToCrashStack0(fn func()) // in assembly
 
 func lockedOSThread() bool {
 	gp := getg()
-	return gp.lockedm != 0 && gp.m.lockedg != 0
+	return gp.lockedm != noM && gp.m.lockedg != noG
 }
 
 var (
@@ -1810,10 +1810,10 @@ func startTheWorldWithSema(now int64, w worldStop) int64 {
 	for p1 != nil {
 		p := p1
 		p1 = p1.link.ptr()
-		if p.m != 0 {
+		if p.m != noM {
 			mp := p.m.ptr()
-			p.m = 0
-			if mp.nextp != 0 {
+			p.m = noM
+			if mp.nextp != noP {
 				throw("startTheWorld: inconsistent mp->nextp")
 			}
 			mp.nextp.set(p)
@@ -1938,7 +1938,7 @@ func mstart1() {
 	// so other calls can reuse the current frame.
 	// And goexit0 does a gogo that needs to return from mstart1
 	// and let mstart0 exit the thread.
-	gp.sched.g = guintptr(unsafe.Pointer(gp))
+	gp.sched.g = gp.guintptr()
 	gp.sched.pc = sys.GetCallerPC()
 	gp.sched.sp = sys.GetCallerSP()
 
@@ -1961,7 +1961,7 @@ func mstart1() {
 
 	if gp.m != &m0 {
 		acquirep(gp.m.nextp.ptr())
-		gp.m.nextp = 0
+		gp.m.nextp = noP
 	}
 	schedule()
 }
@@ -2304,7 +2304,7 @@ func allocm(pp *p, fn func(), id int64) *m {
 	acquirem()
 
 	gp := getg()
-	if gp.m.p == 0 {
+	if gp.m.p == noP {
 		acquirep(pp) // temporarily borrow p for mallocs in this function
 	}
 
@@ -2543,7 +2543,7 @@ func oneNewExtraM() {
 	gp.sched.sp = gp.stack.hi
 	gp.sched.sp -= 4 * goarch.PtrSize // extra space in case of reads slightly beyond frame
 	gp.sched.lr = 0
-	gp.sched.g = guintptr(unsafe.Pointer(gp))
+	gp.sched.g = gp.guintptr()
 	gp.syscallpc = gp.sched.pc
 	gp.syscallsp = gp.sched.sp
 	gp.stktopsp = gp.sched.sp
@@ -2994,13 +2994,13 @@ func templateThread() {
 
 	for {
 		lock(&newmHandoff.lock)
-		for newmHandoff.newm != 0 {
+		for newmHandoff.newm != noM {
 			newm := newmHandoff.newm.ptr()
-			newmHandoff.newm = 0
+			newmHandoff.newm = noM
 			unlock(&newmHandoff.lock)
 			for newm != nil {
 				next := newm.schedlink.ptr()
-				newm.schedlink = 0
+				newm.schedlink = noM
 				newm1(newm)
 				newm = next
 			}
@@ -3021,7 +3021,7 @@ func stopm() {
 	if gp.m.locks != 0 {
 		throw("stopm holding locks")
 	}
-	if gp.m.p != 0 {
+	if gp.m.p != noP {
 		throw("stopm holding p")
 	}
 	if gp.m.spinning {
@@ -3033,7 +3033,7 @@ func stopm() {
 	unlock(&sched.lock)
 	mPark()
 	acquirep(gp.m.nextp.ptr())
-	gp.m.nextp = 0
+	gp.m.nextp = noP
 }
 
 func mspinning() {
@@ -3135,7 +3135,7 @@ func startm(pp *p, spinning, lockheld bool) {
 	if nmp.spinning {
 		throw("startm: m is spinning")
 	}
-	if nmp.nextp != 0 {
+	if nmp.nextp != noP {
 		throw("startm: m has p")
 	}
 	if spinning && !runqempty(pp) {
@@ -3276,10 +3276,10 @@ func wakep() {
 func stoplockedm() {
 	gp := getg()
 
-	if gp.m.lockedg == 0 || gp.m.lockedg.ptr().lockedm.ptr() != gp.m {
+	if gp.m.lockedg == noG || gp.m.lockedg.ptr().lockedm.ptr() != gp.m {
 		throw("stoplockedm: inconsistent locking")
 	}
-	if gp.m.p != 0 {
+	if gp.m.p != noP {
 		// Schedule another M to run this p.
 		pp := releasep()
 		handoffp(pp)
@@ -3294,7 +3294,7 @@ func stoplockedm() {
 		throw("stoplockedm: not runnable")
 	}
 	acquirep(gp.m.nextp.ptr())
-	gp.m.nextp = 0
+	gp.m.nextp = noP
 }
 
 // Schedules the locked m to run the locked gp.
@@ -3306,7 +3306,7 @@ func startlockedm(gp *g) {
 	if mp == getg().m {
 		throw("startlockedm: locked to me")
 	}
-	if mp.nextp != 0 {
+	if mp.nextp != noP {
 		throw("startlockedm: m has p")
 	}
 	// directly handoff current P to the locked m
@@ -3757,7 +3757,7 @@ top:
 	// Poll network until next timer.
 	if netpollinited() && (netpollAnyWaiters() || pollUntil != 0) && sched.lastpoll.Swap(0) != 0 {
 		sched.pollUntil.Store(pollUntil)
-		if mp.p != 0 {
+		if mp.p != noP {
 			throw("findRunnable: netpoll with p")
 		}
 		if mp.spinning {
@@ -4165,7 +4165,7 @@ func schedule() {
 		throw("schedule: holding locks")
 	}
 
-	if mp.lockedg != 0 {
+	if mp.lockedg != noG {
 		stoplockedm()
 		execute(mp.lockedg.ptr(), false) // Never returns.
 	}
@@ -4183,7 +4183,7 @@ top:
 	// Safety check: if we are spinning, the run queue should be empty.
 	// Check this before calling checkTimers, as that might call
 	// goready to put a ready goroutine on the local run queue.
-	if mp.spinning && (pp.runnext != 0 || pp.runqhead != pp.runqtail) {
+	if mp.spinning && (pp.runnext != noG || pp.runqhead != pp.runqtail) {
 		throw("schedule: spinning with local work")
 	}
 
@@ -4246,7 +4246,7 @@ top:
 	if tryWakeP {
 		wakep()
 	}
-	if gp.lockedm != 0 {
+	if gp.lockedm != noM {
 		// Hands off own p to the locked m,
 		// then blocks waiting for a new p.
 		startlockedm(gp)
@@ -4536,9 +4536,9 @@ func gdestroy(gp *g) {
 		sched.ngsys.Add(-1)
 	}
 	gp.m = nil
-	locked := gp.lockedm != 0
-	gp.lockedm = 0
-	mp.lockedg = 0
+	locked := gp.lockedm != noM
+	gp.lockedm = noM
+	mp.lockedg = noG
 	gp.preemptStop = false
 	gp.paniconfault = false
 	gp._defer = nil // should be true already but just in case.
@@ -4809,8 +4809,8 @@ func entersyscallHandleGCWait(trace traceLocker) {
 	if sched.stopwait > 0 {
 		// Set our P to _Pgcstop so the STW can take it.
 		pp := gp.m.p.ptr()
-		pp.m = 0
-		gp.m.p = 0
+		pp.m = noM
+		gp.m.p = noP
 		atomic.Store(&pp.status, _Pgcstop)
 
 		if trace.ok() {
@@ -5092,7 +5092,7 @@ func exitsyscallTryGetP(oldp *p) *p {
 	}
 
 	// Try to get an idle P.
-	if sched.pidle != 0 {
+	if sched.pidle != noP {
 		lock(&sched.lock)
 		pp, _ := pidleget(0)
 		if pp != nil && sched.sysmonwait.Load() {
@@ -5143,7 +5143,7 @@ func exitsyscallNoP(gp *g) {
 		// committing the release by unlocking sched.lock, otherwise we
 		// could race with another M transitioning gp from unlocked to
 		// locked.
-		locked = gp.lockedm != 0
+		locked = gp.lockedm != noM
 	} else if sched.sysmonwait.Load() {
 		sched.sysmonwait.Store(false)
 		notewakeup(&sched.sysmonnote)
@@ -5400,7 +5400,7 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr, parked bool, waitreaso
 	newg.sched.sp = sp
 	newg.stktopsp = sp
 	newg.sched.pc = abi.FuncPCABI0(goexit) + sys.PCQuantum // +PCQuantum so that previous instruction is in same function
-	newg.sched.g = guintptr(unsafe.Pointer(newg))
+	newg.sched.g = newg.guintptr()
 	gostartcallfn(&newg.sched, fn)
 	newg.parentGoid = callergp.goid
 	newg.gopc = callerpc
@@ -5707,8 +5707,8 @@ func dounlockOSThread() {
 	if gp.m.lockedInt != 0 || gp.m.lockedExt != 0 {
 		return
 	}
-	gp.m.lockedg = 0
-	gp.lockedm = 0
+	gp.m.lockedg = noG
+	gp.lockedm = noM
 }
 
 // UnlockOSThread undoes an earlier call to LockOSThread.
@@ -5859,7 +5859,7 @@ func sigprof(pc, sp, lr uintptr, gp *g, mp *m) {
 
 		// Collect Go stack that leads to the cgo call.
 		u.initAt(mp.curg.syscallpc, mp.curg.syscallsp, 0, mp.curg, unwindSilentErrors)
-	} else if usesLibcall() && mp.libcallg != 0 && mp.libcallpc != 0 && mp.libcallsp != 0 {
+	} else if usesLibcall() && mp.libcallg != noG && mp.libcallpc != 0 && mp.libcallsp != 0 {
 		// Libcall, i.e. runtime syscall on windows.
 		// Collect Go stack that leads to the call.
 		u.initAt(mp.libcallpc, mp.libcallsp, 0, mp.libcallg.ptr(), unwindSilentErrors)
@@ -6008,9 +6008,9 @@ func (pp *p) destroy() {
 		// Push onto head of global queue
 		globrunqputhead(gp)
 	}
-	if pp.runnext != 0 {
+	if pp.runnext != noG {
 		globrunqputhead(pp.runnext.ptr())
-		pp.runnext = 0
+		pp.runnext = noG
 	}
 
 	// Move all timers to the local P.
@@ -6132,7 +6132,7 @@ func procresize(nprocs int32) *p {
 	}
 
 	gp := getg()
-	if gp.m.p != 0 && gp.m.p.ptr().id < nprocs {
+	if gp.m.p != noP && gp.m.p.ptr().id < nprocs {
 		// continue to use the current P
 		gp.m.p.ptr().status = _Prunning
 		gp.m.p.ptr().mcache.prepareForSweep()
@@ -6142,7 +6142,7 @@ func procresize(nprocs int32) *p {
 		// We must do this before destroying our current P
 		// because p.destroy itself has write barriers, so we
 		// need to do that from a valid P.
-		if gp.m.p != 0 {
+		if gp.m.p != noP {
 			trace := traceAcquire()
 			if trace.ok() {
 				// Pretend that we were descheduled
@@ -6152,11 +6152,11 @@ func procresize(nprocs int32) *p {
 				trace.ProcStop(gp.m.p.ptr())
 				traceRelease(trace)
 			}
-			gp.m.p.ptr().m = 0
+			gp.m.p.ptr().m = noM
 		}
-		gp.m.p = 0
+		gp.m.p = noP
 		pp := allp[0]
-		pp.m = 0
+		pp.m = noM
 		pp.status = _Pidle
 		acquirep(pp)
 		trace := traceAcquire()
@@ -6348,22 +6348,22 @@ func acquirepNoTrace(pp *p) {
 func wirep(pp *p) {
 	gp := getg()
 
-	if gp.m.p != 0 {
+	if gp.m.p != noP {
 		// Call on the systemstack to avoid a nosplit overflow build failure
 		// on some platforms when built with -N -l. See #64113.
 		systemstack(func() {
 			throw("wirep: already in go")
 		})
 	}
-	if pp.m != 0 || pp.status != _Pidle {
+	if pp.m != noM || pp.status != _Pidle {
 		// Call on the systemstack to avoid a nosplit overflow build failure
 		// on some platforms when built with -N -l. See #64113.
 		systemstack(func() {
 			id := int64(0)
-			if pp.m != 0 {
+			if pp.m != noM {
 				id = pp.m.ptr().id
 			}
-			print("wirep: p->m=", pp.m, "(", id, ") p->status=", pp.status, "\n")
+			print("wirep: p->m=", pp.m.ptr(), "(", id, ") p->status=", pp.status, "\n")
 			throw("wirep: invalid p state")
 		})
 	}
@@ -6386,20 +6386,20 @@ func releasep() *p {
 func releasepNoTrace() *p {
 	gp := getg()
 
-	if gp.m.p == 0 {
+	if gp.m.p == noP {
 		throw("releasep: invalid arg")
 	}
 	pp := gp.m.p.ptr()
 	if pp.m.ptr() != gp.m || pp.status != _Prunning {
-		print("releasep: m=", gp.m, " m->p=", gp.m.p.ptr(), " p->m=", hex(pp.m), " p->status=", pp.status, "\n")
+		print("releasep: m=", gp.m, " m->p=", gp.m.p.ptr(), " p->m=", pp.m.ptr(), " p->status=", pp.status, "\n")
 		throw("releasep: invalid p state")
 	}
 
 	// P must clear if nextGCMarkWorker if it stops.
 	gcController.releaseNextGCMarkWorker(pp)
 
-	gp.m.p = 0
-	pp.m = 0
+	gp.m.p = noP
+	pp.m = noM
 	pp.status = _Pidle
 	return pp
 }
@@ -6871,8 +6871,8 @@ func (s syscallingThread) releaseP(state uint32) {
 		throw("attempted to release P into a bad state")
 	}
 	trace := traceAcquire()
-	s.pp.m = 0
-	s.mp.p = 0
+	s.pp.m = noM
+	s.mp.p = noP
 	atomic.Store(&s.pp.status, state)
 	if trace.ok() {
 		trace.ProcSteal(s.pp)
@@ -7546,10 +7546,10 @@ func runqput(pp *p, gp *g, next bool) {
 	if next {
 	retryNext:
 		oldnext := pp.runnext
-		if !pp.runnext.cas(oldnext, guintptr(unsafe.Pointer(gp))) {
+		if !pp.runnext.cas(oldnext, gp.guintptr()) {
 			goto retryNext
 		}
-		if oldnext == 0 {
+		if oldnext == noG {
 			return
 		}
 		// Kick the old runnext out to the regular run queue.
@@ -7653,7 +7653,7 @@ func runqget(pp *p) (gp *g, inheritTime bool) {
 	// If the runnext is non-0 and the CAS fails, it could only have been stolen by another P,
 	// because other Ps can race to set runnext to 0, but only the current P can set it to non-0.
 	// Hence, there's no need to retry this CAS if it fails.
-	if next != 0 && pp.runnext.cas(next, 0) {
+	if next != noG && pp.runnext.cas(next, noG) {
 		return next.ptr(), true
 	}
 
@@ -7674,7 +7674,7 @@ func runqget(pp *p) (gp *g, inheritTime bool) {
 // Executed only by the owner P.
 func runqdrain(pp *p) (drainQ gQueue) {
 	oldNext := pp.runnext
-	if oldNext != 0 && pp.runnext.cas(oldNext, 0) {
+	if oldNext != noG && pp.runnext.cas(oldNext, noG) {
 		drainQ.pushBack(oldNext.ptr())
 	}
 
@@ -7720,7 +7720,7 @@ func runqgrab(pp *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool)
 		if n == 0 {
 			if stealRunNextG {
 				// Try to steal from pp.runnext.
-				if next := pp.runnext; next != 0 {
+				if next := pp.runnext; next != noG {
 					if pp.status == _Prunning {
 						if mp := pp.m.ptr(); mp != nil {
 							if gp := mp.curg; gp == nil || readgstatus(gp)&^_Gscan != _Gsyscall {
@@ -7754,7 +7754,7 @@ func runqgrab(pp *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool)
 							}
 						}
 					}
-					if !pp.runnext.cas(next, 0) {
+					if !pp.runnext.cas(next, noG) {
 						continue
 					}
 					batch[batchHead%uint32(len(batch))] = next
@@ -7808,14 +7808,14 @@ type gQueue struct {
 
 // empty reports whether q is empty.
 func (q *gQueue) empty() bool {
-	return q.head == 0
+	return q.head == noG
 }
 
 // push adds gp to the head of q.
 func (q *gQueue) push(gp *g) {
 	gp.schedlink = q.head
 	q.head.set(gp)
-	if q.tail == 0 {
+	if q.tail == noG {
 		q.tail.set(gp)
 	}
 	q.size++
@@ -7823,8 +7823,8 @@ func (q *gQueue) push(gp *g) {
 
 // pushBack adds gp to the tail of q.
 func (q *gQueue) pushBack(gp *g) {
-	gp.schedlink = 0
-	if q.tail != 0 {
+	gp.schedlink = noG
+	if q.tail != noG {
 		q.tail.ptr().schedlink.set(gp)
 	} else {
 		q.head.set(gp)
@@ -7836,11 +7836,11 @@ func (q *gQueue) pushBack(gp *g) {
 // pushBackAll adds all Gs in q2 to the tail of q. After this q2 must
 // not be used.
 func (q *gQueue) pushBackAll(q2 gQueue) {
-	if q2.tail == 0 {
+	if q2.tail == noG {
 		return
 	}
-	q2.tail.ptr().schedlink = 0
-	if q.tail != 0 {
+	q2.tail.ptr().schedlink = noG
+	if q.tail != noG {
 		q.tail.ptr().schedlink = q2.head
 	} else {
 		q.head = q2.head
@@ -7855,8 +7855,8 @@ func (q *gQueue) pop() *g {
 	gp := q.head.ptr()
 	if gp != nil {
 		q.head = gp.schedlink
-		if q.head == 0 {
-			q.tail = 0
+		if q.head == noG {
+			q.tail = noG
 		}
 		q.size--
 	}
@@ -7879,7 +7879,7 @@ type gList struct {
 
 // empty reports whether l is empty.
 func (l *gList) empty() bool {
-	return l.head == 0
+	return l.head == noG
 }
 
 // push adds gp to the head of l.

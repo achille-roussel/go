@@ -482,7 +482,7 @@ func closechan(c *hchan) {
 	// Ready all Gs now that we've dropped the channel lock.
 	for !glist.empty() {
 		gp := glist.pop()
-		gp.schedlink = 0
+		gp.schedlink = noG
 		goready(gp, 3)
 	}
 }

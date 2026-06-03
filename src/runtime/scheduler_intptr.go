@@ -115,3 +115,19 @@ func (mp *muintptr) set(m *m) { *mp = muintptr(unsafe.Pointer(m)) }
 func setMNoWB(mp **m, new *m) {
 	(*muintptr)(unsafe.Pointer(mp)).set(new)
 }
+
+// noG, noM, noP are zero-value sentinels for the scheduler intptr
+// types. The non-wasm3 type is uintptr, so the constants are simply
+// the typed zero — equivalent to writing `guintptr(0)` inline.
+//
+// The wasm3 mirror (scheduler_intptr_wasm3.go) provides matching
+// sentinels with the same names but stored as zero-value vars,
+// because the wasm3 intptr types are struct wrappers and untyped 0
+// is not assignable. Using the named sentinels in scheduler code
+// (proc.go, sema.go, chan.go, ...) instead of the literal 0 keeps
+// the call sites portable across both representations.
+const (
+	noG guintptr = 0
+	noM muintptr = 0
+	noP puintptr = 0
+)

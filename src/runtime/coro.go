@@ -119,7 +119,7 @@ func coroswitch_m(gp *g) {
 	// the same thread must be used, and the locked state must match with the thread-lock state of
 	// the goroutine which called newcoro. Thread-lock state consists of the thread and the number
 	// of internal (cgo callback, etc.) and external (LockOSThread) thread locks.
-	locked := gp.lockedm != 0
+	locked := gp.lockedm != noM
 	if c.mp != nil || locked {
 		if mp != c.mp || mp.lockedInt != c.lockedInt || mp.lockedExt != c.lockedExt {
 			print("coro: got thread ", unsafe.Pointer(mp), ", want ", unsafe.Pointer(c.mp), "\n")

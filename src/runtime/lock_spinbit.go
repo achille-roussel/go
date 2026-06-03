@@ -248,7 +248,7 @@ tryAcquire:
 			weSpin = false
 			// We've pushed ourselves onto the stack of waiters. Wait.
 			semasleep(-1)
-			atTail = gp.m.mWaitList.next == 0 // we were at risk of starving
+			atTail = gp.m.mWaitList.next == noM // we were at risk of starving
 			i = 0
 		}
 

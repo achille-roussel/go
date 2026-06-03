@@ -7,7 +7,9 @@
 package runtime
 
 import (
+	"internal/abi"
 	"internal/runtime/atomic"
+	"internal/runtime/sys"
 	_ "unsafe" // for go:linkname
 )
 
@@ -115,6 +117,99 @@ var overflowError = error(errorString("integer overflow"))
 // its fatal). proc.go uses it on all arches; we keep the var here
 // for symbol parity.
 var deadlock mutex
+
+// goPanic* helpers — emitted by the compiler from every bounds /
+// slice-bounds / array-conversion check. Verbatim from panic.go
+// (no ptr-arith); the `panic(...)` call in each lowers to
+// wasm3Gopanic on wasm3 per defer_wasm3.go.
+
+//go:yeswritebarrierrec
+func goPanicIndex(x int, y int) {
+	panicCheck1(sys.GetCallerPC(), "index out of range")
+	panic(boundsError{x: int64(x), signed: true, y: y, code: abi.BoundsIndex})
+}
+
+//go:yeswritebarrierrec
+func goPanicIndexU(x uint, y int) {
+	panicCheck1(sys.GetCallerPC(), "index out of range")
+	panic(boundsError{x: int64(x), signed: false, y: y, code: abi.BoundsIndex})
+}
+
+//go:yeswritebarrierrec
+func goPanicSliceAlen(x int, y int) {
+	panicCheck1(sys.GetCallerPC(), "slice bounds out of range")
+	panic(boundsError{x: int64(x), signed: true, y: y, code: abi.BoundsSliceAlen})
+}
+
+//go:yeswritebarrierrec
+func goPanicSliceAlenU(x uint, y int) {
+	panicCheck1(sys.GetCallerPC(), "slice bounds out of range")
+	panic(boundsError{x: int64(x), signed: false, y: y, code: abi.BoundsSliceAlen})
+}
+
+//go:yeswritebarrierrec
+func goPanicSliceAcap(x int, y int) {
+	panicCheck1(sys.GetCallerPC(), "slice bounds out of range")
+	panic(boundsError{x: int64(x), signed: true, y: y, code: abi.BoundsSliceAcap})
+}
+
+//go:yeswritebarrierrec
+func goPanicSliceAcapU(x uint, y int) {
+	panicCheck1(sys.GetCallerPC(), "slice bounds out of range")
+	panic(boundsError{x: int64(x), signed: false, y: y, code: abi.BoundsSliceAcap})
+}
+
+//go:yeswritebarrierrec
+func goPanicSliceB(x int, y int) {
+	panicCheck1(sys.GetCallerPC(), "slice bounds out of range")
+	panic(boundsError{x: int64(x), signed: true, y: y, code: abi.BoundsSliceB})
+}
+
+//go:yeswritebarrierrec
+func goPanicSliceBU(x uint, y int) {
+	panicCheck1(sys.GetCallerPC(), "slice bounds out of range")
+	panic(boundsError{x: int64(x), signed: false, y: y, code: abi.BoundsSliceB})
+}
+
+func goPanicSlice3Alen(x int, y int) {
+	panicCheck1(sys.GetCallerPC(), "slice bounds out of range")
+	panic(boundsError{x: int64(x), signed: true, y: y, code: abi.BoundsSlice3Alen})
+}
+func goPanicSlice3AlenU(x uint, y int) {
+	panicCheck1(sys.GetCallerPC(), "slice bounds out of range")
+	panic(boundsError{x: int64(x), signed: false, y: y, code: abi.BoundsSlice3Alen})
+}
+func goPanicSlice3Acap(x int, y int) {
+	panicCheck1(sys.GetCallerPC(), "slice bounds out of range")
+	panic(boundsError{x: int64(x), signed: true, y: y, code: abi.BoundsSlice3Acap})
+}
+func goPanicSlice3AcapU(x uint, y int) {
+	panicCheck1(sys.GetCallerPC(), "slice bounds out of range")
+	panic(boundsError{x: int64(x), signed: false, y: y, code: abi.BoundsSlice3Acap})
+}
+
+func goPanicSlice3B(x int, y int) {
+	panicCheck1(sys.GetCallerPC(), "slice bounds out of range")
+	panic(boundsError{x: int64(x), signed: true, y: y, code: abi.BoundsSlice3B})
+}
+func goPanicSlice3BU(x uint, y int) {
+	panicCheck1(sys.GetCallerPC(), "slice bounds out of range")
+	panic(boundsError{x: int64(x), signed: false, y: y, code: abi.BoundsSlice3B})
+}
+
+func goPanicSlice3C(x int, y int) {
+	panicCheck1(sys.GetCallerPC(), "slice bounds out of range")
+	panic(boundsError{x: int64(x), signed: true, y: y, code: abi.BoundsSlice3C})
+}
+func goPanicSlice3CU(x uint, y int) {
+	panicCheck1(sys.GetCallerPC(), "slice bounds out of range")
+	panic(boundsError{x: int64(x), signed: false, y: y, code: abi.BoundsSlice3C})
+}
+
+func goPanicSliceConvert(x int, y int) {
+	panicCheck1(sys.GetCallerPC(), "slice length too short to convert to array or pointer to array")
+	panic(boundsError{x: int64(x), signed: true, y: y, code: abi.BoundsConvert})
+}
 
 // Goexit terminates the goroutine that calls it. No other goroutine
 // is affected.

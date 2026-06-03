@@ -41,6 +41,26 @@ func unreachableMethod() {
 	throw("runtime.unreachableMethod: called on wasm3 (per-(I,T) vtab dispatch should never resolve to this)")
 }
 
+// panicdottypeE / I / Nil — type-assertion failure helpers
+// emitted by the compiler for `x.(T)` conversions. Verbatim
+// from iface.go (no ptr-arith).
+
+func panicdottypeE(have, want, iface *_type) {
+	panic(&TypeAssertionError{iface, have, want, ""})
+}
+
+func panicdottypeI(have *itab, want, iface *_type) {
+	var t *_type
+	if have != nil {
+		t = have.Type
+	}
+	panicdottypeE(t, want, iface)
+}
+
+func panicnildottype(want *_type) {
+	panic(&TypeAssertionError{nil, nil, want, ""})
+}
+
 // staticuint64s is the small-int cache `convT*` uses on non-wasm3
 // to avoid an allocation when boxing an integer < 256 into an
 // interface. Wasm3 boxes integers through ref.cast / struct.new

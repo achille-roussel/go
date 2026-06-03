@@ -2,9 +2,13 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build !wasm3
+
 package runtime
 
 // This file contains the implementation of Go channels.
+// On wasm3 the chan runtime lives entirely in chan_jswasm3.go +
+// chan_wasm3.go (per-T trampolines own chan ops, hchan path dead).
 
 // Invariants:
 //  At least one of c.sendq and c.recvq is empty,

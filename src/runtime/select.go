@@ -2,9 +2,13 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build !wasm3
+
 package runtime
 
 // This file contains the implementation of Go select statements.
+// On wasm3 select is compiler-intrinsified through chan_jswasm3.go's
+// wasm3SelectStart / wasm3SelectYield etc., so this file is gated off.
 
 import (
 	"internal/abi"

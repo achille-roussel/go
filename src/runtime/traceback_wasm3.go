@@ -267,6 +267,18 @@ func (u *unwinder) valid() bool {
 //
 // This is internal to unwinder.
 func (u *unwinder) resolveInternal(innermost, isSyscall bool) {
+	// wasm3: unreachable from a fresh wasm3 unwinder because
+	// initAt zeros u.frame and valid() returns false. The body
+	// reads return PCs via `*(*uintptr)(unsafe.Pointer(lrPtr))`
+	// stack-frame walks (lines 390, 395) that the wasm3 SSA-gen
+	// fatal rejects. Make it an early-return so the body never
+	// compiles through to the bad sites.
+	u.finishInternal()
+	return
+
+	// The non-wasm3 body below is retained verbatim for reference
+	// but is unreachable on wasm3.
+
 	frame := &u.frame
 	gp := u.g.ptr()
 

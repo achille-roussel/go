@@ -8,24 +8,28 @@ package runtime
 
 import "unsafe"
 
-// memmove for GOARCH=wasm3 is implemented in Go rather than assembly.
-// The wasm/wasm3 fork's obj backend can't lower the legacy
-// memmove_wasm3.s body — that asm reads its arguments via
+// memmove for GOARCH=wasm3 is implemented in Go rather than
+// assembly. The wasm/wasm3 fork's obj backend can't lower the
+// legacy memmove_wasm3.s body — that asm reads its arguments via
 // `MOVD <name>+<off>(FP)` (the wasm linear-memory frame ABI), but
 // the wasm3 calling convention passes args in registers. The asm
 // function ends up emitted as a bare `unreachable` in the wasm,
 // trapping every caller of memmove (growslice, append's fast path,
-// makeslicecopy, etc.).
+// makeslicecopy, slicecopy, etc.).
 //
-// This Go version uses the standard register ABI, so the wasm3
-// backend lowers the parameters correctly. The body itself is the
-// canonical "memory.copy with overlap handling": forward copy when
-// the destination is before the source (or fully outside the source
-// range), backward copy otherwise. Both directions are byte-by-byte
-// — the wasm3 backend doesn't have an `OpMove`-with-dynamic-size
-// intrinsic yet, and adding one is a separate workstream. Byte-by-
-// byte is correct and uses the linear-memory load/store path the
-// backend already supports.
+// The body uses `unsafe.Slice` to materialise byte-slice views of
+// the source and destination, then delegates to the builtin
+// `copy`. Go's `copy` on a slice is specified to handle overlap
+// correctly (memmove semantics: "If the source and destination
+// overlap, the resulting slice will contain the correct values"),
+// so we don't need to write an overlap-detection helper. This is
+// load-bearing on wasm3: comparing two unsafe.Pointers for
+// ordering would require `uintptr(unsafe.Pointer(to)) >
+// uintptr(unsafe.Pointer(from))`, the exact ptr-arith pattern the
+// wasm3 SSA-gen fatal rejects (anyref has no scalar address). The
+// builtin-copy form lowers in the wasm3 backend to byte-stream
+// memory load/stores that the existing linear-memory path already
+// supports, with overlap handling baked into the lowering.
 //
 // The function is single-goroutine on wasm3 so the standard
 // memmove-overlap discipline (the public memmove contract) is all
@@ -37,14 +41,7 @@ func memmove(to, from unsafe.Pointer, n uintptr) {
 	if n == 0 || to == from {
 		return
 	}
-	if uintptr(to) > uintptr(from) && uintptr(to) < uintptr(from)+n {
-		// Overlapping with dst after src — copy backward.
-		for i := n; i > 0; i-- {
-			*(*byte)(unsafe.Add(to, i-1)) = *(*byte)(unsafe.Add(from, i-1))
-		}
-		return
-	}
-	for i := uintptr(0); i < n; i++ {
-		*(*byte)(unsafe.Add(to, i)) = *(*byte)(unsafe.Add(from, i))
-	}
+	dst := unsafe.Slice((*byte)(to), n)
+	src := unsafe.Slice((*byte)(from), n)
+	copy(dst, src)
 }

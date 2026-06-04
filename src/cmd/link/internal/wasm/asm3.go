@@ -610,6 +610,18 @@ func asmb2_3(ctxt *ld.Link, ldr *loader.Loader) {
 		writeBuildID(ctxt, buildid)
 	}
 
+	// Downgrade the prelude $go.cont type to a benign (func) if no
+	// assembled function body actually contains a cont.new / resume
+	// referencing it. The downgrade lets V8 (and other engines)
+	// instantiate the module under --experimental-wasm-stack-switching
+	// alone, dropping the --experimental-wasm-wasmfx requirement for
+	// programs that never spawn a goroutine. Goroutine-spawning
+	// programs leave the slot as (cont $go.goroutine.entry) and still
+	// require wasmfx.
+	if !wasm3BodiesUseCont(m.funcs) {
+		m.table.DowngradeContToFunc()
+	}
+
 	writeTypeSec3(ctxt, m.table)
 	writeImportSec3(ctxt, m.imports)
 	writeFunctionSec3(ctxt, m.funcs)
@@ -883,6 +895,28 @@ func writeTagSec3(ctxt *ld.Link) {
 	ctxt.Out.WriteByte(0x00)
 	writeUleb128(ctxt.Out, uint64(wasmgc.TypeGoGoroutineEntry))
 	writeSecSize(ctxt, sizeOffset)
+}
+
+// wasm3BodiesUseCont reports whether any assembled function body
+// contains the OpWasm3RunInCont* signature {cont.new $go.cont,
+// resume $go.cont}. The wasm3 SSA backend always emits those two
+// opcodes back-to-back with the same prelude-type immediate, so a
+// 4-byte signature ({AContNew, idx, AResume, idx}) is enough to
+// distinguish "this program spawns goroutines" from "this program
+// only ever runs main.main". The result drives whether the prelude
+// $go.cont type is emitted as (cont $go.goroutine.entry) — required
+// by V8 only when actually used and gated on
+// --experimental-wasm-wasmfx — or downgraded to a benign (func) so
+// JSPI alone (--experimental-wasm-stack-switching) suffices.
+func wasm3BodiesUseCont(fns []*wasm3Func) bool {
+	idx := wasmgc.ContTypeIndexByte()
+	sig := []byte{0xE0, idx, 0xE3, idx}
+	for _, fn := range fns {
+		if bytes.Contains(fn.Code, sig) {
+			return true
+		}
+	}
+	return false
 }
 
 // writeTypeSec3 writes the WebAssembly 3.0 type section: a single

@@ -471,6 +471,13 @@ func PreludeTypes() []Type {
 
 	// M4: (cont $go.goroutine.entry). Single cont type shared by every
 	// goroutine — see doc/wasm3-design.md §8 and the M4 plan.
+	//
+	// The cont declaration is what makes V8 require
+	// --experimental-wasm-wasmfx at module-instantiation time; programs
+	// that never spawn a goroutine (and therefore never emit cont.new /
+	// resume in any function body) get the type downgraded to a benign
+	// (func) at link time by writeTypeSec3, so they instantiate under
+	// --experimental-wasm-stack-switching alone (JSPI only).
 	t[TypeGoCont] = Type{
 		Name:     "go.cont",
 		Kind:     KindCont,
@@ -618,6 +625,36 @@ func (t Type) DependsOn() []int {
 // Table is a module's complete wasm type table: the prelude types
 // followed by the program's collected types.
 type Table []Type
+
+// DowngradeContToFunc rewrites the prelude TypeGoCont slot from
+// (cont $go.goroutine.entry) to a benign (func) signature so the
+// module instantiates without --experimental-wasm-wasmfx. Safe only
+// when no function body emits cont.new / resume against the slot —
+// the linker derives that by scanning every assembled body before
+// calling. The slot stays at the same TypeGoCont index so SSA-gen
+// constants and per-function table remaps need no adjustment.
+func (table Table) DowngradeContToFunc() {
+	table[TypeGoCont] = Type{
+		Name:  "go.cont",
+		Kind:  KindFunc,
+		Super: -1,
+	}
+}
+
+// ContTypeIndexByte returns the single-byte uleb128 encoding of the
+// TypeGoCont prelude index. The linker uses it as part of a body-scan
+// signature ({AContNew, idx, AResume, idx}) to detect whether any
+// function body actually uses the cont type, so it can downgrade the
+// prelude declaration when nobody does. TypeGoCont's index is < 128
+// today (24), keeping the uleb a single byte; the helper makes the
+// pact explicit so a future renumbering past 127 fails loudly here
+// instead of silently misencoding the scan signature.
+func ContTypeIndexByte() byte {
+	if TypeGoCont >= 0x80 {
+		panic("wasmgc: TypeGoCont index >= 128 — update body-scan to multi-byte uleb")
+	}
+	return byte(TypeGoCont)
+}
 
 // SelfRecursive reports whether the type at index i references itself,
 // either through its supertype (never, in practice) or a field/element.

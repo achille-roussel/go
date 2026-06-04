@@ -12,6 +12,6 @@ done
 DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
 
 exec node \
-	--experimental-wasm-stack-switching --experimental-wasm-wasmfx \
+	--experimental-wasm-stack-switching \
 	--stack-size=8192 \
 	"$DIR/wasm_exec_wasm3.js" "$@"

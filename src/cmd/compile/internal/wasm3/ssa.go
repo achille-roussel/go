@@ -1666,11 +1666,44 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// the cast is a runtime no-op for array/struct refs (which
 		// are all eqref subtypes by wasmgc subtyping). I64Ne flips
 		// the result with `i32.eqz`.
-		if ssa.Wasm3IsAnyrefValue(v.Args[0]) && ssa.Wasm3IsAnyrefValue(v.Args[1]) {
-			getValue64(s, v.Args[0])
+		//
+		// Type-assertion path: `(EqPtr itab target)` reaches here with
+		// itab as anyref (IfaceItab → struct.get $go.iface 0) and
+		// target as OpWasm3LoweredAddr {type:T} — the i64 linear
+		// address of T's type descriptor. The descriptor also exists
+		// as a WasmGC ref-global (R_WASMDESCRIPTOR), so substitute the
+		// LoweredAddr's emission with drop + global.get to recover an
+		// anyref operand and route through the ref.eq path. Same
+		// rationale as OpWasm3IfaceMake's emitWord helper.
+		isDescAddr := func(a *ssa.Value) bool {
+			if a.Op != ssa.OpWasm3LoweredAddr {
+				return false
+			}
+			_, ok := a.Aux.(*obj.LSym)
+			return ok
+		}
+		emitAnyrefOperand := func(a *ssa.Value) {
+			if ssa.Wasm3IsAnyrefValue(a) {
+				getValue64(s, a)
+				s.Prog(wasm.ARefCastEqref)
+				return
+			}
+			// LoweredAddr of a descriptor sym: drop the materialized i64
+			// address, then global.get the descriptor's identity
+			// ref-global (R_WASMDESCRIPTOR rewrite at link time).
+			sym := a.Aux.(*obj.LSym)
+			getValue64(s, a)
+			s.Prog(wasm.ADrop)
+			pGet := s.Prog(wasm.AGlobalGet)
+			pGet.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: sym}
+			pGet.Mark = wasm.Wasm3DescriptorRef
 			s.Prog(wasm.ARefCastEqref)
-			getValue64(s, v.Args[1])
-			s.Prog(wasm.ARefCastEqref)
+		}
+		a0Ref := ssa.Wasm3IsAnyrefValue(v.Args[0]) || isDescAddr(v.Args[0])
+		a1Ref := ssa.Wasm3IsAnyrefValue(v.Args[1]) || isDescAddr(v.Args[1])
+		if a0Ref && a1Ref {
+			emitAnyrefOperand(v.Args[0])
+			emitAnyrefOperand(v.Args[1])
 			s.Prog(wasm.ARefEq)
 			if v.Op == ssa.OpWasm3I64Ne {
 				s.Prog(wasm.AI32Eqz)

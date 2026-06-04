@@ -1032,8 +1032,16 @@ func writeGlobalSec3(ctxt *ld.Link, ldr *loader.Loader, m *wasm3Module, hostImpo
 			if isString {
 				// init: <i32.const byte>...;
 				//       array.new_fixed $go.bytes <len>;
-				//       i64.const 0; i64.const <len>;
+				//       i32.const 0; i32.const <len>;
 				//       struct.new $go.string
+				//
+				// $go.string is (anyref backing, i32 offset, i32 length)
+				// after the slice/string-header i32-ification (commit
+				// for #164), so offset/length must be i32.const in the
+				// const-expression initializer — a function body can
+				// follow an i64.const with i32.wrap_i64 to bridge, but
+				// const-exprs accept only constants and global.get, so
+				// the value must already be the right type.
 				for _, b := range stringBytes {
 					ctxt.Out.WriteByte(0x41) // i32.const
 					writeSleb128(ctxt.Out, int64(b))
@@ -1042,9 +1050,9 @@ func writeGlobalSec3(ctxt *ld.Link, ldr *loader.Loader, m *wasm3Module, hostImpo
 				ctxt.Out.WriteByte(0x08) // array.new_fixed sub-opcode
 				writeUleb128(ctxt.Out, uint64(wasmgc.TypeGoBytes))
 				writeUleb128(ctxt.Out, uint64(len(stringBytes)))
-				ctxt.Out.WriteByte(0x42) // i64.const (offset)
+				ctxt.Out.WriteByte(0x41) // i32.const (offset)
 				writeSleb128(ctxt.Out, 0)
-				ctxt.Out.WriteByte(0x42) // i64.const (length)
+				ctxt.Out.WriteByte(0x41) // i32.const (length)
 				writeSleb128(ctxt.Out, int64(len(stringBytes)))
 				ctxt.Out.WriteByte(0xFB) // GC prefix
 				ctxt.Out.WriteByte(0x00) // struct.new sub-opcode

@@ -196,7 +196,23 @@ func Store64(ptr *uint64, val uint64) {
 // barrier.
 //
 // NO go:noescape annotation; see atomic_pointer.go.
-func StorepNoWB(ptr unsafe.Pointer, val unsafe.Pointer)
+//
+// On wasm3 we provide a Go body rather than an asm declaration:
+// without a body the compiler falls back to a stack-based call
+// ABI (memory-PtrStore the args at SP, then call) that doesn't
+// translate to wasm3's typed function signatures, producing
+// malformed wasm with an uninitialized SP local. The body's
+// `*ptr = val` lowers to the wasm3 polymorphic-pointer setter
+// (struct.get $go.refclass.ref 1 → call_ref $go.setter.ref),
+// which is what atomicstorep's caller wants. The single-threaded
+// wasm3 scheduler also means no other goroutine can observe a
+// torn store, so "atomic" reduces to "plain" here.
+//
+//go:nosplit
+//go:noinline
+func StorepNoWB(ptr unsafe.Pointer, val unsafe.Pointer) {
+	*(*unsafe.Pointer)(ptr) = val
+}
 
 //go:nosplit
 //go:noinline

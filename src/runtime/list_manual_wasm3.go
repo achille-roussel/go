@@ -50,7 +50,17 @@ func (head *listHeadManual) getNode(p unsafe.Pointer) *listNodeManual {
 	if p == nil {
 		return nil
 	}
-	return (*listNodeManual)(unsafe.Add(p, head.nodeOffset))
+	// On wasm3 the intrusive-list pattern unsafe.Add(p, nodeOffset)
+	// produces malformed wasm: the SSA-gen lowers OUNSAFEADD to a
+	// pointer+uintptr arithmetic that turns into an i64.add with an
+	// anyref operand, which V8 rejects at validation. Trap until the
+	// few call sites (lockedExtraM / extraM / etc.) are reshaped to
+	// either embed the node directly as a field or use a wasm3-aware
+	// container helper. Most paths reaching listHeadManual on wasm3
+	// are gated out by the Rung-29 mirror leak cleanup, so this trap
+	// fires only when an unmigrated call sneaks through.
+	throw("runtime.listHeadManual.getNode not supported on wasm3 (unsafe.Add ptr-arith path)")
+	return nil
 }
 
 func (head *listHeadManual) empty() bool {

@@ -26,6 +26,7 @@ import (
 	"cmd/internal/wasmgc"
 	"go/constant"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -2123,7 +2124,7 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 			wasm3RegisterIfaceVtab(s.FuncInfo(), v.Type)
 			wasm3RegisterIfaceSubtype(s.FuncInfo(), v.Type)
 		}
-		emitWord := func(a *ssa.Value) {
+		emitWord := func(a *ssa.Value, isDataSlot bool) {
 			// ConstNil of itab/data slots: a Go SSA value of type uintptr
 			// (the standard itab repr) or unsafe.Pointer rewrites to
 			// I64Const [0] via the default ConstNil rule, but the
@@ -2142,19 +2143,70 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 					// Consume + drop the linear address operand (only
 					// materializes the symbol address; no linear read) to
 					// keep the OnWasmStack accounting balanced, then read
-					// the descriptor's identity ref-global.
+					// the symbol's identity ref-global. Two flavors:
+					//   - Type descriptor LSyms (`type:T`, `go:itab.I,T`)
+					//     get the descriptorGlobals entry (struct.new_default
+					//     $go.object), routed via Wasm3DescriptorRef →
+					//     R_WASMDESCRIPTOR. These are the itab/type word of
+					//     a non-empty interface and the type word of an
+					//     empty interface.
+					//   - Static-data LSyms (`main..stmp_N`, package vars)
+					//     get the boxedGlobals entry, routed via Wasm3GlobalRef
+					//     → R_WASMGLOBAL. The init expression for a stmp_N
+					//     string-header static materializes a $go.string ref
+					//     (see wasm3DecodeStringTemp); other statics get
+					//     written by the package init. The data slot then
+					//     needs the value wrapped in $go.box.<pointee> so
+					//     the assertion site's ref.cast (ref $go.box.<T>);
+					//     struct.get $go.box.<T> 0 pair finds the expected
+					//     shape (matching the convention OpWasm3BoxLoad
+					//     reads back).
 					getValue64(s, a)
 					s.Prog(wasm.ADrop)
 					p := s.Prog(wasm.AGlobalGet)
 					p.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: sym}
-					p.Mark = wasm.Wasm3DescriptorRef
+					if wasm3IsTypeDescriptorSym(sym) {
+						p.Mark = wasm.Wasm3DescriptorRef
+						return
+					}
+					p.Mark = wasm.Wasm3GlobalRef
+					// Wrap the loaded value in a $go.box.<pointee> for the
+					// data slot. a.Type is the SSA pointer type (e.g.
+					// *string); the box wraps its element. The itab/type
+					// slot never reaches this branch (its LSym is always a
+					// descriptor and was handled above).
+					//
+					// The boxed-var global is declared (mut anyref) — the
+					// linker doesn't know the variable's precise wasm
+					// type — so the loaded anyref must be ref.cast down
+					// to the box field's typed-ref shape (e.g. (ref null
+					// $go.string)) before struct.new validates. Read the
+					// field's heap-type from the collector's table after
+					// registering the box so this works for any pointee
+					// whose box has a single-ref field (string, slice,
+					// interface — same set OpWasm3BoxLoad reads back).
+					if isDataSlot && a.Type != nil && a.Type.IsPtr() {
+						pointee := a.Type.Elem()
+						boxIdx := wasm3RegisterStruct(s.FuncInfo(), pointee)
+						if cAny, ok := wasm3LiveCollector.Load(s.FuncInfo()); ok {
+							c := cAny.(*typeCollector)
+							if len(c.table[boxIdx].Fields) == 1 &&
+								c.table[boxIdx].Fields[0].Storage.RefType >= 0 {
+								fieldHeapIdx := c.table[boxIdx].Fields[0].Storage.RefType
+								pCast := s.Prog(wasm.ARefCastNull)
+								pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(fieldHeapIdx)}
+								pBox := s.Prog(wasm.AStructNew)
+								pBox.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(boxIdx)}
+							}
+						}
+					}
 					return
 				}
 			}
 			getValue64(s, a)
 		}
-		emitWord(v.Args[0])
-		emitWord(v.Args[1])
+		emitWord(v.Args[0], false)
+		emitWord(v.Args[1], true)
 		p := s.Prog(wasm.AStructNew)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(wasmgc.TypeGoIface)}
 
@@ -3529,6 +3581,38 @@ func isCmp(v *ssa.Value) bool {
 // than the i64 register width. See attachWasmType.
 func wasm3NarrowABI(t *types.Type) bool {
 	return (t.IsInteger() || t.IsBoolean()) && t.Size() <= 4
+}
+
+// wasm3IsTypeDescriptorSym reports whether sym is a Go type-system
+// descriptor (a `*runtime._type` for a concrete type, an itab, or a
+// type-switch descriptor) as opposed to a regular data symbol.
+//
+// The wasm3 linker maintains two parallel ref-global tables:
+//   - descriptorGlobals (R_WASMDESCRIPTOR / Wasm3DescriptorRef): one
+//     opaque struct.new_default $go.object per descriptor sym, used
+//     only for type identity (ref.eq comparison) and method dispatch
+//     (for itab descriptors with the per-itab vtab aux).
+//   - boxedGlobals (R_WASMGLOBAL / Wasm3GlobalRef): one (mut anyref)
+//     per package-level var or static, holding the actual value ref
+//     (e.g. a $go.string for a stmp_N string-header static).
+//
+// The same LoweredAddr+LSym SSA shape reaches both. The sym name is
+// the deciding signal: type descriptors land at `type:` (concrete
+// types) and `go:itab.` (itabs) names. Everything else — package
+// vars, compiler-generated statics (`pkg..stmp_N`), string literal
+// data (`go:string."..."`) — needs the value-carrying boxed global.
+//
+// Used by OpWasm3IfaceMake's emitWord to pick which global table the
+// `iface.{itab,data}` slots index into; mis-routing the data slot to
+// the descriptor table is what made `panic("boom") + recover() +
+// r.(string)` trap with "illegal cast" at the assertion site.
+func wasm3IsTypeDescriptorSym(sym *obj.LSym) bool {
+	if sym == nil {
+		return false
+	}
+	name := sym.Name
+	return strings.HasPrefix(name, "type:") ||
+		strings.HasPrefix(name, "go:itab.")
 }
 
 // isNarrowWasmField reports whether a wasm field is carried in an i32

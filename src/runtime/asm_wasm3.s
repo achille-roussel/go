@@ -54,55 +54,16 @@ TEXT runtime·gogo(SB), NOSPLIT, $0-8
 	I32Const $1
 	Return
 
-// func mcall(fn func(*g))
-// Switch to m->g0's stack, call fn(g).
-// Fn must never return. It should gogo(&g->sched)
-// to keep running g.
-TEXT runtime·mcall(SB), NOSPLIT, $0-8
-	// CTXT = fn
-	MOVD fn+0(FP), CTXT
-	// R1 = g.m
-	MOVD g_m(g), R1
-	// R2 = g0
-	MOVD m_g0(R1), R2
-
-	// save state in g->sched
-	MOVD 0(SP), g_sched+gobuf_pc(g)     // caller's PC
-	MOVD $fn+0(FP), g_sched+gobuf_sp(g) // caller's SP
-
-	// if g == g0 call badmcall
-	Get g
-	Get R2
-	I64Eq
-	If
-		JMP runtime·badmcall(SB)
-	End
-
-	// switch to g0's stack
-	I64Load (g_sched+gobuf_sp)(R2)
-	I64Const $8
-	I64Sub
-	I32WrapI64
-	Set SP
-
-	// set arg to current g
-	MOVD g, 0(SP)
-
-	// switch to g0
-	MOVD R2, g
-
-	// call fn
-	Get CTXT
-	I32WrapI64
-	I64Load $0
-	CALL
-
-	Get SP
-	I32Const $8
-	I32Add
-	Set SP
-
-	JMP runtime·badmcall2(SB)
+// func mcall(fn func(*g)) — IMPLEMENTED IN GO on wasm3.
+// See stubs_wasm3.go's mcall (forwards to mcall_wasm3 in
+// proc_sched_wasm3.go). The original asm body used FP-based
+// linear-memory access (`MOVD fn+0(FP), CTXT`, `g_m(g)`,
+// `0(SP)`-relative stores into gobuf, etc.), none of which
+// translate to wasm3's typed function ABI; the assembler
+// produced `i64.store` of a (ref) closure global that V8
+// rejected at validation ("runtime.Gosched ... i64.store
+// expected i64, found global.get of type (ref 112)"). The
+// pure-Go mcall + mcall_wasm3 pair avoids that entirely.
 
 // func systemstack(fn func())
 TEXT runtime·systemstack(SB), NOSPLIT, $0-8

@@ -71,7 +71,21 @@ func getg() *g
 // This must NOT be go:noescape: if fn is a stack-allocated closure,
 // fn puts g on a run queue, and g executes before fn returns, the
 // closure will be invalidated while it is still executing.
-func mcall(fn func(*g))
+//
+// Body forwards to mcall_wasm3 (proc_sched_wasm3.go) — same fix
+// rationale as StorepNoWB: body-less declarations make the compiler
+// fall back to the legacy stack-passed ABI (PtrStore the closure
+// arg to SP, then call), which the wasm3 typed function ABI
+// can't represent. The closure is anyref-typed and stores as a
+// global.get into a (ref) global, but the legacy SP-store path
+// emits `i64.store` of that ref — V8 rejects ("i64.store[1]
+// expected i64, found global.get of type (ref 112)"). The Go
+// body sidesteps it.
+//
+//go:nosplit
+func mcall(fn func(*g)) {
+	mcall_wasm3(fn)
+}
 
 // systemstack runs fn on a system stack.
 // If systemstack is called from the per-OS-thread (g0) stack, or

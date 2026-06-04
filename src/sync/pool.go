@@ -85,16 +85,13 @@ func runtime_randn(n uint32) uint32
 
 var poolRaceHash [128]uint64
 
-// poolRaceAddr returns an address to use as the synchronization point
-// for race detector logic. We don't use the actual pointer stored in x
-// directly, for fear of conflicting with other synchronization on that address.
-// Instead, we hash the pointer to get an index into poolRaceHash.
-// See discussion on golang.org/cl/31589.
-func poolRaceAddr(x any) unsafe.Pointer {
-	ptr := uintptr((*[2]unsafe.Pointer)(unsafe.Pointer(&x))[1])
-	h := uint32((uint64(uint32(ptr)) * 0x85ebca6b) >> 16)
-	return unsafe.Pointer(&poolRaceHash[h%uint32(len(poolRaceHash))])
-}
+// poolRaceAddr is defined in pool_race.go (default) and
+// pool_race_wasm3.go (wasm3 stub). It returns an address to use as
+// the synchronization point for race detector logic. We don't use
+// the actual pointer stored in x directly, for fear of conflicting
+// with other synchronization on that address. Instead, we hash the
+// pointer to get an index into poolRaceHash. See discussion on
+// golang.org/cl/31589.
 
 // Put adds x to the pool.
 func (p *Pool) Put(x any) {
@@ -299,7 +296,7 @@ func init() {
 }
 
 func indexLocal(l unsafe.Pointer, i int) *poolLocal {
-	lp := unsafe.Pointer(uintptr(l) + uintptr(i)*unsafe.Sizeof(poolLocal{}))
+	lp := unsafe.Add(l, uintptr(i)*unsafe.Sizeof(poolLocal{}))
 	return (*poolLocal)(lp)
 }
 

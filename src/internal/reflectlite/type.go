@@ -378,7 +378,7 @@ func (t rtype) Out(i int) Type {
 // does not cause x to advance to the very end of p's allocation
 // and therefore point incorrectly at the next block in memory.
 func add(p unsafe.Pointer, x uintptr, whySafe string) unsafe.Pointer {
-	return unsafe.Pointer(uintptr(p) + x)
+	return unsafe.Add(p, x)
 }
 
 // TypeOf returns the reflection Type that represents the dynamic type of i.

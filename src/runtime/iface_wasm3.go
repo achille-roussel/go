@@ -6,7 +6,7 @@
 
 package runtime
 
-import _ "unsafe" // for go:linkname
+import "unsafe"
 
 // wasm3 mirror of iface.go.
 //
@@ -73,4 +73,66 @@ var staticuint64s [256]uint64
 //go:linkname getStaticuint64s
 func getStaticuint64s() *[256]uint64 {
 	return &staticuint64s
+}
+
+// convT* helpers — emitted by the compiler from walk/convert.go's
+// dataWord when boxing a non-static value into an interface.
+//
+// On non-wasm3, each helper mallocgc's a heap copy of val and returns
+// its address as unsafe.Pointer; the IMake call site uses that
+// address as the iface's data word.
+//
+// On wasm3 the genuine implementation needs to construct a
+// $go.box.<T> WasmGC cell wrapping val and return it as the iface
+// data ref. That hits two blockers: (a) `&val` for a string/slice
+// parameter currently lowers to a mix of $go.box.string struct.new
+// AND linear-memory stack writes (the legacy multi-word return ABI
+// shape), which wasm-emission rejects and degrades to `unreachable`;
+// (b) the wasm3 runtime doesn't have mallocgc or the staticuint64s
+// small-int cache. Solving (a) requires extending the wasm3 backend's
+// addressable-locals lowering to cover the convT* return-slot path
+// (work tracked under #128 / M4-completion).
+//
+// These stubs return ref.null any so the static-data panic+recover+
+// assert path (the #218 / #220 repro) and any program that doesn't
+// dynamically box continue to link and run. Programs that DO call
+// convT* at runtime trap with "illegal cast" at the assertion site
+// because the data slot ends up nil — surfacing the gap clearly
+// instead of corrupting silently.
+
+//go:linkname convT
+func convT(t *_type, v unsafe.Pointer) unsafe.Pointer {
+	// `v` already names a heap-allocated value on wasm3 (the caller's
+	// `&heap_local` already boxes via addressable-locals). Forward it.
+	return v
+}
+
+//go:linkname convTnoptr
+func convTnoptr(t *_type, v unsafe.Pointer) unsafe.Pointer {
+	return v
+}
+
+//go:linkname convT16
+func convT16(val uint16) unsafe.Pointer {
+	return nil
+}
+
+//go:linkname convT32
+func convT32(val uint32) unsafe.Pointer {
+	return nil
+}
+
+//go:linkname convT64
+func convT64(val uint64) unsafe.Pointer {
+	return nil
+}
+
+//go:linkname convTstring
+func convTstring(val string) unsafe.Pointer {
+	return nil
+}
+
+//go:linkname convTslice
+func convTslice(val []byte) unsafe.Pointer {
+	return nil
 }

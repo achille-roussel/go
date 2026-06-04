@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"go/constant"
 	"go/token"
+	"internal/buildcfg"
 	"internal/goexperiment"
 
 	"cmd/compile/internal/base"
@@ -315,7 +316,16 @@ func (b *batch) finish(fns []*ir.Func) {
 
 		if loc.hasAttr(attrEscapes) {
 			if n.Op() == ir.ONAME {
-				if base.Flag.CompilingRuntime {
+				// On wasm3 the runtime's "heap" IS WasmGC — the
+				// runtime has no separate bootstrap allocator to
+				// protect, so the no-runtime-escape rule that exists
+				// for the non-wasm3 runtime is moot. The runtime's
+				// wasm3-only mirrors (iface_wasm3.go convT* helpers,
+				// the addressable-locals box machinery, defer chain
+				// records) routinely take addresses of locals that
+				// boxify into $go.box.<T> cells; without this carve-out
+				// they'd all fail to compile.
+				if base.Flag.CompilingRuntime && buildcfg.GOARCH != "wasm3" {
 					base.ErrorfAt(n.Pos(), 0, "%v escapes to heap, not allowed in runtime", n)
 				}
 				if base.Flag.LowerM != 0 {

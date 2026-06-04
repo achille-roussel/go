@@ -211,6 +211,36 @@ func goPanicSliceConvert(x int, y int) {
 	panic(boundsError{x: int64(x), signed: true, y: y, code: abi.BoundsConvert})
 }
 
+var shiftError = error(errorString("negative shift amount"))
+
+// panicshift is the compiler-emitted helper for negative shift
+// amounts (a << b where b < 0). Verbatim from panic.go.
+//
+//go:yeswritebarrierrec
+func panicshift() {
+	panicCheck1(sys.GetCallerPC(), "negative shift amount")
+	panic(shiftError)
+}
+
+// panicdivide is the compiler-emitted helper for integer divide
+// by zero. Verbatim from panic.go.
+//
+//go:yeswritebarrierrec
+func panicdivide() {
+	panicCheck1(sys.GetCallerPC(), "integer divide by zero")
+	panic(divideError)
+}
+
+// panicoverflow is the compiler-emitted helper for integer
+// overflow (the divide-min-int64-by-minus-one corner case).
+// Verbatim from panic.go.
+//
+//go:yeswritebarrierrec
+func panicoverflow() {
+	panicCheck1(sys.GetCallerPC(), "integer overflow")
+	panic(overflowError)
+}
+
 // Goexit terminates the goroutine that calls it. No other goroutine
 // is affected.
 //

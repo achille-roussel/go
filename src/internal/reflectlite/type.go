@@ -2,8 +2,15 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build !wasm3
+
 // Package reflectlite implements lightweight version of reflect, not using
 // any package except for "runtime", "unsafe", and "internal/abi"
+//
+// On wasm3 the reflectlite surface lives in reflectlite_wasm3.go.
+// This file's linear-memory + uintptr-arithmetic encoding doesn't
+// translate to the WasmGC memory model (struct field indices +
+// ref-typed descriptors). See #221 / Rung 33.
 package reflectlite
 
 import (

@@ -8,7 +8,6 @@ package slices
 import (
 	"cmp"
 	"math/bits"
-	"unsafe"
 )
 
 // Equal reports whether two slices are equal: the same length and all
@@ -452,19 +451,7 @@ func rotateRight[E any](s []E, r int) {
 }
 
 // overlaps reports whether the memory ranges a[:len(a)] and b[:len(b)] overlap.
-func overlaps[E any](a, b []E) bool {
-	if len(a) == 0 || len(b) == 0 {
-		return false
-	}
-	elemSize := unsafe.Sizeof(a[0])
-	if elemSize == 0 {
-		return false
-	}
-	// TODO: use a runtime/unsafe facility once one becomes available. See issue 12445.
-	// Also see crypto/internal/fips140/alias/alias.go:AnyOverlap
-	return uintptr(unsafe.Pointer(&a[0])) <= uintptr(unsafe.Pointer(&b[len(b)-1]))+(elemSize-1) &&
-		uintptr(unsafe.Pointer(&b[0])) <= uintptr(unsafe.Pointer(&a[len(a)-1]))+(elemSize-1)
-}
+// The body lives in overlaps.go (non-wasm3) and overlaps_wasm3.go.
 
 // startIdx returns the index in haystack where the needle starts.
 // prerequisite: the needle must be aliased entirely inside the haystack.

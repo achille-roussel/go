@@ -36,6 +36,20 @@ type slice struct {
 	cap   int
 }
 
+// growslice is the runtime helper that backs append() when the
+// existing backing's capacity is insufficient. On wasm3 the
+// compiler intrinsifies append() to a direct (array.new_default,
+// array.copy, struct.new $go.slice) sequence on the WasmGC
+// backing, so growslice should be unreachable. It still has to
+// be linkable, though — internal/bisect (and a handful of other
+// stdlib spots) emit a call to growslice from append patterns
+// the wasm3 intrinsifier doesn't currently catch. Trap with a
+// clear message; the caller can be intrinsified later.
+func growslice(oldPtr unsafe.Pointer, newLen, oldCap, num int, et *_type) slice {
+	throw("runtime.growslice not yet implemented on wasm3 (append() should intrinsify to array.new_default + array.copy)")
+	return slice{}
+}
+
 // slicecopy is verbatim from slice.go. Used by mbarrier.go's
 // typedslicecopy when the element type has pointers. memmove is
 // already wasm3-friendly (overlap-safe via unsafe.Slice + builtin

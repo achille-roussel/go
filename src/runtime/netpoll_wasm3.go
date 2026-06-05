@@ -34,6 +34,7 @@ package runtime
 import (
 	"internal/runtime/atomic"
 	"internal/runtime/sys"
+	"runtime/wasm"
 	"unsafe"
 )
 
@@ -102,6 +103,17 @@ type pollDesc struct {
 	link  *pollDesc      // in pollcache, protected by pollcache.lock
 	fd    uintptr        // constant for pollDesc usage lifetime
 	fdseq atomic.Uintptr // protects against stale pollDesc
+
+	// wasm3ParkID stashes the parkID a current wasm3PollWait
+	// suspended on, so poll_runtime_pollUnblock (close / deadline)
+	// can wake the suspended goroutine via wasm.WasmReady. Zero
+	// means no wait is currently parked. Single-threaded wasm3
+	// means a plain int32 is enough — no atomic needed; at most
+	// one waiter per mode per pollDesc by design (rg/wg
+	// invariant), and the read/write modes never share a parkID
+	// because wasm3PollWait stores+clears around its
+	// AwaitFd* call.
+	wasm3ParkID int32
 
 	// atomicInfo holds bits from closing, rd, and wd,
 	// which are only ever written while holding the lock,
@@ -363,25 +375,49 @@ func poll_runtime_pollReset(pd *pollDesc, mode int) int {
 // according to mode, which is 'r' or 'w'.
 // This returns an error code; the codes are defined above.
 //
+// On wasm3 we replace the generic netpollblock loop (which would
+// gopark on the pd.rg/wg semaphore) with wasm3PollWait, which
+// suspends the goroutine via JSPI on AwaitFdReadable /
+// AwaitFdWritable. The JS side wakes the activation when the
+// host-side handle becomes ready (Node 'readable' / 'drain'
+// event) or when poll_runtime_pollUnblock calls WasmReady on
+// the stashed parkID (closing fd / deadline expiry). See
+// doc/wasm3-netpoll-design.md option A.
+//
 //go:linkname poll_runtime_pollWait internal/poll.runtime_pollWait
 func poll_runtime_pollWait(pd *pollDesc, mode int) int {
-	errcode := netpollcheckerr(pd, int32(mode))
-	if errcode != pollNoError {
-		return errcode
-	}
-	// As for now only Solaris, illumos, AIX and wasip1 use level-triggered IO.
-	if GOOS == "solaris" || GOOS == "illumos" || GOOS == "aix" || GOOS == "wasip1" {
-		netpollarm(pd, mode)
-	}
-	for !netpollblock(pd, int32(mode), false) {
-		errcode = netpollcheckerr(pd, int32(mode))
+	for {
+		errcode := netpollcheckerr(pd, int32(mode))
 		if errcode != pollNoError {
 			return errcode
 		}
-		// Can happen if timeout has fired and unblocked us,
-		// but before we had a chance to run, timeout has been reset.
-		// Pretend it has not happened and retry.
+		errcode = wasm3PollWait(pd, int32(mode))
+		if errcode != pollNoError {
+			return errcode
+		}
+		// Edge-triggered AwaitFd* returns when the JS side fires
+		// the readable/writable flag — recheck with the syscall
+		// retry loop above. If wasm3PollWait was woken via
+		// WasmReady (cancellation), the next netpollcheckerr
+		// catches the closing/deadline state.
+		return pollNoError
 	}
+}
+
+// wasm3PollWait suspends the calling goroutine until pd's fd is
+// ready in the requested mode, or until poll_runtime_pollUnblock
+// fires the stashed parkID for cancellation. Returns pollNoError
+// on a wake; the caller (poll_runtime_pollWait) re-checks for
+// closing/deadline state after we return.
+func wasm3PollWait(pd *pollDesc, mode int32) int {
+	parkID := wasm.MintParkID()
+	pd.wasm3ParkID = parkID
+	if mode == 'r' {
+		wasm.AwaitFdReadable(int32(pd.fd), parkID)
+	} else {
+		wasm.AwaitFdWritable(int32(pd.fd), parkID)
+	}
+	pd.wasm3ParkID = 0
 	return pollNoError
 }
 
@@ -495,7 +531,18 @@ func poll_runtime_pollUnblock(pd *pollDesc) {
 		pd.wt.stop()
 		pd.wrun = false
 	}
+	// wasm3 path: if a wasm3PollWait is currently suspended on
+	// this pd's parkID, wake it via WasmReady. The unified
+	// parkResolvers map (shared with WasmPark) routes the wake
+	// straight to the JSPI-suspended AwaitFd* activation. The
+	// awakened goroutine re-enters poll_runtime_pollWait's loop,
+	// netpollcheckerr observes pd.closing=true (set above), and
+	// it returns pollErrClosing. parkID 0 = no wait pending.
+	pid := pd.wasm3ParkID
 	unlock(&pd.lock)
+	if pid != 0 {
+		wasm.WasmReady(pid)
+	}
 	if rg != nil {
 		netpollgoready(rg, 3)
 	}

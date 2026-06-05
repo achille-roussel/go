@@ -4538,6 +4538,18 @@ func wasm3FieldValueNeedsRefCast(t *types.Type) bool {
 	if t.IsPtr() && t.Elem() != nil && (t.Elem().IsStruct() || t.Elem().IsArray()) {
 		return true
 	}
+	// *scalar (e.g. *uint32, *int64) lowers to (ref $go.ptr.poly.<class>)
+	// via the polyptr scheme — a typed ref that's distinct from anyref.
+	// FieldSet of a *scalar value (sitting in an anyref local) into a
+	// polyptr-typed field needs the narrowing ref.cast, same as the
+	// *struct / *array cases above. Surfaces at runtime.semaWaiters.addr =
+	// addr (the addr field is typed *uint32 → $go.ptr.poly.i64).
+	if t.IsPtr() && t.Elem() != nil {
+		elem := t.Elem()
+		if (elem.IsInteger() || elem.IsBoolean() || elem.IsFloat()) && elem.Size() > 0 {
+			return true
+		}
+	}
 	// func / map / chan fields lower to (ref null TypeGoObject) per
 	// lowerFieldsImpl's TFUNC/TMAP/TCHAN case; the SSA value lives in
 	// an anyref local, so the same anyref→(ref null TypeGoObject)
@@ -4577,6 +4589,14 @@ func wasm3RefSlotTypeIdx(fi *obj.FuncInfo, t *types.Type) uint32 {
 		}
 		if elem.IsArray() {
 			return wasm3RegisterArrayBacking(fi, elem.Elem())
+		}
+		// *scalar polyptr: resolve via wasm3InteriorPtrClass which
+		// returns the $go.ptr.poly.<class> wasm type index. The
+		// SSA value is a typed ref to that polyptr struct.
+		if elem.IsInteger() || elem.IsBoolean() || elem.IsFloat() {
+			wasm3EnsureCollector(fi)
+			polyIdx, _, _, _, _ := wasm3InteriorPtrClass(elem)
+			return polyIdx
 		}
 	}
 	if t.IsString() {

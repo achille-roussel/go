@@ -2289,10 +2289,25 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// now so each branch below can emit it after its terminal
 		// struct.get / array.get.
 		needsExtend := wasm3FieldGetNeedsI64Extend(v.Type)
-		getValue64(s, v.Args[0])
-		// The base (*struct) is an anyref local under the pointer-
-		// representation cutover; ref.cast to (ref $go.struct.T) before
-		// struct.get, which rejects the anyref supertype.
+		// Source base ptr: for a heap-allocated *T the per-value
+		// local is anyref, and getValue64 + ref.cast just narrows
+		// the supertype. For a LoweredAddr {LSym} the per-value
+		// local is i64 (linear-memory address); ref.cast on an i64
+		// fails wasm validation. Substitute the i64 emission with a
+		// drop + global.get of the descriptor or boxed-var
+		// counterpart so ref.cast sees an anyref. Same trick that
+		// OpWasm3IfaceMake's emitWord, the call-arg passing path,
+		// and OpWasm3I64Eq already use; this consumer is what was
+		// missing for runtime accesses like sched.sudoglock
+		// (`LoweredAddr {runtime.sched}` → struct.get sudoglock).
+		if !wasm3MaybeEmitLoweredAddrAsRef(s, v.Args[0]) {
+			getValue64(s, v.Args[0])
+		}
+		// The base (*struct) is now an anyref on the wasm stack —
+		// either from getValue64 over an anyref-typed local, or
+		// from the global.get we just emitted. ref.cast to (ref
+		// $go.struct.T) narrows it for struct.get, which rejects
+		// the anyref supertype.
 		pCast := s.Prog(wasm.ARefCast)
 		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
 		if fwidx, boxIdx, comp, ok := wasm3BoxedComponentAtOffset(s, st, v.AuxInt, 0); ok {
@@ -3613,6 +3628,44 @@ func wasm3IsTypeDescriptorSym(sym *obj.LSym) bool {
 	name := sym.Name
 	return strings.HasPrefix(name, "type:") ||
 		strings.HasPrefix(name, "go:itab.")
+}
+
+// wasm3MaybeEmitLoweredAddrAsRef checks whether a is an
+// OpWasm3LoweredAddr {LSym} and, if so, emits the appropriate
+// "load the descriptor/var as an anyref" sequence — `drop +
+// global.get $sym` marked Wasm3DescriptorRef or Wasm3GlobalRef
+// depending on the LSym class — and returns true. The drop
+// consumes the LoweredAddr's i64 emission to keep the
+// OnWasmStack accounting balanced; the global.get pushes the
+// anyref the caller wants.
+//
+// Returns false (no emission) if a isn't a usable LoweredAddr +
+// LSym pair; the caller falls back to plain getValue64.
+//
+// This is the consolidation of the LoweredAddr-as-ref trick that
+// previously lived inline in OpWasm3IfaceMake's emitWord, the
+// call-arg passing path for typed-ref params, the OpWasm3I64Eq
+// type-assert path, and several others. As of the acquireSudog
+// fix it also fires from OpWasm3FieldGet (and any other ref-
+// expecting consumer of LoweredAddr).
+func wasm3MaybeEmitLoweredAddrAsRef(s *ssagen.State, a *ssa.Value) bool {
+	if a.Op != ssa.OpWasm3LoweredAddr {
+		return false
+	}
+	sym, ok := a.Aux.(*obj.LSym)
+	if !ok {
+		return false
+	}
+	getValue64(s, a)
+	s.Prog(wasm.ADrop)
+	pGet := s.Prog(wasm.AGlobalGet)
+	pGet.From = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: sym}
+	if wasm3IsTypeDescriptorSym(sym) {
+		pGet.Mark = wasm.Wasm3DescriptorRef
+	} else {
+		pGet.Mark = wasm.Wasm3GlobalRef
+	}
+	return true
 }
 
 // isNarrowWasmField reports whether a wasm field is carried in an i32

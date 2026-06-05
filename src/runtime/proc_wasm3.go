@@ -511,18 +511,17 @@ func goparkunlock(lock *mutex, reason waitReason, traceReason traceBlockReason, 
 //
 //go:linkname goready
 func goready(gp *g, traceskip int) {
-	if goos.IsJs == 1 && goarch.IsWasm3 == 1 {
-		// js/wasm3: goready(gp, ...) reaches us only from non-
-		// chan/select paths (chan and select call wasm3Goready
-		// directly with the sudog). gp.wasm3ParkID is set by the
-		// per-g scheduler scaffolding once that lands; until
-		// then, this path is unreachable for the working chan/
-		// select cases and traps to surface unexpected callers.
-		throw("goready: unexpected non-chan/select caller on js/wasm3")
-	}
-	systemstack(func() {
-		ready(gp, traceskip, true)
-	})
+	// Unconditional trap on wasm3: chan/select paths call
+	// wasm3Goready directly with the sudog they own; other
+	// callers (timers, finalizers, network poll) would arrive
+	// here, but none of those subsystems are wired on wasm3
+	// today. Keeping the body as a plain throw — no post-throw
+	// systemstack(func) — avoids emitting the closure-build SSA
+	// (OpWasm3MakeClosureRef of a *g-capturing closure trips a
+	// value-classification path that ref.casts an i64 local).
+	_ = gp
+	_ = traceskip
+	throw("goready: unexpected caller on js/wasm3 (chan/select use wasm3Goready directly)")
 }
 
 //go:nosplit

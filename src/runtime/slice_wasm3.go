@@ -36,18 +36,25 @@ type slice struct {
 	cap   int
 }
 
-// growslice is the runtime helper that backs append() when the
-// existing backing's capacity is insufficient. On wasm3 the
-// compiler intrinsifies append() to a direct (array.new_default,
-// array.copy, struct.new $go.slice) sequence on the WasmGC
-// backing, so growslice should be unreachable. It still has to
-// be linkable, though — internal/bisect (and a handful of other
-// stdlib spots) emit a call to growslice from append patterns
-// the wasm3 intrinsifier doesn't currently catch. Trap with a
-// clear message; the caller can be intrinsified later.
-func growslice(oldPtr unsafe.Pointer, newLen, oldCap, num int, et *_type) slice {
-	throw("runtime.growslice not yet implemented on wasm3 (append() should intrinsify to array.new_default + array.copy)")
-	return slice{}
+// growslice is unreachable on wasm3: appendSlice in
+// cmd/compile/internal/ssagen emits OpWasm3MakeSlice +
+// OpWasm3ArrayCopy inline instead of calling this function
+// (commit fb46a62080). The symbol must still link though —
+// runtime references it via ir.Syms.Growslice for relocation
+// purposes even when no SSA edge reaches it.
+//
+// The body explicitly constructs a zero slice header before the
+// throw rather than relying on `return slice{}`. The runtime.slice
+// return type lowers to a 3-result wasm signature
+// (anyref, i64, i64) per flatPrimitiveFields's TSTRUCT recursion;
+// the SSA codegen for `return slice{}` produces only one boxed-
+// slice value, mismatching the signature with "expected 3
+// elements on the stack for return, found 1". The named-return
+// form sidesteps that path: each component lives in its own
+// local that the function epilogue pushes individually.
+func growslice(oldPtr unsafe.Pointer, newLen, oldCap, num int, et *_type) (data unsafe.Pointer, len, cap int) {
+	throw("runtime.growslice unreachable on wasm3 — append() is intrinsified to wasmgc array.new_default + array.copy")
+	return
 }
 
 // slicecopy is verbatim from slice.go. Used by mbarrier.go's

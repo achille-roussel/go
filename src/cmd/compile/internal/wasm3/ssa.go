@@ -907,6 +907,43 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			}
 			break
 		}
+		// Nested-struct write: mirror of the FieldGet nested path
+		// (see comment there). `schedt.lock.key = v` no longer reaches
+		// key's i32 via a single struct.set on a flattened box — lock
+		// is now (ref $go.box.mutex), so we walk struct.get +
+		// ref.cast chains down to the leaf's parent box, then
+		// struct.set the leaf field. The inner-box mutate is shared
+		// state (ref semantics), which is what we want for nested
+		// struct fields under the de-flattening model.
+		if path, leafField, ok := wasm3NestedStructPath(s, st, v.AuxInt); ok {
+			getValue64(s, v.Args[0])
+			pCast := s.Prog(wasm.ARefCast)
+			pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
+			pTop := s.Prog(wasm.AStructGet)
+			pTop.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
+			pTop.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(path[0].fieldIdx)}
+			for i := 0; i < len(path)-1; i++ {
+				pCastN := s.Prog(wasm.ARefCast)
+				pCastN.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(path[i].boxIdx)}
+				pNext := s.Prog(wasm.AStructGet)
+				pNext.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(path[i].boxIdx)}
+				pNext.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(path[i+1].fieldIdx)}
+			}
+			leafBoxIdx := path[len(path)-1].boxIdx
+			pCastLeaf := s.Prog(wasm.ARefCast)
+			pCastLeaf.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(leafBoxIdx)}
+			getValue64(s, v.Args[1])
+			if needsNarrow {
+				s.Prog(wasm.AI32WrapI64)
+			} else if refCastTo >= 0 {
+				pRefCast := s.Prog(wasm.ARefCastNull)
+				pRefCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: refCastTo}
+			}
+			pset := s.Prog(wasm.AStructSet)
+			pset.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(leafBoxIdx)}
+			pset.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(leafField)}
+			break
+		}
 		fieldIdx := wasm3FieldIndexAtOffset(s.FuncInfo(), st, v.AuxInt)
 		if fieldIdx < 0 {
 			// Sub-field byte offset (no wasm3 lowering). Drop the
@@ -2310,6 +2347,23 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 		// the anyref supertype.
 		pCast := s.Prog(wasm.ARefCast)
 		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
+		// Rung 34 "stop at inner box": if the result type is a pointer
+		// to a struct (`*T` where T is a struct), and the byte offset
+		// lands at the start of a top-level struct-typed field of st,
+		// the field IS the *T value the caller wants — emit one
+		// struct.get and stop. Without this short-circuit the nested-
+		// struct path below would drill INTO the inner box and read its
+		// leaf scalar, mismatching the anyref result local. The pattern
+		// surfaces at every `lock(&sched.fooLock)` / `&g.someStruct`
+		// site in the runtime.
+		if v.Type.IsPtr() && v.Type.Elem() != nil && v.Type.Elem().IsStruct() {
+			if fieldIdx := wasm3FieldIndexAtOffset(s.FuncInfo(), st, v.AuxInt); fieldIdx >= 0 {
+				p := s.Prog(wasm.AStructGet)
+				p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
+				p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(fieldIdx)}
+				break
+			}
+		}
 		if fwidx, boxIdx, comp, ok := wasm3BoxedComponentAtOffset(s, st, v.AuxInt, 0); ok {
 			// The offset lands inside a boxed slice/string/interface field
 			// (e.g. a slice field's len/cap): struct.get the boxed header

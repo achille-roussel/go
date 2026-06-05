@@ -2992,96 +2992,25 @@ func mspinning() {
 // Must not have write barriers because this may be called without a P.
 //
 //go:nowritebarrierrec
+// startm on wasm3 is a no-op. The full proc.go startm allocates
+// an OS thread (newm) or wakes an idle one (notewakeup of nmp.park)
+// to drive Go scheduling. wasm3 has exactly one M that the JS
+// event loop drives via JSPI — there is no second thread to
+// start, no idle M parked on a futex, and no nmspinning gating to
+// preserve. Callers (wakep, handoffp, sysmon's startm-on-no-G
+// path) all assume the side-effect of "an M will eventually run
+// a goroutine"; on wasm3 that side-effect is provided by JSPI
+// promise resolution from wasm3Goready, not by this function.
+//
+// Lock-handoff convention: callers pass lockheld=true when they
+// already hold sched.lock and expect it to stay held; we honour
+// that by not touching the lock here either. acquirem/releasem
+// is still done so callers using `defer releasem(...)` style
+// elsewhere don't accidentally rely on side effects of this call.
 func startm(pp *p, spinning, lockheld bool) {
-	// Disable preemption.
-	//
-	// Every owned P must have an owner that will eventually stop it in the
-	// event of a GC stop request. startm takes transient ownership of a P
-	// (either from argument or pidleget below) and transfers ownership to
-	// a started M, which will be responsible for performing the stop.
-	//
-	// Preemption must be disabled during this transient ownership,
-	// otherwise the P this is running on may enter GC stop while still
-	// holding the transient P, leaving that P in limbo and deadlocking the
-	// STW.
-	//
-	// Callers passing a non-nil P must already be in non-preemptible
-	// context, otherwise such preemption could occur on function entry to
-	// startm. Callers passing a nil P may be preemptible, so we must
-	// disable preemption before acquiring a P from pidleget below.
-	mp := acquirem()
-	if !lockheld {
-		lock(&sched.lock)
-	}
-	if pp == nil {
-		if spinning {
-			// TODO(prattmic): All remaining calls to this function
-			// with _p_ == nil could be cleaned up to find a P
-			// before calling startm.
-			throw("startm: P required for spinning=true")
-		}
-		pp, _ = pidleget(0)
-		if pp == nil {
-			if !lockheld {
-				unlock(&sched.lock)
-			}
-			releasem(mp)
-			return
-		}
-	}
-	nmp := mget()
-	if nmp == nil {
-		// No M is available, we must drop sched.lock and call newm.
-		// However, we already own a P to assign to the M.
-		//
-		// Once sched.lock is released, another G (e.g., in a syscall),
-		// could find no idle P while checkdead finds a runnable G but
-		// no running M's because this new M hasn't started yet, thus
-		// throwing in an apparent deadlock.
-		// This apparent deadlock is possible when startm is called
-		// from sysmon, which doesn't count as a running M.
-		//
-		// Avoid this situation by pre-allocating the ID for the new M,
-		// thus marking it as 'running' before we drop sched.lock. This
-		// new M will eventually run the scheduler to execute any
-		// queued G's.
-		id := mReserveID()
-		unlock(&sched.lock)
-
-		var fn func()
-		if spinning {
-			// The caller incremented nmspinning, so set m.spinning in the new M.
-			fn = mspinning
-		}
-		newm(fn, pp, id)
-
-		if lockheld {
-			lock(&sched.lock)
-		}
-		// Ownership transfer of pp committed by start in newm.
-		// Preemption is now safe.
-		releasem(mp)
-		return
-	}
-	if !lockheld {
-		unlock(&sched.lock)
-	}
-	if nmp.spinning {
-		throw("startm: m is spinning")
-	}
-	if nmp.nextp != noP {
-		throw("startm: m has p")
-	}
-	if spinning && !runqempty(pp) {
-		throw("startm: p has runnable gs")
-	}
-	// The caller incremented nmspinning, so set m.spinning in the new M.
-	nmp.spinning = spinning
-	nmp.nextp.set(pp)
-	notewakeup(&nmp.park)
-	// Ownership transfer of pp committed by wakeup. Preemption is now
-	// safe.
-	releasem(mp)
+	_ = pp
+	_ = spinning
+	_ = lockheld
 }
 
 // Hands off P from syscall or locked M.

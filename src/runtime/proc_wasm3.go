@@ -3217,58 +3217,21 @@ func gcstopm() {
 // acquiring a P in several places.
 //
 //go:yeswritebarrierrec
+// execute on wasm3 is unreachable in practice: the standard
+// schedule() → execute(gp) → gogo(&gp.sched) loop is the
+// stack-switch mechanism for OS-thread goroutines, and wasm3
+// goroutines are driven by JSPI promise resolution instead
+// (wasm3Goready resolves the suspended-import the parked g is
+// waiting on; the JS event loop dispatches). schedule()
+// reaches us only from a handful of system-stack code paths
+// (park_m, goexit0, ...) that never run under JSPI because
+// chan/select/runtime.Gosched all use the wasm3-native park
+// machinery instead. Trap if it does run to surface unexpected
+// callers; the body must remain linkable.
 func execute(gp *g, inheritTime bool) {
-	mp := getg().m
-
-	if goroutineProfile.active {
-		// Make sure that gp has had its stack written out to the goroutine
-		// profile, exactly as it was when the goroutine profiler first stopped
-		// the world.
-		tryRecordGoroutineProfile(gp, nil, osyield)
-	}
-
-	// Assign gp.m before entering _Grunning so running Gs have an M.
-	mp.curg = gp
-	gp.m = mp
-	gp.syncSafePoint = false // Clear the flag, which may have been set by morestack.
-	casgstatus(gp, _Grunnable, _Grunning)
-	gp.waitsince = 0
-	gp.preempt = false
-	gp.stackguard0 = gp.stack.lo + stackGuard
-	if !inheritTime {
-		mp.p.ptr().schedtick++
-	}
-
-	if sys.DITSupported && debug.dataindependenttiming != 1 {
-		if gp.ditWanted && !mp.ditEnabled {
-			// The current M doesn't have DIT enabled, but the goroutine we're
-			// executing does need it, so turn it on.
-			sys.EnableDIT()
-			mp.ditEnabled = true
-		} else if !gp.ditWanted && mp.ditEnabled {
-			// The current M has DIT enabled, but the goroutine we're executing does
-			// not need it, so turn it off.
-			// NOTE: turning off DIT here means that the scheduler will have DIT enabled
-			// when it runs after this goroutine yields or is preempted. This may have
-			// a minor performance impact on the scheduler.
-			sys.DisableDIT()
-			mp.ditEnabled = false
-		}
-	}
-
-	// Check whether the profiler needs to be turned on or off.
-	hz := sched.profilehz
-	if mp.profilehz != hz {
-		setThreadCPUProfiler(hz)
-	}
-
-	trace := traceAcquire()
-	if trace.ok() {
-		trace.GoStart()
-		traceRelease(trace)
-	}
-
-	gogo(&gp.sched)
+	_ = gp
+	_ = inheritTime
+	throw("runtime.execute: unexpected call on js/wasm3 (JSPI drives execution)")
 }
 
 // Finds a runnable goroutine to execute.
@@ -4019,104 +3982,17 @@ func injectglist(glist *gList) {
 	wakep()
 }
 
-// One round of scheduler: find a runnable goroutine and execute it.
-// Never returns.
+// schedule on wasm3 is unreachable in practice. The standard
+// runtime schedule loop (findRunnable → execute → gogo)
+// dispatches work to OS threads on conventional platforms; wasm3
+// dispatches via JSPI promise resolution and the JS event loop,
+// so the wasm activation never enters this loop. Trap if it does
+// run to surface unexpected callers (the function still has to
+// be linkable since proc_wasm3.go imports and references it from
+// park_m / goexit0 / gosched_m / etc., which are themselves
+// unreachable under JSPI for the same reason).
 func schedule() {
-	mp := getg().m
-
-	if mp.locks != 0 {
-		throw("schedule: holding locks")
-	}
-
-	if mp.lockedg != noG {
-		stoplockedm()
-		execute(mp.lockedg.ptr(), false) // Never returns.
-	}
-
-	// We should not schedule away from a g that is executing a cgo call,
-	// since the cgo call is using the m's g0 stack.
-	if mp.incgo {
-		throw("schedule: in cgo")
-	}
-
-top:
-	pp := mp.p.ptr()
-	pp.preempt = false
-
-	// Safety check: if we are spinning, the run queue should be empty.
-	// Check this before calling checkTimers, as that might call
-	// goready to put a ready goroutine on the local run queue.
-	if mp.spinning && (pp.runnext != noG || pp.runqhead != pp.runqtail) {
-		throw("schedule: spinning with local work")
-	}
-
-	gp, inheritTime, tryWakeP := findRunnable() // blocks until work is available
-
-	// May be on a new P.
-	pp = mp.p.ptr()
-
-	// findRunnable may have collected an allp snapshot. The snapshot is
-	// only required within findRunnable. Clear it to all GC to collect the
-	// slice.
-	mp.clearAllpSnapshot()
-
-	// If the P was assigned a next GC mark worker but findRunnable
-	// selected anything else, release the worker so another P may run it.
-	//
-	// N.B. If this occurs because a higher-priority goroutine was selected
-	// (trace reader), then tryWakeP is set, which will wake another P to
-	// run the worker. If this occurs because the GC is no longer active,
-	// there is no need to wakep.
-	gcController.releaseNextGCMarkWorker(pp)
-
-	if debug.dontfreezetheworld > 0 && freezing.Load() {
-		// See comment in freezetheworld. We don't want to perturb
-		// scheduler state, so we didn't gcstopm in findRunnable, but
-		// also don't want to allow new goroutines to run.
-		//
-		// Deadlock here rather than in the findRunnable loop so if
-		// findRunnable is stuck in a loop we don't perturb that
-		// either.
-		lock(&deadlock)
-		lock(&deadlock)
-	}
-
-	// This thread is going to run a goroutine and is not spinning anymore,
-	// so if it was marked as spinning we need to reset it now and potentially
-	// start a new spinning M.
-	if mp.spinning {
-		resetspinning()
-	}
-
-	if sched.disable.user && !schedEnabled(gp) {
-		// Scheduling of this goroutine is disabled. Put it on
-		// the list of pending runnable goroutines for when we
-		// re-enable user scheduling and look again.
-		lock(&sched.lock)
-		if schedEnabled(gp) {
-			// Something re-enabled scheduling while we
-			// were acquiring the lock.
-			unlock(&sched.lock)
-		} else {
-			sched.disable.runnable.pushBack(gp)
-			unlock(&sched.lock)
-			goto top
-		}
-	}
-
-	// If about to schedule a not-normal goroutine (a GCworker or tracereader),
-	// wake a P if there is one.
-	if tryWakeP {
-		wakep()
-	}
-	if gp.lockedm != noM {
-		// Hands off own p to the locked m,
-		// then blocks waiting for a new p.
-		startlockedm(gp)
-		goto top
-	}
-
-	execute(gp, inheritTime)
+	throw("runtime.schedule: unexpected call on js/wasm3 (JSPI drives execution)")
 }
 
 // dropg removes the association between m and the current goroutine m->curg (gp for short).

@@ -1010,24 +1010,15 @@ func dumpgstatus(gp *g) {
 	print("runtime: getg:  g=", thisg, ", goid=", thisg.goid, ",  g->atomicstatus=", readgstatus(thisg), "\n")
 }
 
-// sched.lock must be held.
-func checkmcount() {
-	assertLockHeld(&sched.lock)
-
-	// Exclude extra M's, which are used for cgocallback from threads
-	// created in C.
-	//
-	// The purpose of the SetMaxThreads limit is to avoid accidental fork
-	// bomb from something like millions of goroutines blocking on system
-	// calls, causing the runtime to create millions of threads. By
-	// definition, this isn't a problem for threads created in C, so we
-	// exclude them from the limit. See https://go.dev/issue/60004.
-	count := mcount() - int32(extraMInUse.Load()) - int32(extraMLength.Load())
-	if count > sched.maxmcount {
-		print("runtime: program exceeds ", sched.maxmcount, "-thread limit\n")
-		throw("thread exhaustion")
-	}
-}
+// checkmcount is a no-op on wasm3: the runtime is single-threaded
+// (one M for the JSPI-based scheduler, no real OS threads), so
+// mcount() can never exceed maxmcount and the SetMaxThreads
+// fork-bomb guard has nothing to guard against. Stubbing avoids
+// the address-of-sched-scalar codegen path (&sched.maxmcount
+// builds a $go.ptr.poly.i64 whose `base` field needs an anyref;
+// the SSA value for sched is classified i64 in this context,
+// tripping wasm validation).
+func checkmcount() {}
 
 // mReserveID returns the next ID to use for a new m. This new m is immediately
 // considered 'running' by checkdead.

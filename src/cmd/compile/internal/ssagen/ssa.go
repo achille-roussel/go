@@ -4546,6 +4546,50 @@ func (s *state) append(n *ir.CallExpr, inplace bool) *ssa.Value {
 			fn = ir.Syms.GrowsliceBufNoAlias
 		}
 		r = s.rtcall(fn, true, []*types.Type{n.Type()}, p, l, c, nargs, taddr, s.addr(info.store), s.constInt(types.Types[types.TINT], info.K))
+	} else if buildcfg.GOARCH == "wasm3" {
+		// wasm3 intrinsifies append() end-to-end: allocate a fresh
+		// wasmgc backing of size newCap, array.copy the existing
+		// oldCap elements into it, and synthesize the new slice
+		// header via OpSliceMake. runtime.growslice is never called
+		// — its wasm signature would multi-return (anyref, i64, i64)
+		// for the runtime.slice header while the caller's per-value
+		// local is a single boxed (ref $go.slice.<T>), and the two
+		// shapes don't reconcile through the standard call ABI.
+		//
+		// Growth heuristic: newCap = max(newLen, 2 * oldCap). WasmGC
+		// manages allocations; Go's runtime size-class lookup is
+		// unnecessary here. The Select lowering picks the larger of
+		// the two without an extra control-flow block.
+		// Growth heuristic kept trivial: newCap = newLen. WasmGC
+		// manages allocation efficiently and the wasm3 SSA backend
+		// rejects OLSH/OGT/OMUL on INT64 in the contexts this path
+		// reaches (e.g. rtcov.AddMeta), so a `max(newLen, 2*oldCap)`
+		// computation isn't expressible here without backend
+		// extensions. The trade-off is per-grow allocation instead
+		// of amortised doubling — acceptable for the M2/M3 cutover
+		// and revisitable once the wasm3 backend lifts the op gaps.
+		newCap := l
+		// Allocate the fresh backing. OpWasm3MakeSlice's lowering
+		// sizes the array by Args[1] (cap); Args[0] (len) is unused
+		// by the allocation but kept for shape consistency with the
+		// makeslice intrinsic.
+		newArr := s.newValue3A(ssa.OpWasm3MakeSlice, types.Types[types.TUNSAFEPTR], n.Type(), l, newCap, s.mem())
+		// Copy the oldCap (c) elements from the old backing into
+		// the new one. OpWasm3ArrayCopy returns the updated mem.
+		s.vars[memVar] = s.newValue4A(ssa.OpWasm3ArrayCopy, types.TypeMem, n.Type(), newArr, p, c, s.mem())
+		// Set p/l/c directly to the freshly-allocated array ref +
+		// new len/cap. Don't go through OpSliceMake / r[0]
+		// decompose — the SliceMake-to-StructNew Wasm3.rules rewrite
+		// would box the slice header, and the subsequent
+		// OpSlicePtr's struct.get would yield an anyref that the
+		// append-element-write pointer-arithmetic path can't lower
+		// to ArraySet. Using newArr directly keeps the data pointer
+		// in MakeSlice-derived shape that Wasm3.rules' I64Store +
+		// I64Add(MakeSlice, idx<<k) pattern rewrites to ArraySet.
+		p = newArr
+		c = newCap
+		// l stays as newLen (the in-scope l).
+		r = nil // signal to skip the decompose path below
 	} else {
 		fn := ir.Syms.Growslice
 		if goexperiment.RuntimeFreegc && n.AppendNoAlias && !et.HasPointers() {
@@ -4558,10 +4602,13 @@ func (s *state) append(n *ir.CallExpr, inplace bool) *ssa.Value {
 		r = s.rtcall(fn, true, []*types.Type{n.Type()}, p, l, c, nargs, taddr)
 	}
 
-	// Decompose output slice
-	p = s.newValue1(ssa.OpSlicePtr, pt, r[0])
-	l = s.newValue1(ssa.OpSliceLen, types.Types[types.TINT], r[0])
-	c = s.newValue1(ssa.OpSliceCap, types.Types[types.TINT], r[0])
+	// Decompose output slice. wasm3's growslice intrinsic above
+	// set p/l/c directly; r is nil there so skip.
+	if r != nil {
+		p = s.newValue1(ssa.OpSlicePtr, pt, r[0])
+		l = s.newValue1(ssa.OpSliceLen, types.Types[types.TINT], r[0])
+		c = s.newValue1(ssa.OpSliceCap, types.Types[types.TINT], r[0])
+	}
 
 	s.vars[ptrVar] = p
 	s.vars[lenVar] = l

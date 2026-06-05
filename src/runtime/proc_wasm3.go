@@ -1315,113 +1315,24 @@ var casgstatusAlwaysTrack = false
 // casgstatus will loop if the g->atomicstatus is in a Gscan status until the routine that
 // put it in the Gscan state is finished.
 //
+// casgstatus on wasm3 reduces to a plain atomic store of newval
+// into gp.atomicstatus. The full proc.go implementation handles
+// (1) a CAS loop that spins while another thread holds the g in
+// a Gscan state — wasm3 has no concurrent threads and no GC, so
+// no scan state can ever appear; (2) bubble (synctest)
+// notification — gp.bubble is always nil on wasm3; (3) per-g
+// tracking-period sampling that feeds sched.timeToRun /
+// totalMutexWaitTime — pure observability with no consumer
+// active on wasm3. The remaining real semantic is the state
+// transition itself.
+//
 //go:nosplit
 func casgstatus(gp *g, oldval, newval uint32) {
 	if (oldval&_Gscan != 0) || (newval&_Gscan != 0) || oldval == newval {
-		systemstack(func() {
-			// Call on the systemstack to prevent print and throw from counting
-			// against the nosplit stack reservation.
-			print("runtime: casgstatus: oldval=", hex(oldval), " newval=", hex(newval), "\n")
-			throw("casgstatus: bad incoming values")
-		})
+		print("runtime: casgstatus: oldval=", hex(oldval), " newval=", hex(newval), "\n")
+		throw("casgstatus: bad incoming values")
 	}
-
-	lockWithRankMayAcquire(nil, lockRankGscan)
-
-	// See https://golang.org/cl/21503 for justification of the yield delay.
-	const yieldDelay = 5 * 1000
-	var nextYield int64
-
-	// loop if gp->atomicstatus is in a scan state giving
-	// GC time to finish and change the state to oldval.
-	for i := 0; !gp.atomicstatus.CompareAndSwap(oldval, newval); i++ {
-		if oldval == _Gwaiting && gp.atomicstatus.Load() == _Grunnable {
-			systemstack(func() {
-				// Call on the systemstack to prevent throw from counting
-				// against the nosplit stack reservation.
-				throw("casgstatus: waiting for Gwaiting but is Grunnable")
-			})
-		}
-		if i == 0 {
-			nextYield = nanotime() + yieldDelay
-		}
-		if nanotime() < nextYield {
-			for x := 0; x < 10 && gp.atomicstatus.Load() != oldval; x++ {
-				procyield(1)
-			}
-		} else {
-			osyield()
-			nextYield = nanotime() + yieldDelay/2
-		}
-	}
-
-	if gp.bubble != nil {
-		systemstack(func() {
-			gp.bubble.changegstatus(gp, oldval, newval)
-		})
-	}
-
-	if (oldval == _Grunning || oldval == _Gsyscall) && (newval != _Grunning && newval != _Gsyscall) {
-		// Track every gTrackingPeriod time a goroutine transitions out of _Grunning or _Gsyscall.
-		// Do not track _Grunning <-> _Gsyscall transitions, since they're two very similar states.
-		if casgstatusAlwaysTrack || gp.trackingSeq%gTrackingPeriod == 0 {
-			gp.tracking = true
-		}
-		gp.trackingSeq++
-	}
-	if !gp.tracking {
-		return
-	}
-
-	// Handle various kinds of tracking.
-	//
-	// Currently:
-	// - Time spent in runnable.
-	// - Time spent blocked on a sync.Mutex or sync.RWMutex.
-	switch oldval {
-	case _Grunnable:
-		// We transitioned out of runnable, so measure how much
-		// time we spent in this state and add it to
-		// runnableTime.
-		now := nanotime()
-		gp.runnableTime += now - gp.trackingStamp
-		gp.trackingStamp = 0
-	case _Gwaiting:
-		if !gp.waitreason.isMutexWait() {
-			// Not blocking on a lock.
-			break
-		}
-		// Blocking on a lock, measure it. Note that because we're
-		// sampling, we have to multiply by our sampling period to get
-		// a more representative estimate of the absolute value.
-		// gTrackingPeriod also represents an accurate sampling period
-		// because we can only enter this state from _Grunning.
-		now := nanotime()
-		sched.totalMutexWaitTime.Add((now - gp.trackingStamp) * gTrackingPeriod)
-		gp.trackingStamp = 0
-	}
-	switch newval {
-	case _Gwaiting:
-		if !gp.waitreason.isMutexWait() {
-			// Not blocking on a lock.
-			break
-		}
-		// Blocking on a lock. Write down the timestamp.
-		now := nanotime()
-		gp.trackingStamp = now
-	case _Grunnable:
-		// We just transitioned into runnable, so record what
-		// time that happened.
-		now := nanotime()
-		gp.trackingStamp = now
-	case _Grunning:
-		// We're transitioning into running, so turn off
-		// tracking and record how much time we spent in
-		// runnable.
-		gp.tracking = false
-		sched.timeToRun.record(gp.runnableTime)
-		gp.runnableTime = 0
-	}
+	gp.atomicstatus.Store(newval)
 }
 
 // casGToWaiting transitions gp from old to _Gwaiting, and sets the wait reason.

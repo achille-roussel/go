@@ -4672,13 +4672,39 @@ func (s *state) append(n *ir.CallExpr, inplace bool) *ssa.Value {
 
 	// Write args into slice.
 	oldLen = s.newValue2(s.ssaOp(ir.OSUB, types.Types[types.TINT]), types.Types[types.TINT], l, nargs)
-	p2 := s.newValue2(ssa.OpPtrIndex, pt, p, oldLen)
-	for i, arg := range args {
-		addr := s.newValue2(ssa.OpPtrIndex, pt, p2, s.constInt(types.Types[types.TINT], int64(i)))
-		if arg.store {
-			s.storeType(et, addr, arg.v, 0, true)
-		} else {
-			s.move(et, addr, arg.v)
+	if buildcfg.GOARCH == "wasm3" {
+		// wasm3: lower element-writes to OpWasm3ArraySet directly
+		// rather than OpPtrIndex + I64Store. The latter relies on
+		// the Wasm3 rule `I64Store [off] (I64Add MakeSlice (I64Shl
+		// idx (I64Const [k]))) val mem => ArraySet`, which matches
+		// only when the data pointer is the live OpWasm3MakeSlice
+		// value — but the inplace block above stores the slice
+		// header first, materialising p into an anyref local; the
+		// subsequent element-write sees `local.get → I64Add` and
+		// no longer pattern-matches. Emitting ArraySet directly
+		// sidesteps the materialisation entirely. p (the data ref)
+		// is anyref-typed and the lowering ref.casts to (ref
+		// $go.array.<T>) before array.set.
+		intT := types.Types[types.TINT]
+		for i, arg := range args {
+			idx := s.newValue2(s.ssaOp(ir.OADD, intT), intT, oldLen, s.constInt(intT, int64(i)))
+			val := arg.v
+			if !arg.store {
+				// arg.v is the address of the value (*T); load
+				// the T before writing into the destination slot.
+				val = s.load(et, arg.v)
+			}
+			s.vars[memVar] = s.newValue4A(ssa.OpWasm3ArraySet, types.TypeMem, n.Type(), p, idx, val, s.mem())
+		}
+	} else {
+		p2 := s.newValue2(ssa.OpPtrIndex, pt, p, oldLen)
+		for i, arg := range args {
+			addr := s.newValue2(ssa.OpPtrIndex, pt, p2, s.constInt(types.Types[types.TINT], int64(i)))
+			if arg.store {
+				s.storeType(et, addr, arg.v, 0, true)
+			} else {
+				s.move(et, addr, arg.v)
+			}
 		}
 	}
 

@@ -821,7 +821,9 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		// extraction in internal/gover.Parse) — Reg() crashes in
 		// getValue64. Until that shape is understood, fire only for ifaces.
 		if fwidx, boxIdx, comp, ok := wasm3BoxedComponentAtOffset(s, st, v.AuxInt, 0); ok {
-			getValue64(s, v.Args[0])
+			if !wasm3MaybeEmitLoweredAddrAsRef(s, v.Args[0]) {
+				getValue64(s, v.Args[0])
+			}
 			pCast := s.Prog(wasm.ARefCast)
 			pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
 			pf := s.Prog(wasm.AStructGet)
@@ -858,7 +860,9 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			// (e.g. cache.Entries[0].Itab = v): struct.get the boxed array
 			// ref, array.get the static element (a boxed ref), then
 			// struct.set its field — mutating the shared element object.
-			getValue64(s, v.Args[0])
+			if !wasm3MaybeEmitLoweredAddrAsRef(s, v.Args[0]) {
+				getValue64(s, v.Args[0])
+			}
 			pCast := s.Prog(wasm.ARefCast)
 			pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
 			pf := s.Prog(wasm.AStructGet)
@@ -916,7 +920,9 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		// state (ref semantics), which is what we want for nested
 		// struct fields under the de-flattening model.
 		if path, leafField, ok := wasm3NestedStructPath(s, st, v.AuxInt); ok {
-			getValue64(s, v.Args[0])
+			if !wasm3MaybeEmitLoweredAddrAsRef(s, v.Args[0]) {
+				getValue64(s, v.Args[0])
+			}
 			pCast := s.Prog(wasm.ARefCast)
 			pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
 			pTop := s.Prog(wasm.AStructGet)
@@ -954,7 +960,9 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 			s.Prog(wasm.ADrop)
 			break
 		}
-		getValue64(s, v.Args[0])
+		if !wasm3MaybeEmitLoweredAddrAsRef(s, v.Args[0]) {
+			getValue64(s, v.Args[0])
+		}
 		pCast := s.Prog(wasm.ARefCast)
 		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
 		getValue64(s, v.Args[1])

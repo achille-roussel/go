@@ -2426,6 +2426,41 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 			}
 			break
 		}
+		// Nested-struct path: under Rung 34's de-flattening,
+		// `pt.u.v` for atomic.Bool{u Uint8} doesn't reach v's i8
+		// via a single struct.get on a flattened box — `u` is now a
+		// (ref null $go.box.Uint8) field, and v lives one struct.get
+		// deeper. wasm3NestedStructPath walks t.Fields() from
+		// v.AuxInt, returns the chain of (fieldIdx, boxType) pairs
+		// needed to drill through nested-struct boxes to the leaf
+		// field. Used when the offset doesn't match a top-level
+		// scalar/composite field directly but does land inside a
+		// nested struct.
+		if path, leafField, ok := wasm3NestedStructPath(s, st, v.AuxInt); ok {
+			// Emit each step: top-level struct.get of the box-ref,
+			// then ref.cast + struct.get the next level, ... until
+			// we reach the leaf.
+			pTop := s.Prog(wasm.AStructGet)
+			pTop.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(structIdx)}
+			pTop.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(path[0].fieldIdx)}
+			for i := 0; i < len(path); i++ {
+				pCastN := s.Prog(wasm.ARefCast)
+				pCastN.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(path[i].boxIdx)}
+				if i == len(path)-1 {
+					pLeaf := s.Prog(wasm.AStructGet)
+					pLeaf.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(path[i].boxIdx)}
+					pLeaf.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(leafField)}
+				} else {
+					pNext := s.Prog(wasm.AStructGet)
+					pNext.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(path[i].boxIdx)}
+					pNext.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(path[i+1].fieldIdx)}
+				}
+			}
+			if needsExtend {
+				s.Prog(wasm.AI64ExtendI32U)
+			}
+			break
+		}
 		fieldIdx := wasm3FieldIndexAtOffset(s.FuncInfo(), st, v.AuxInt)
 		if fieldIdx < 0 {
 			// Sub-field byte offset (no wasm3 lowering for byte-7-of-
@@ -4066,6 +4101,101 @@ func wasm3EmbeddedPtrFieldAtOffset(s *ssagen.State, st *types.Type, off int64) (
 		widx += n
 	}
 	return 0, 0, 0, false
+}
+
+// nestedStructStep is one hop in a nested-struct access chain: the
+// field index to read from the *previous* container, and the box
+// type to ref.cast the result to before reading the next field.
+type nestedStructStep struct {
+	fieldIdx int  // wasm field index in the previous-step container
+	boxIdx   uint32 // $go.box.<T> for the nested struct at this step (cast target)
+}
+
+// wasm3NestedStructPath walks t's fields looking for the path through
+// nested-struct boxes that reaches byte offset off. Returns the chain
+// of (fieldIdx, boxIdx) steps + the wasm field index of the leaf
+// inside the deepest box. The codegen replays this as:
+//
+//	struct.get $st path[0].fieldIdx          ;; -> (ref box.A)
+//	ref.cast box.A                            ;; for any A in the chain
+//	struct.get box.A path[1].fieldIdx         ;; -> (ref box.B)
+//	... (one ref.cast + struct.get per step) ...
+//	struct.get box.Last leafField             ;; the leaf primitive/ref
+//
+// ok=false when off lands on a direct top-level field of t (no
+// nesting needed — the caller's plain struct.get path is correct)
+// or when off doesn't correspond to any addressable leaf (e.g.
+// reaches into an array element).
+//
+// This is the byte-offset-through-nested-box codegen path Rung 34
+// needs because the de-flattened layout no longer makes a nested
+// struct's inner fields directly addressable from the outer
+// container's wasm field list.
+func wasm3NestedStructPath(s *ssagen.State, t *types.Type, off int64) (path []nestedStructStep, leafField int, ok bool) {
+	cAny, has := wasm3LiveCollector.Load(s.FuncInfo())
+	if !has {
+		return nil, 0, false
+	}
+	c := cAny.(*typeCollector)
+	cur := t
+	curOff := off
+	for {
+		var match *types.Field
+		var fieldIdx int
+		for i, f := range cur.Fields() {
+			if !f.Type.IsStruct() {
+				// Only nested-struct fields trigger the chain.
+				// Non-struct fields at the current offset are
+				// handled by the caller's plain or
+				// wasm3BoxedComponentAtOffset path.
+				continue
+			}
+			if curOff >= f.Offset && curOff < f.Offset+f.Type.Size() {
+				match = f
+				fieldIdx = i
+				break
+			}
+		}
+		if match == nil {
+			return nil, 0, false
+		}
+		// Compute the wasm field index for `match` in cur. The
+		// nested struct itself occupies 1 wasm field (the box ref)
+		// under Rung 34, so the wasm index equals the count of
+		// `len(lowerFields(prev_field.Type))` summed across
+		// preceding fields.
+		widx := 0
+		for i := 0; i < fieldIdx; i++ {
+			widx += len(c.lowerFields(cur.Fields()[i].Type))
+		}
+		path = append(path, nestedStructStep{
+			fieldIdx: widx,
+			boxIdx:   uint32(c.collectBox(match.Type)),
+		})
+		// Descend into the nested struct.
+		cur = match.Type
+		curOff -= match.Offset
+		// Check whether the (now-inner) offset lands on a deeper
+		// nested struct or on a leaf field. If it lands on a leaf,
+		// resolve via wasm3FieldIndexRec and return — that's the
+		// final struct.get the codegen emits inside the deepest
+		// box.cast. If it lands on yet another nested struct, the
+		// next loop iteration extends the path.
+		hasDeeperNest := false
+		for _, f := range cur.Fields() {
+			if f.Type.IsStruct() && curOff >= f.Offset && curOff < f.Offset+f.Type.Size() {
+				hasDeeperNest = true
+				break
+			}
+		}
+		if !hasDeeperNest {
+			if leaf, lok := wasm3FieldIndexRec(c, cur, curOff, 0); lok {
+				return path, leaf, true
+			}
+			return nil, 0, false
+		}
+		// Loop body retries with the new (cur, curOff).
+	}
 }
 
 // wasm3FieldIndexRec walks a Go struct's fields accumulating the WasmGC

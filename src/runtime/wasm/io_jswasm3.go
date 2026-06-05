@@ -67,6 +67,7 @@ func AwaitFdWritable(fd int32, parkID int32)
 //	0 — net.Socket (TCP/Unix stream)
 //	1 — fs.FileHandle (regular file)
 //	2 — process.stdin / .stdout / .stderr (pre-registered by JS)
+//	3 — mock stream (test fixture; bytes pushed via runtime.MockPushFd)
 //
 // More kinds (WebSocket, fetch ReadableStream) follow in their
 // own workstreams per the netpoll design "out of scope" list.
@@ -76,6 +77,45 @@ func AwaitFdWritable(fd int32, parkID int32)
 //go:wasmimport gojs runtime.RegisterFd
 //go:noescape
 func RegisterFd(fd int32, jsHandleKind int32)
+
+// ReadFd pulls up to n bytes of ready data from fd's host-side
+// queue into the linear-memory scratch arena at offset off, and
+// returns the count actually written. A return of -1 means the
+// fd has no data ready right now (EAGAIN — the caller should
+// AwaitFdReadable and retry); 0 means EOF / closed. -2 means
+// "unknown fd" — registration must happen first.
+//
+// The caller stages the destination buffer via WriteLinearMemory
+// (typically a length-only marker; ReadFd overwrites). After the
+// call the bytes can be copied back into a Go-side slice via
+// ReadLinearMemory, then ResetLinearMemory frees the scratch.
+//
+//go:wasmimport gojs runtime.ReadFd
+//go:noescape
+func ReadFd(fd int32, off uint32, n int32) int32
+
+// WriteFd is the non-blocking write analogue. Returns bytes
+// written, -1 (EAGAIN) if the destination cannot accept more
+// data right now (caller should AwaitFdWritable + retry), -2
+// for unknown fd. The bytes themselves are read from the
+// linear-memory arena at (off, n) — same staging discipline as
+// the existing runtime.writeBytes import for fd 1 / 2.
+//
+//go:wasmimport gojs runtime.WriteFd
+//go:noescape
+func WriteFd(fd int32, off uint32, n int32) int32
+
+// MockPushFd is the test fixture: pushes (off, n) bytes from
+// the linear-memory arena onto fd's read queue, then fires
+// fdSetReadable so a currently-suspended AwaitFdReadable wakes
+// and the next ReadFd dequeues the pushed bytes. The fd must
+// have been registered via RegisterFd with kind 3 (mock stream).
+// Production code never uses this — it's the Rung 23 end-to-end
+// driver until real net.Socket / fs.FileHandle wiring lands.
+//
+//go:wasmimport gojs runtime.MockPushFd
+//go:noescape
+func MockPushFd(fd int32, off uint32, n int32)
 
 // nextParkID hands out fresh wait identifiers. Sentinel values
 // 0 and -1 are reserved so callers can distinguish "no park" from

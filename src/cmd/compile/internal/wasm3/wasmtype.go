@@ -195,11 +195,41 @@ func (c *typeCollector) lowerFieldsImpl(t *types.Type) []wasmgc.Field {
 		return []wasmgc.Field{{Storage: wasmgc.RefStorage(c.collectSliceStruct(t), true), Mutable: true}}
 
 	case types.TSTRUCT:
-		var fields []wasmgc.Field
-		for _, f := range t.Fields() {
-			fields = append(fields, c.lowerFields(f.Type)...)
+		// Rung 34: nested struct fields lower to a single
+		// (ref null $go.box.<T>), the same shape that strings /
+		// slices / arrays already use. The previous behaviour —
+		// recursive flattening of inner struct fields into the
+		// enclosing wasm struct — left the wasm-level field type
+		// (e.g. i64 for a flattened mutex's key) out of sync with
+		// the SSA value's Go-level type (mutex, a struct, which
+		// wasm3ValueType classifies as anyref). The mismatch surfaces
+		// as "local.set expected anyref, found struct.get of type
+		// i64" wasm validation errors in any runtime function that
+		// reads a nested-struct field — repeatedly hit at sched.*,
+		// g.sched.*, mcache.*, ... The uniform "one ref per
+		// composite" rule removes the special case.
+		//
+		// Cost: every nested struct becomes a separately-allocated
+		// $go.box.<T> ref; goroutine spawn's allocation count goes
+		// up roughly proportionally to the depth of g's nested
+		// structure (gobuf, stack, _panic, ...). WasmGC handles
+		// this efficiently and wasm3 is single-threaded; the
+		// correctness win is worth the size and alloc-count delta.
+		// See the Rung 34 commit messages for the full audit.
+		//
+		// Empty-struct carve-out: a struct with no fields (Go's
+		// zero-size marker pattern — `noCopy`, `sync.noCopy`,
+		// the synctest/lockRankStruct sentinels) contributes zero
+		// wasm fields. It had no data under flattening either, and
+		// auto-generated equality / hash functions assume the
+		// classical field-position numbering — Int32{_ noCopy; v
+		// int32} sees `v` as field 0 of the outer wasm struct, not
+		// field 1 behind an empty-box ref. Keeping empties as
+		// "no fields" preserves both invariants.
+		if t.NumFields() == 0 {
+			return nil
 		}
-		return fields
+		return []wasmgc.Field{{Storage: wasmgc.RefStorage(c.collectBox(t), true), Mutable: true}}
 
 	case types.TARRAY:
 		// Stage D: every Go array — small or large — lowers to a
@@ -661,7 +691,27 @@ func (c *typeCollector) collectBox(t *types.Type) int {
 		Super: wasmgc.TypeGoObject,
 	})
 	c.structs[t] = idx
-	c.table[idx].Fields = c.lowerFields(t)
+	// Box contents: for a Go struct t, the box stores t's own
+	// fields (one per Go field, recursively lowered with the
+	// "outer field" rule — i.e. a NESTED struct field becomes 1
+	// ref to its own box, not a recursive flatten). For non-struct
+	// t the box wraps a single value of t's shape.
+	//
+	// This split is what Rung 34 needed once lowerFields for
+	// TSTRUCT started returning a self-ref instead of the flat
+	// inline list: collectBox can't just call lowerFields(t) on a
+	// struct anymore, because that would build a box whose only
+	// field is a ref to itself. Walking t.Fields() explicitly
+	// gives us the right shape.
+	if t.Kind() == types.TSTRUCT {
+		var fields []wasmgc.Field
+		for _, f := range t.Fields() {
+			fields = append(fields, c.lowerFields(f.Type)...)
+		}
+		c.table[idx].Fields = fields
+	} else {
+		c.table[idx].Fields = c.lowerFields(t)
+	}
 	return idx
 }
 

@@ -980,12 +980,24 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		// Write a *string/*slice/*interface cell: ref.cast the cell ref to
 		// (ref $go.box.T) and struct.set field 0 = the boxed value. v.Aux is
 		// the boxed pointee Go type, registered as the cell via collectBox.
+		//
+		// Narrow the value to the field's declared ref type before struct.set
+		// — anyref isn't a subtype of (ref null $go.object) / (ref null
+		// $go.box.<T>), so the validator rejects struct.set with "expected
+		// (ref null N), found local.get of type anyref" without an explicit
+		// ref.cast. Hits godebug_setUpdate's `*p = update` (cell holds a func
+		// value typed as $go.object) and other heap-cell stores.
 		bt := v.Aux.(*types.Type)
 		cellIdx := wasm3RegisterStruct(s.FuncInfo(), bt)
 		getValue64(s, v.Args[0])
 		pCast := s.Prog(wasm.ARefCast)
 		pCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(cellIdx)}
 		getValue64(s, v.Args[1])
+		if wasm3FieldValueNeedsRefCast(bt) {
+			refCastTo := int64(wasm3RefSlotTypeIdx(s.FuncInfo(), bt))
+			pRefCast := s.Prog(wasm.ARefCastNull)
+			pRefCast.From = obj.Addr{Type: obj.TYPE_CONST, Offset: refCastTo}
+		}
 		p := s.Prog(wasm.AStructSet)
 		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(cellIdx)}
 		p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: 0}

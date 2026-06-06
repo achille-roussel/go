@@ -7726,28 +7726,34 @@ func sync_atomic_runtime_procUnpin() {
 
 // Active spinning for sync.Mutex.
 //
+// canSpin is unconditionally false on wasm3: spinning is the
+// SMP optimisation "wait briefly because some other CPU is
+// holding the lock and may release any moment, cheaper than a
+// context switch". wasm3 runs one goroutine at a time on a
+// single M, so the lock holder can only release once the
+// current goroutine yields — spinning is pure waste of CPU
+// cycles that delays the yield the lock is actually waiting for.
+// Returning false makes sync.Mutex skip the spin path entirely
+// and proceed straight to its semaphore-based block.
+//
 //go:linkname internal_sync_runtime_canSpin internal/sync.runtime_canSpin
 //go:nosplit
 func internal_sync_runtime_canSpin(i int) bool {
-	// sync.Mutex is cooperative, so we are conservative with spinning.
-	// Spin only few times and only if running on a multicore machine and
-	// GOMAXPROCS>1 and there is at least one other running P and local runq is empty.
-	// As opposed to runtime mutex we don't do passive spinning here,
-	// because there can be work on global runq or on other Ps.
-	if i >= active_spin || numCPUStartup <= 1 || gomaxprocs <= sched.npidle.Load()+sched.nmspinning.Load()+1 {
-		return false
-	}
-	if p := getg().m.p.ptr(); !runqempty(p) {
-		return false
-	}
-	return true
+	return false
 }
 
+// doSpin is a no-op on wasm3 — sync.Mutex never enters the spin
+// path because canSpin returns false above, but the symbol must
+// stay linkable for stdlib + third-party packages that
+// linkname it directly (gvisor, livekit/protocol, etc. per the
+// hall-of-shame note above). The body's previous procyield
+// call also tripped a polymorphic-pointer codegen bug (writing
+// active_spin_cnt back through a polyptr setter); the empty
+// body sidesteps that and won't be reached anyway.
+//
 //go:linkname internal_sync_runtime_doSpin internal/sync.runtime_doSpin
 //go:nosplit
-func internal_sync_runtime_doSpin() {
-	procyield(active_spin_cnt)
-}
+func internal_sync_runtime_doSpin() {}
 
 // Active spinning for sync.Mutex.
 //

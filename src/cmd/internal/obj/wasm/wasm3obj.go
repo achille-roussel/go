@@ -267,6 +267,18 @@ func assemble3(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 		return
 	}
 
+	// Pre-emit type check: catches the local.set/tee mismatch
+	// class of bugs at compile time with source-position info,
+	// rather than at wasm-instantiate time where the validator
+	// reports raw byte offsets. GOWASM3CHECK=warn (or anything
+	// non-empty) emits warnings to stderr without failing the
+	// build; GOWASM3CHECK=fatal escalates to ctxt.Diag (errors
+	// abort the build). Default off because the wider stdlib
+	// still has many latent mismatches.
+	if os.Getenv("GOWASM3CHECK") != "" {
+		wasm3CheckLocalTypes(ctxt, s)
+	}
+
 	if body, ok := encodeWasm3Body(ctxt, s); ok {
 		s.P = body
 		return

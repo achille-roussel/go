@@ -586,6 +586,13 @@ type Wasm3PolyAccessor struct {
 	// instructions; the linker remaps it to the module-wide
 	// type index.
 	ArrayTypeIdx int64
+	// ElemTypeIdx is the per-function wasmgc.Table index of the
+	// ref-typed array element (the type after stripping `ref null`
+	// from the backing's element). Used by the SETTER body when
+	// LeafClass == 1 to ref.cast.null the anyref value parameter
+	// down to the array's declared element ref type before
+	// array.set. Zero when LeafClass != 1 (no cast needed).
+	ElemTypeIdx int64
 }
 
 // Wasm3IfaceDispatch describes a per-(I, methodIdx) interface-method

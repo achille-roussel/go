@@ -4892,12 +4892,21 @@ func wasm3SetupPolyAccessor(s *obj.LSym) {
 		}
 		arrayIdx := wasm3RegisterArrayBacking(fi, m.elemT)
 		elemSize := int(m.elemT.Size())
+		var elemTypeIdx int64
+		if m.leaf == 1 {
+			// Ref-typed element. For setters we must ref.cast.null
+			// the anyref value param down to the array's declared
+			// element ref type before array.set. ElemTypeIdx records
+			// that target.
+			elemTypeIdx = int64(wasm3RefSlotTypeIdx(fi, m.elemT))
+		}
 		fi.Wasm3PolyAccessor = &obj.Wasm3PolyAccessor{
 			Set:          m.isSet,
 			LeafClass:    m.leaf,
 			ElemSize:     elemSize,
 			Signed:       m.signed,
 			ArrayTypeIdx: int64(arrayIdx),
+			ElemTypeIdx:  elemTypeIdx,
 		}
 		return
 	}

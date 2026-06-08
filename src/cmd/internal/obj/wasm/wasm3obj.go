@@ -1814,6 +1814,24 @@ func assembleWasm3PolyAccessor(ctxt *obj.Link, s *obj.LSym, pa *obj.Wasm3PolyAcc
 		if pa.LeafClass == 0 && pa.ElemSize < 8 {
 			writeOpcode(w, AI32WrapI64)
 		}
+		// Ref-typed element (LeafClass == 1: pointer/iface/slice/
+		// string/struct-box). The value param lives at anyref in the
+		// wasm signature; array.set rejects the supertype with
+		// "expected (ref null T), found local.get of type anyref".
+		// Emit ref.cast.null (0xfb 0x17 = ref_cast_nullable) to the
+		// array's declared element ref type — pa.ElemTypeIdx records
+		// the heap-type to cast to. Without this, generated array-
+		// setters for struct/pointer/iface elements all trip
+		// validation (first hit: type_.arrayset.w3._runtime.sudog).
+		if pa.LeafClass == 1 && pa.ElemTypeIdx != 0 {
+			writeOpcode(w, ARefCastNull)
+			relocs = append(relocs, obj.Reloc{
+				Type: objabi.R_WASMHEAPTYPE,
+				Off:  int32(w.Len()),
+				Siz:  1,
+				Add:  pa.ElemTypeIdx,
+			})
+		}
 		// array.set $array_backing — typeidx is uleb in array.* (not
 		// a heap-type), so R_WASMTYPE.
 		writeOpcode(w, AArraySet)

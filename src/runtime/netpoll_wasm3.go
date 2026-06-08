@@ -796,16 +796,23 @@ func (c *pollCache) alloc() *pollDesc {
 	return pd
 }
 
-// makeArg converts pd to an interface{}.
-// makeArg does not do any allocation. Normally, such
-// a conversion requires an allocation because pointers to
-// types which embed internal/runtime/sys.NotInHeap (which pollDesc is)
-// must be stored in interfaces indirectly. See issue 42076.
-func (pd *pollDesc) makeArg() (i any) {
-	x := (*eface)(unsafe.Pointer(&i))
-	x._type = pdType
-	x.data = unsafe.Pointer(&pd.self)
-	return
+// makeArg converts pd to an interface{}. The !wasm3 implementation
+// hand-assembles the eface via `(*eface)(unsafe.Pointer(&i))` to
+// avoid an allocation (pollDesc embeds sys.NotInHeap, so the
+// standard *pollDesc → any conversion would have to materialize a
+// heap copy; see issue 42076). On wasm3 that &i reinterpret
+// pattern lowers through a polyptr fat pointer into an anyref-
+// classified per-value local for `i`, and the .data store goes
+// through the same gap — 3 hits (runtime_pollSetDeadline +
+// (*pollDesc).makeArg + the makeArg trampoline) at line 805/807.
+//
+// On wasm3 NotInHeap is moot (everything is host-GC managed),
+// and the standard `return pd` interface conversion lowers to a
+// single $go.iface struct.new with the *pollDesc as the data
+// slot — no linear-mem allocation, no polyptr step. Equivalent
+// observable behavior (an `any` holding the pollDesc).
+func (pd *pollDesc) makeArg() any {
+	return pd
 }
 
 var (

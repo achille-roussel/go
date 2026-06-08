@@ -326,11 +326,22 @@ func rawstring(size int) (s string, b []byte) {
 // On wasm3 mallocgc's array.new_default already zero-fills the
 // WasmGC backing, and add(p, off) on a typed-ref backing has no
 // sound lowering. Skip the trailing clear.
+// rawbyteslice / rawruneslice / gobytes on the !wasm3 path build
+// the returned slice via `*(*slice)(unsafe.Pointer(&b)) = slice{
+// p, len, cap}` — a pointer-cast reinterpret of the return
+// variable's local address into the runtime slice header type,
+// then a 3-word struct assign. The wasm3 SSA lowers this pattern
+// to 3 separate i64.stores into an anyref-classified local for
+// the slice (the slice value lives in an anyref slot, not in
+// linear-mem words), which trips wasm3check on the polyptr
+// classifier. Use unsafe.Slice instead: it routes through the
+// native wasm3 slice ABI to construct a slice header (anyref)
+// with the right backing, length, and capacity.
+
 func rawbyteslice(size int) (b []byte) {
 	cap := roundupsize(uintptr(size), true)
 	p := mallocgc(cap, nil, false)
-	*(*slice)(unsafe.Pointer(&b)) = slice{p, size, int(cap)}
-	return
+	return unsafe.Slice((*byte)(p), int(cap))[:size]
 }
 
 // rawruneslice allocates a new rune slice. The rune slice is not
@@ -342,8 +353,7 @@ func rawruneslice(size int) (b []rune) {
 	}
 	mem := roundupsize(uintptr(size)*4, true)
 	p := mallocgc(mem, nil, false)
-	*(*slice)(unsafe.Pointer(&b)) = slice{p, size, int(mem / 4)}
-	return
+	return unsafe.Slice((*rune)(p), int(mem/4))[:size]
 }
 
 // used by cmd/cgo
@@ -359,8 +369,7 @@ func gobytes(p *byte, n int) (b []byte) {
 	bp := mallocgc(uintptr(n), nil, false)
 	memmove(bp, unsafe.Pointer(p), uintptr(n))
 
-	*(*slice)(unsafe.Pointer(&b)) = slice{bp, n, n}
-	return
+	return unsafe.Slice((*byte)(bp), n)
 }
 
 // This is exported via linkname to assembly in syscall (for Plan9) and cgo.

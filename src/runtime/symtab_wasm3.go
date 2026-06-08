@@ -208,18 +208,21 @@ var aixStaticDataBase uintptr
 // activeModules / modulesinit / moduledataverify track multi-module
 // programs (plugins) on the non-wasm3 platforms. wasm3 has no
 // plugin support, so the active set is always just firstmoduledata.
+//
+// The !wasm3 path uses atomicLoadPointer / atomicStorePointer
+// wrappers around `*(*unsafe.Pointer)(addr)` to read/write the
+// modulesSlice package var. On wasm3 those helpers run as
+// polyptr-mediated pointer derefs (anyref-classified per-value
+// locals receiving i64 from the deref tail) — the documented
+// #167-pending bridge gap. Since wasm3 is single-threaded the
+// "atomic" qualifier is no-op anyway: read and write the
+// package var directly. This drops 3 hits (activeModules +
+// modulesinit + a transitive schedinit caller).
 func activeModules() []*moduledata {
-	p := (*[]*moduledata)(atomicLoadPointer(unsafe.Pointer(&modulesSlice)))
-	if p == nil {
+	if modulesSlice == nil {
 		return nil
 	}
-	return *p
-}
-
-func atomicLoadPointer(addr unsafe.Pointer) unsafe.Pointer {
-	// Single-threaded on wasm3: a plain load is observably equivalent
-	// to an atomic load.
-	return *(*unsafe.Pointer)(addr)
+	return *modulesSlice
 }
 
 func modulesinit() {
@@ -228,11 +231,7 @@ func modulesinit() {
 	// dynamically loaded modules so the slice contents never grow.
 	modules := new([]*moduledata)
 	*modules = append(*modules, &firstmoduledata)
-	atomicStorePointer(unsafe.Pointer(&modulesSlice), unsafe.Pointer(modules))
-}
-
-func atomicStorePointer(addr unsafe.Pointer, val unsafe.Pointer) {
-	*(*unsafe.Pointer)(addr) = val
+	modulesSlice = modules
 }
 
 func moduledataverify() {

@@ -229,6 +229,12 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	}
 	add("math", "Float32bits", wasm3F32bitsIntrinsic, sys.ArchWasm3)
 	add("math", "Float32frombits", wasm3F32frombitsIntrinsic, sys.ArchWasm3)
+	// runtime.float32bits / float32frombits are added by float_wasm3.go
+	// so the runtime-internal generic float helpers (forbits / fandbits
+	// in minmax_wasm3.go) can stay in pure Go and let the intrinsic do
+	// the reinterpret. There is no math import inside runtime.
+	add("runtime", "float32bits", wasm3F32bitsIntrinsic, sys.ArchWasm3)
+	add("runtime", "float32frombits", wasm3F32frombitsIntrinsic, sys.ArchWasm3)
 
 	// internal/runtime/atomic.f64bits / f64frombits — the package
 	// can't import math, so it defines its own bit-reinterpret
@@ -238,6 +244,16 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	// each atomic.Float64 access site.
 	add("internal/runtime/atomic", "f64bits", wasm3F64bitsIntrinsic, sys.ArchWasm3)
 	add("internal/runtime/atomic", "f64frombits", wasm3F64frombitsIntrinsic, sys.ArchWasm3)
+
+	// internal/strconv has its own copies of float{32,64}{bits,
+	// frombits} in deps.go ("Implementations to avoid importing
+	// other dependencies"). Same reinterpret cast, same wasm3
+	// classifier hit. Intrinsify all four so atof / ftoa / inf /
+	// nan don't pay the polyptr cost at every call site.
+	add("internal/strconv", "float64bits", wasm3F64bitsIntrinsic, sys.ArchWasm3)
+	add("internal/strconv", "float64frombits", wasm3F64frombitsIntrinsic, sys.ArchWasm3)
+	add("internal/strconv", "float32bits", wasm3F32bitsIntrinsic, sys.ArchWasm3)
+	add("internal/strconv", "float32frombits", wasm3F32frombitsIntrinsic, sys.ArchWasm3)
 
 	// math.archFloor / archCeil / archTrunc — single wasm
 	// instructions (f64.floor / f64.ceil / f64.trunc). The

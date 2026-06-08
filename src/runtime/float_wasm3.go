@@ -5,19 +5,25 @@
 //go:build wasm3
 
 // wasm3 mirror of float.go. The only divergence from the !wasm3
-// original is the codegen path for float64bits / float64frombits:
+// original is the codegen path for floatNbits / floatNfrombits:
 // they are intrinsified by the wasm3 SSA backend
-// (ssagen/intrinsics.go) to single-instruction i64.reinterpret_f64
-// / f64.reinterpret_i64 emitted directly into the caller's body —
+// (ssagen/intrinsics.go) to single-instruction iN.reinterpret_fN
+// / fN.reinterpret_iN emitted directly into the caller's body —
 // no function call, no linear-memory frame, no cross-domain
-// bridge. The Go body kept here is the same `*(*uint64)(unsafe
-// .Pointer(&f))` form as the shared file so the symbol stays
-// linkable for non-intrinsic-aware callers (none on wasm3 today,
-// but defensively).
+// bridge. The Go body is a self-recursive call so the intrinsic
+// fires when the symbol itself is compiled (the body never
+// actually recurses at run time — the intrinsic replaces every
+// call site, including the recursive one). This keeps the symbol
+// linkable and lets the wasm3check polymorphic-pointer audit
+// (cmd/internal/obj/wasm/wasm3check.go) stay clean: the function
+// body contains no `*(*uintN)(unsafe.Pointer(&f))` cast.
+//
+// float32bits / float32frombits live here only on wasm3; the
+// shared float.go has no float32 helpers because no shared
+// runtime code needs them. minmax_wasm3.go's wasm3 mirror of
+// forbits / fandbits routes the float32 arm through them.
 
 package runtime
-
-import "unsafe"
 
 const (
 	float64Mask  = 0x7FF
@@ -62,16 +68,32 @@ func copysign(x, y float64) float64 {
 }
 
 // float64bits returns the IEEE 754 binary representation of f.
-// On wasm3 calls are intrinsified to i64.reinterpret_f64.
+// On wasm3 every call (including the apparently-recursive one
+// below) is intrinsified to i64.reinterpret_f64; the body is
+// never reached at run time. See the file comment.
 func float64bits(f float64) uint64 {
-	return *(*uint64)(unsafe.Pointer(&f))
+	return float64bits(f)
 }
 
 // float64frombits returns the floating point number corresponding
 // the IEEE 754 binary representation b. On wasm3 calls are
-// intrinsified to f64.reinterpret_i64.
+// intrinsified to f64.reinterpret_i64; the body is never reached.
 func float64frombits(b uint64) float64 {
-	return *(*float64)(unsafe.Pointer(&b))
+	return float64frombits(b)
+}
+
+// float32bits returns the IEEE 754 binary representation of f.
+// On wasm3 calls are intrinsified to i32.reinterpret_f32; the
+// body is never reached.
+func float32bits(f float32) uint32 {
+	return float32bits(f)
+}
+
+// float32frombits returns the floating point number corresponding
+// the IEEE 754 binary representation b. On wasm3 calls are
+// intrinsified to f32.reinterpret_i32; the body is never reached.
+func float32frombits(b uint32) float32 {
+	return float32frombits(b)
 }
 
 // floor returns the greatest integer value less than or equal to x.

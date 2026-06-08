@@ -29,8 +29,21 @@ func memequal(a, b unsafe.Pointer, size uintptr) bool {
 	if a == b || size == 0 {
 		return true
 	}
+	// Use unsafe.Slice instead of `unsafe.Add(a, i)` + `*(*byte)`
+	// per-byte deref. The pointer-arithmetic shape (offset add then
+	// scalar load) lowers on wasm3 to a polyptr accessor pair that
+	// passes a *byte fat pointer through anyref-classified per-
+	// value locals, and the deref tail is the documented #167-
+	// pending bridge-gap pattern. unsafe.Slice synthesizes a real
+	// []byte that goes through the native wasm3 slice ABI: aS[i]
+	// becomes array.get_u $go.bytes (sa.off + i) — no polyptr step,
+	// no bridge gap, same byte-by-byte logic. Equivalent semantics
+	// for memequal's purposes (compare exactly size bytes from
+	// each pointer).
+	aS := unsafe.Slice((*byte)(a), size)
+	bS := unsafe.Slice((*byte)(b), size)
 	for i := uintptr(0); i < size; i++ {
-		if *(*byte)(unsafe.Add(a, i)) != *(*byte)(unsafe.Add(b, i)) {
+		if aS[i] != bS[i] {
 			return false
 		}
 	}

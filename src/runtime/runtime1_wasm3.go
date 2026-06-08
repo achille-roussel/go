@@ -250,7 +250,14 @@ func check() {
 		throw("atomicand8")
 	}
 
-	*(*uint64)(unsafe.Pointer(&j)) = ^uint64(0)
+	// Build NaN bit-patterns via the float{32,64}frombits helpers
+	// — they intrinsify to single fN.reinterpret_iN ops on wasm3.
+	// The shared !wasm3 path uses `*(*uint64)(unsafe.Pointer(&j))
+	// = ^uint64(0)` reinterpret-assign, which lowers on wasm3 to
+	// a polyptr fat pointer + i64.store into an anyref-classified
+	// local — the documented #167-pending bridge gap, 3 hits at
+	// the original lines 253/261/269.
+	j = float64frombits(^uint64(0))
 	if j == j {
 		throw("float64nan")
 	}
@@ -258,7 +265,7 @@ func check() {
 		throw("float64nan1")
 	}
 
-	*(*uint64)(unsafe.Pointer(&j1)) = ^uint64(1)
+	j1 = float64frombits(^uint64(1))
 	if j == j1 {
 		throw("float64nan2")
 	}
@@ -266,7 +273,7 @@ func check() {
 		throw("float64nan3")
 	}
 
-	*(*uint32)(unsafe.Pointer(&i)) = ^uint32(0)
+	i = float32frombits(^uint32(0))
 	if i == i {
 		throw("float32nan")
 	}
@@ -274,7 +281,7 @@ func check() {
 		throw("float32nan1")
 	}
 
-	*(*uint32)(unsafe.Pointer(&i1)) = ^uint32(1)
+	i1 = float32frombits(^uint32(1))
 	if i == i1 {
 		throw("float32nan2")
 	}

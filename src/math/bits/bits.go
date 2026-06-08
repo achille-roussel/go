@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build !wasm3
+
 //go:generate go run make_tables.go
 
 // Package bits implements bit counting and manipulation

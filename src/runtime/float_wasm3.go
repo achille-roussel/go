@@ -4,23 +4,20 @@
 
 //go:build wasm3
 
-// wasm3 mirror of float.go. The shared file's float64bits /
-// float64frombits use `*(*uint64)(unsafe.Pointer(&f))` to
-// reinterpret IEEE 754 bits, which the wasm3 SSA layer
-// classifies as a polymorphic-pointer access — emitting an
-// anyref-local-typed deref that the validator rejects (and that
-// wasm3check flags as the bulk of the float.go-derived warnings:
-// complex128div, fmin*, fmax*, modf, inf2one, copysign,
-// forbits, ...).
-//
-// Replace with assembly-implemented helpers (float_wasm3.s)
-// that emit a single wasm `i64.reinterpret_f64` /
-// `f64.reinterpret_i64` instruction. The rest of the file is
-// verbatim from the !wasm3 original; only the two bit-conversion
-// helpers change shape (Go declaration here, body in the .s
-// file).
+// wasm3 mirror of float.go. The only divergence from the !wasm3
+// original is the codegen path for float64bits / float64frombits:
+// they are intrinsified by the wasm3 SSA backend
+// (ssagen/intrinsics.go) to single-instruction i64.reinterpret_f64
+// / f64.reinterpret_i64 emitted directly into the caller's body —
+// no function call, no linear-memory frame, no cross-domain
+// bridge. The Go body kept here is the same `*(*uint64)(unsafe
+// .Pointer(&f))` form as the shared file so the symbol stays
+// linkable for non-intrinsic-aware callers (none on wasm3 today,
+// but defensively).
 
 package runtime
+
+import "unsafe"
 
 const (
 	float64Mask  = 0x7FF
@@ -64,12 +61,18 @@ func copysign(x, y float64) float64 {
 	return float64frombits(float64bits(x)&^sign | float64bits(y)&sign)
 }
 
-// float64bits and float64frombits are implemented in
-// float_wasm3.s using i64.reinterpret_f64 / f64.reinterpret_i64.
-// Declared here so the rest of the file (and other runtime files
-// that linkname them) can call them as plain Go functions.
-func float64bits(f float64) uint64
-func float64frombits(b uint64) float64
+// float64bits returns the IEEE 754 binary representation of f.
+// On wasm3 calls are intrinsified to i64.reinterpret_f64.
+func float64bits(f float64) uint64 {
+	return *(*uint64)(unsafe.Pointer(&f))
+}
+
+// float64frombits returns the floating point number corresponding
+// the IEEE 754 binary representation b. On wasm3 calls are
+// intrinsified to f64.reinterpret_i64.
+func float64frombits(b uint64) float64 {
+	return *(*float64)(unsafe.Pointer(&b))
+}
 
 // floor returns the greatest integer value less than or equal to x.
 //

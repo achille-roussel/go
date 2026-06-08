@@ -5856,6 +5856,8 @@ const (
 	OpWasm3I32Rotl
 	OpWasm3I64Rotl
 	OpWasm3I64Popcnt
+	OpWasm3I64ReinterpretF64
+	OpWasm3F64ReinterpretI64
 	OpWasm3StructNew
 	OpWasm3StructNewDefault
 	OpWasm3StructGet
@@ -88582,6 +88584,32 @@ var opcodeTable = [...]opInfo{
 			},
 			outputs: []outputInfo{
 				{0, regMask{v1: 65535, v2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:   "I64ReinterpretF64",
+		argLen: 1,
+		asm:    wasm.AI64ReinterpretF64,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, regMask{v1: 281470681743360, v2: 0}}, // F16..F31 (fp64)
+			},
+			outputs: []outputInfo{
+				{0, regMask{v1: 65535, v2: 0}}, // R0..R15 (gp)
+			},
+		},
+	},
+	{
+		name:   "F64ReinterpretI64",
+		argLen: 1,
+		asm:    wasm.AF64ReinterpretI64,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, regMask{v1: 281474976776191, v2: 0}}, // R0..R15 + SP (gp)
+			},
+			outputs: []outputInfo{
+				{0, regMask{v1: 281470681743360, v2: 0}}, // F16..F31 (fp64)
 			},
 		},
 	},

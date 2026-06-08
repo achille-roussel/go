@@ -189,6 +189,30 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	add("runtime", "makeslice", wasm3MakeSliceIntrinsic, sys.ArchWasm3)
 	add("runtime", "makeslice64", wasm3MakeSliceIntrinsic, sys.ArchWasm3)
 
+	// Bit-reinterpret intrinsics. The shared float.go implements
+	// float64bits / float64frombits as `*(*uint64)(unsafe.Pointer
+	// (&f))`, which the wasm3 SSA layer classifies as a polymorphic-
+	// pointer deref and emits anyref-typed locals for. The whole
+	// float-bit-arithmetic surface (complex128div, copysign, modf,
+	// inf2one, fmin*, fmax*, ...) routes through these helpers and
+	// inherits the misclassification. Replace each call with a
+	// single wasm `i64.reinterpret_f64` / `f64.reinterpret_i64`
+	// emitted directly into the caller's body — no function call,
+	// no linear-memory frame, no cross-domain bridge. This is the
+	// pattern the .s helper files (math/floor_wasm3.s, runtime/
+	// memclr_wasm3.s, internal/bytealg/*_wasm3.s) should all
+	// eventually adopt; demonstrated here on the float case.
+	wasm3F64bitsIntrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		return s.newValue1(ssa.OpWasm3I64ReinterpretF64, types.Types[types.TUINT64], args[0])
+	}
+	wasm3F64frombitsIntrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		return s.newValue1(ssa.OpWasm3F64ReinterpretI64, types.Types[types.TFLOAT64], args[0])
+	}
+	add("runtime", "float64bits", wasm3F64bitsIntrinsic, sys.ArchWasm3)
+	add("runtime", "float64frombits", wasm3F64frombitsIntrinsic, sys.ArchWasm3)
+	add("math", "Float64bits", wasm3F64bitsIntrinsic, sys.ArchWasm3)
+	add("math", "Float64frombits", wasm3F64frombitsIntrinsic, sys.ArchWasm3)
+
 	// M3 per-type maps (wasm3): replace runtime.makemap /
 	// runtime.makemap64 / runtime.makemap_small with OpWasm3MakeMap,
 	// which emits struct.new_default $go.map.<K,V>. The map *types.Type

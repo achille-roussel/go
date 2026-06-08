@@ -279,6 +279,17 @@ func init() {
 		{name: "I64Rotl", asm: "I64Rotl", argLength: 2, reg: gp21, typ: "Int64"},     // rotl(arg0, arg1)
 		{name: "I64Popcnt", asm: "I64Popcnt", argLength: 1, reg: gp11, typ: "Int64"}, // popcnt(arg0)
 
+		// IEEE 754 bit reinterpretation. Each lowers to a single
+		// wasm `i64.reinterpret_f64` / `f64.reinterpret_i64`
+		// instruction. Registered as intrinsics on wasm3 for
+		// runtime.float64bits / runtime.float64frombits and the
+		// math.Float64bits / Float64frombits public counterparts;
+		// the call to the runtime helper never materialises, and
+		// the body of float_wasm3.go's `*(*uint64)(unsafe.Pointer
+		// (&f))` form stays as a defensive fallback.
+		{name: "I64ReinterpretF64", asm: "I64ReinterpretF64", argLength: 1, reg: regInfo{inputs: []regMask{fp64}, outputs: []regMask{gp}}, typ: "Int64"},   // reinterpret arg0 (f64 bits) as i64
+		{name: "F64ReinterpretI64", asm: "F64ReinterpretI64", argLength: 1, reg: regInfo{inputs: []regMask{gp}, outputs: []regMask{fp64}}, typ: "Float64"}, // reinterpret arg0 (i64 bits) as f64
+
 		// WebAssembly 3.0 garbage-collection ops. These implement the
 		// design-doc §6 object model: Go heap objects become host-GC
 		// structs and arrays instead of linear-memory blocks. Aux carries

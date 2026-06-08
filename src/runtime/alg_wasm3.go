@@ -313,10 +313,20 @@ func f64equal(p, q unsafe.Pointer) bool {
 	return *(*float64)(p) == *(*float64)(q)
 }
 func c64equal(p, q unsafe.Pointer) bool {
-	return *(*complex64)(p) == *(*complex64)(q)
+	// Reinterpret as 2-float slices and compare per component. The
+	// `*(*complex64)(p)` shape on wasm3 lowers to ref.cast +
+	// struct.get $go.complex64 + i32-to-f32 reinterpret chains that
+	// trip wasm3check on the polyptr classifier (anyref-classified
+	// per-value locals receiving i64). unsafe.Slice routes the read
+	// through the native wasm3 slice ABI: array.get f32 at off.
+	pS := unsafe.Slice((*float32)(p), 2)
+	qS := unsafe.Slice((*float32)(q), 2)
+	return pS[0] == qS[0] && pS[1] == qS[1]
 }
 func c128equal(p, q unsafe.Pointer) bool {
-	return *(*complex128)(p) == *(*complex128)(q)
+	pS := unsafe.Slice((*float64)(p), 2)
+	qS := unsafe.Slice((*float64)(q), 2)
+	return pS[0] == qS[0] && pS[1] == qS[1]
 }
 func strequal(p, q unsafe.Pointer) bool {
 	return *(*string)(p) == *(*string)(q)

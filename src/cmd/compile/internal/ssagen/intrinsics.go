@@ -213,6 +213,32 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	add("math", "Float64bits", wasm3F64bitsIntrinsic, sys.ArchWasm3)
 	add("math", "Float64frombits", wasm3F64frombitsIntrinsic, sys.ArchWasm3)
 
+	// Float32 bit-reinterpret intrinsics, mirroring the Float64
+	// pair above. math/unsafe.go's Float32bits / Float32frombits
+	// use the same `*(*uint32)(unsafe.Pointer(&f))` pattern that
+	// trips the polyptr classifier on wasm3; the intrinsic emits
+	// a single i32.reinterpret_f32 / f32.reinterpret_i32. There is
+	// no runtime.float32bits / float32frombits today (only the
+	// math.* form is needed in practice), but register both names
+	// for symmetry with the float64 case.
+	wasm3F32bitsIntrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		return s.newValue1(ssa.OpWasm3I32ReinterpretF32, types.Types[types.TUINT32], args[0])
+	}
+	wasm3F32frombitsIntrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		return s.newValue1(ssa.OpWasm3F32ReinterpretI32, types.Types[types.TFLOAT32], args[0])
+	}
+	add("math", "Float32bits", wasm3F32bitsIntrinsic, sys.ArchWasm3)
+	add("math", "Float32frombits", wasm3F32frombitsIntrinsic, sys.ArchWasm3)
+
+	// internal/runtime/atomic.f64bits / f64frombits — the package
+	// can't import math, so it defines its own bit-reinterpret
+	// helpers in types.go. atomic.(*Float64).Load/Store route
+	// through them. Intrinsify the helpers so the inner
+	// reinterpret folds to a single wasm instruction inline at
+	// each atomic.Float64 access site.
+	add("internal/runtime/atomic", "f64bits", wasm3F64bitsIntrinsic, sys.ArchWasm3)
+	add("internal/runtime/atomic", "f64frombits", wasm3F64frombitsIntrinsic, sys.ArchWasm3)
+
 	// math.archFloor / archCeil / archTrunc — single wasm
 	// instructions (f64.floor / f64.ceil / f64.trunc). The
 	// equivalent .s helpers previously lived in math/floor_wasm3.s

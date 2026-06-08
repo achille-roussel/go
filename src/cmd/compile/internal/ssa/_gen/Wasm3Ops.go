@@ -289,6 +289,8 @@ func init() {
 		// (&f))` form stays as a defensive fallback.
 		{name: "I64ReinterpretF64", asm: "I64ReinterpretF64", argLength: 1, reg: regInfo{inputs: []regMask{fp64}, outputs: []regMask{gp}}, typ: "Int64"},   // reinterpret arg0 (f64 bits) as i64
 		{name: "F64ReinterpretI64", asm: "F64ReinterpretI64", argLength: 1, reg: regInfo{inputs: []regMask{gp}, outputs: []regMask{fp64}}, typ: "Float64"}, // reinterpret arg0 (i64 bits) as f64
+		{name: "I32ReinterpretF32", asm: "I32ReinterpretF32", argLength: 1, reg: regInfo{inputs: []regMask{fp32}, outputs: []regMask{gp}}, typ: "Int32"},   // reinterpret arg0 (f32 bits) as i32 (widened to i64 register)
+		{name: "F32ReinterpretI32", asm: "F32ReinterpretI32", argLength: 1, reg: regInfo{inputs: []regMask{gp}, outputs: []regMask{fp32}}, typ: "Float32"}, // reinterpret arg0 (i32 bits) as f32
 
 		// WebAssembly 3.0 garbage-collection ops. These implement the
 		// design-doc §6 object model: Go heap objects become host-GC

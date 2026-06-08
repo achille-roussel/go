@@ -434,16 +434,30 @@ type Float64 struct {
 //
 //go:nosplit
 func (f *Float64) Load() float64 {
-	r := f.u.Load()
-	return *(*float64)(unsafe.Pointer(&r))
+	return f64frombits(f.u.Load())
 }
 
 // Store updates the value atomically.
 //
 //go:nosplit
 func (f *Float64) Store(value float64) {
-	f.u.Store(*(*uint64)(unsafe.Pointer(&value)))
+	f.u.Store(f64bits(value))
 }
+
+// f64bits / f64frombits are bit reinterpret helpers, kept local
+// to this package so wasm3 can intrinsify them to single
+// i64.reinterpret_f64 / f64.reinterpret_i64 instructions (see
+// ssagen/intrinsics.go). The non-wasm3 implementation is the
+// standard `*(*uint64)(unsafe.Pointer(&f))` pattern which the
+// compiler folds to a no-op on every other arch. We can't use
+// math.Float64{bits,frombits} here because internal/runtime/
+// atomic must not import math.
+//
+//go:nosplit
+func f64bits(f float64) uint64 { return *(*uint64)(unsafe.Pointer(&f)) }
+
+//go:nosplit
+func f64frombits(b uint64) float64 { return *(*float64)(unsafe.Pointer(&b)) }
 
 // UnsafePointer is an atomically accessed unsafe.Pointer value.
 //

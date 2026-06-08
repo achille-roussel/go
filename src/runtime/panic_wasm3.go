@@ -213,32 +213,38 @@ func goPanicSliceConvert(x int, y int) {
 
 var shiftError = error(errorString("negative shift amount"))
 
-// panicshift is the compiler-emitted helper for negative shift
-// amounts (a << b where b < 0). Verbatim from panic.go.
+// panicshift / panicdivide / panicoverflow are compiler-emitted
+// helpers. The !wasm3 path calls `panic(shiftError)` etc. with
+// a package-level `error` interface var. The boxed-globals
+// rewrite at Wasm3.rules:116 fires for the outer iface load,
+// but the panic-arg lowering then walks into itab.fun[0] via
+// (Convert + OffPtr [8] + Load) — a linear-mem indirection
+// into the WasmGC itab struct that trips wasm3check (3 hits at
+// lines 222/231/241), the documented #167-pending bridge gap.
 //
+// On wasm3 we panic with a `plainError(string-literal)` built
+// at the call site. String literals lower to typed $go.string
+// refs and the interface construction goes through wasm3-native
+// struct.new $go.iface — no package-var indirection, no itab
+// linear-mem walk. Observable text in the panic message is the
+// same as the upstream error string.
+
 //go:yeswritebarrierrec
 func panicshift() {
 	panicCheck1(sys.GetCallerPC(), "negative shift amount")
-	panic(shiftError)
+	panic(plainError("runtime error: negative shift amount"))
 }
 
-// panicdivide is the compiler-emitted helper for integer divide
-// by zero. Verbatim from panic.go.
-//
 //go:yeswritebarrierrec
 func panicdivide() {
 	panicCheck1(sys.GetCallerPC(), "integer divide by zero")
-	panic(divideError)
+	panic(plainError("runtime error: integer divide by zero"))
 }
 
-// panicoverflow is the compiler-emitted helper for integer
-// overflow (the divide-min-int64-by-minus-one corner case).
-// Verbatim from panic.go.
-//
 //go:yeswritebarrierrec
 func panicoverflow() {
 	panicCheck1(sys.GetCallerPC(), "integer overflow")
-	panic(overflowError)
+	panic(plainError("runtime error: integer overflow"))
 }
 
 // Goexit terminates the goroutine that calls it. No other goroutine

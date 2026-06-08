@@ -144,9 +144,21 @@ func badsystemstack() {
 // Do not remove or change the type signature.
 // See go.dev/issue/67401.
 //
+// memclrNoHeapPointers is a no-op on wasm3. The .s implementation
+// (memclr_wasm3.s) emitted `memory.fill` on a linear-memory
+// address computed by `I32WrapI64` on R0 — only correct when ptr
+// is a linear-memory address. On wasm3 ptr is an anyref to a
+// WasmGC object, and I32WrapI64 on an anyref-typed register is
+// nonsense. The actual callers (mbarrier_wasm3.go's
+// typedmemclr* + reflect's typedmemclr) operate on WasmGC-
+// backed struct fields, and on wasm3 fields default to zero
+// values via struct.new_default at allocation time — there's
+// nothing to clear after the fact. The remaining linear-mem
+// scratch arena (runtime/wasm bridge) doesn't reach this path.
+//
 //go:linkname memclrNoHeapPointers
-//go:noescape
-func memclrNoHeapPointers(ptr unsafe.Pointer, n uintptr)
+//go:nosplit
+func memclrNoHeapPointers(ptr unsafe.Pointer, n uintptr) {}
 
 //go:linkname reflect_memclrNoHeapPointers reflect.memclrNoHeapPointers
 func reflect_memclrNoHeapPointers(ptr unsafe.Pointer, n uintptr) {

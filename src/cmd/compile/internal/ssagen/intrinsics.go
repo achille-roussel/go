@@ -213,6 +213,24 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	add("math", "Float64bits", wasm3F64bitsIntrinsic, sys.ArchWasm3)
 	add("math", "Float64frombits", wasm3F64frombitsIntrinsic, sys.ArchWasm3)
 
+	// math.archFloor / archCeil / archTrunc — single wasm
+	// instructions (f64.floor / f64.ceil / f64.trunc). The
+	// equivalent .s helpers previously lived in math/floor_wasm3.s
+	// using the linear-mem asm calling convention; intrinsics emit
+	// the wasm op directly inline.
+	wasm3F64FloorIntrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		return s.newValue1(ssa.OpWasm3F64Floor, types.Types[types.TFLOAT64], args[0])
+	}
+	wasm3F64CeilIntrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		return s.newValue1(ssa.OpWasm3F64Ceil, types.Types[types.TFLOAT64], args[0])
+	}
+	wasm3F64TruncIntrinsic := func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		return s.newValue1(ssa.OpWasm3F64Trunc, types.Types[types.TFLOAT64], args[0])
+	}
+	add("math", "archFloor", wasm3F64FloorIntrinsic, sys.ArchWasm3)
+	add("math", "archCeil", wasm3F64CeilIntrinsic, sys.ArchWasm3)
+	add("math", "archTrunc", wasm3F64TruncIntrinsic, sys.ArchWasm3)
+
 	// M3 per-type maps (wasm3): replace runtime.makemap /
 	// runtime.makemap64 / runtime.makemap_small with OpWasm3MakeMap,
 	// which emits struct.new_default $go.map.<K,V>. The map *types.Type

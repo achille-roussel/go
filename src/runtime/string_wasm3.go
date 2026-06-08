@@ -549,9 +549,15 @@ func findnullw(s *uint16) int {
 
 //go:nosplit
 func gostringnocopy(str *byte) string {
-	ss := stringStruct{str: unsafe.Pointer(str), len: findnull(str)}
-	s := *(*string)(unsafe.Pointer(&ss))
-	return s
+	// Build the string via unsafe.String instead of the `*(*string)
+	// (unsafe.Pointer(&ss)) = stringStruct{...}` reinterpret-cast
+	// pattern. On wasm3 the string value lives in an anyref slot
+	// (string ABI is a single $go.string ref), so the cast-assign
+	// shape lowers to 2 separate i64.stores into an anyref-
+	// classified local. unsafe.String constructs the string header
+	// through the native wasm3 string ABI ($go.string ref with
+	// bytes + off + len fields).
+	return unsafe.String(str, findnull(str))
 }
 
 func gostringw(strw *uint16) string {

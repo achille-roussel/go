@@ -2437,10 +2437,7 @@ func needm(signal bool) {
 //go:nosplit
 func needAndBindM() {
 	needm(false)
-
-	if _cgo_pthread_key_created != nil && *(*uintptr)(_cgo_pthread_key_created) != 0 {
-		cgoBindM()
-	}
+	// cgo is unreachable on wasm3; cgoBindM branch is removed.
 }
 
 // newextram allocates m's and puts them on the extra list.
@@ -2653,9 +2650,7 @@ func cgoBindM() {
 	if g.m.g0 != g {
 		fatal("the current g is not g0")
 	}
-	if _cgo_bindm != nil {
-		asmcgocall(_cgo_bindm, unsafe.Pointer(g))
-	}
+	// cgo is unreachable on wasm3; _cgo_bindm branch is removed.
 }
 
 // A helper function for EnsureDropM.
@@ -3312,9 +3307,7 @@ top:
 		gcCleanups.wake()
 	}
 
-	if *cgo_yield != nil {
-		asmcgocall(*cgo_yield, nil)
-	}
+	// cgo is unreachable on wasm3; cgo_yield check is removed.
 
 	// local runq
 	if gp, inheritTime := runqget(pp); gp != nil {

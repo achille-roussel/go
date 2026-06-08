@@ -320,14 +320,16 @@ func reflectcall(stackArgsType *_type, fn, stackArgs unsafe.Pointer, stackArgsSi
 //go:linkname procyield
 //go:nosplit
 func procyield(cycles uint32) {
-	if cycles == 0 {
-		return
-	}
-	procyieldAsm(cycles)
+	// No-op on wasm3. The !wasm3 path spins the CPU for `cycles`
+	// iterations as a back-off hint inside contended spin loops;
+	// wasm has no CPU spin equivalent and procyieldAsm in
+	// asm_wasm3.s is already just a RET (the FIXME upstream).
+	// The asm call itself trips wasm3check at the call site
+	// (asm uses the linear-mem ABI which polyptr-loads the
+	// `cycles` arg through an anyref-classified per-value local),
+	// so we elide the call entirely.
+	_ = cycles
 }
-
-// procyieldAsm is the assembly implementation of procyield.
-func procyieldAsm(cycles uint32)
 
 type neverCallThisFunction struct{}
 
@@ -440,9 +442,17 @@ func memequal_varlen(a, b unsafe.Pointer) bool
 
 // bool2int returns 0 if x is false or 1 if x is true.
 func bool2int(x bool) int {
-	// Avoid branches. In the SSA compiler, this compiles to
-	// exactly what you would want it to.
-	return int(*(*uint8)(unsafe.Pointer(&x)))
+	// The !wasm3 implementation uses `*(*uint8)(unsafe.Pointer(&x))`
+	// to avoid the branch. On wasm3 the &x reinterpret-as-*uint8
+	// shape lowers through a polyptr accessor pair into an anyref-
+	// classified per-value local — the documented #167-pending
+	// bridge gap. A plain branch lowers to a single i32.select on
+	// wasm, which is what wasm3 wants here anyway: bool has no
+	// scalar-addressable storage to reinterpret in WasmGC.
+	if x {
+		return 1
+	}
+	return 0
 }
 
 // abort crashes the runtime in situations where even throw might not

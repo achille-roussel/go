@@ -7,6 +7,7 @@ package wasm
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"cmd/internal/obj"
 )
@@ -212,6 +213,17 @@ func localSetOrTee(as obj.As) string {
 	return "set"
 }
 
+// wasm3CheckSeen dedups warnings per (function, source-line)
+// to bound the noise; the same SSA pattern often produces many
+// near-duplicate hits within a single function. Each unique
+// site reports once; a one-line summary at the end lists the
+// suppressed-count per function.
+var (
+	wasm3CheckMu        sync.Mutex
+	wasm3CheckSeen      = map[string]struct{}{}
+	wasm3CheckPerFnSeen = map[string]int{}
+)
+
 // wasm3CheckReport emits a mismatch finding. Default mode is a
 // warning to stderr (does not increment ctxt.Errors / fail the
 // build); the wider stdlib still has many latent mismatches that
@@ -220,9 +232,35 @@ func localSetOrTee(as obj.As) string {
 // block every build. Set GOWASM3CHECK=fatal to escalate to
 // ctxt.Diag — useful once a given driver's reachable set is
 // believed clean and you want to enforce no regressions.
+//
+// Dedup policy: at most 3 unique (file, line) sites per function
+// report individually; subsequent unique sites in the same
+// function aggregate into a single "and N more" line at the
+// function's third report.
 func wasm3CheckReport(ctxt *obj.Link, p *obj.Prog, fn string, as obj.As, idx int64, declared, found byte) {
+	pos := ctxt.PosTable.Pos(p.Pos)
+	siteKey := fmt.Sprintf("%v|%s", pos, fn)
+
+	wasm3CheckMu.Lock()
+	if _, dup := wasm3CheckSeen[siteKey]; dup {
+		wasm3CheckMu.Unlock()
+		return
+	}
+	wasm3CheckSeen[siteKey] = struct{}{}
+	wasm3CheckPerFnSeen[fn]++
+	count := wasm3CheckPerFnSeen[fn]
+	wasm3CheckMu.Unlock()
+
+	const perFnLimit = 3
+	if count > perFnLimit {
+		if count == perFnLimit+1 {
+			fmt.Fprintf(os.Stderr, "wasm3check: ... (further mismatches in %s suppressed)\n", fn)
+		}
+		return
+	}
+
 	msg := fmt.Sprintf("%v: wasm3 type mismatch in %s: local.%s[%d] (declared %s) ← %s",
-		ctxt.PosTable.Pos(p.Pos),
+		pos,
 		fn,
 		localSetOrTee(as),
 		idx,

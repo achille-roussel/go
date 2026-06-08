@@ -2,7 +2,13 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build math_big_pure_go
+//go:build math_big_pure_go || wasm3
+
+// wasm3 joins the math_big_pure_go path because arith_wasm3.s
+// used `JMP ·addVV_g(SB)` etc. — pure-Go indirection through an
+// asm stub. With the stub removed, wasm3 picks up the same
+// addVV → addVV_g wrappers as the pure-go build, cutting out
+// the linear-mem asm calling convention entirely.
 
 package big
 

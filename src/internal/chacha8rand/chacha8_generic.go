@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build !wasm3
+
 // ChaCha8 is ChaCha with 8 rounds.
 // See https://cr.yp.to/chacha/chacha-20080128.pdf.
 //

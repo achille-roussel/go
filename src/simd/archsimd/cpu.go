@@ -14,8 +14,12 @@ var X86 X86Features
 //
 // AVX is defined on all GOARCHes, but will only return true on
 // GOARCH amd64.
+//
+// When the program is compiled with GOAMD64=v3 or higher,
+// AVX always returns true, allowing the compiler to remove
+// code paths that handle the absence of the feature.
 func (X86Features) AVX() bool {
-	return cpu.X86.HasAVX
+	return goamd64v3 || cpu.X86.HasAVX
 }
 
 // AVX2 returns whether the CPU supports the AVX2 feature.
@@ -24,8 +28,12 @@ func (X86Features) AVX() bool {
 //
 // AVX2 is defined on all GOARCHes, but will only return true on
 // GOARCH amd64.
+//
+// When the program is compiled with GOAMD64=v3 or higher,
+// AVX2 always returns true, allowing the compiler to remove
+// code paths that handle the absence of the feature.
 func (X86Features) AVX2() bool {
-	return cpu.X86.HasAVX2
+	return goamd64v3 || cpu.X86.HasAVX2
 }
 
 // AVX512 returns whether the CPU supports the AVX512F+CD+BW+DQ+VL features.
@@ -39,8 +47,12 @@ func (X86Features) AVX2() bool {
 //
 // AVX512 is defined on all GOARCHes, but will only return true on
 // GOARCH amd64.
+//
+// When the program is compiled with GOAMD64=v4 or higher,
+// AVX512 always returns true, allowing the compiler to remove
+// code paths that handle the absence of the feature.
 func (X86Features) AVX512() bool {
-	return cpu.X86.HasAVX512
+	return goamd64v4 || cpu.X86.HasAVX512
 }
 
 // AVX512BITALG returns whether the CPU supports the AVX512BITALG feature.
@@ -128,7 +140,7 @@ func (X86Features) AVX512VPOPCNTDQ() bool {
 // AVXAES is defined on all GOARCHes, but will only return true on
 // GOARCH amd64.
 func (X86Features) AVXAES() bool {
-	return cpu.X86.HasAVX && cpu.X86.HasAES
+	return (goamd64v3 || cpu.X86.HasAVX) && cpu.X86.HasAES
 }
 
 // AVXVNNI returns whether the CPU supports the AVXVNNI feature.
@@ -147,8 +159,12 @@ func (X86Features) AVXVNNI() bool {
 //
 // FMA is defined on all GOARCHes, but will only return true on
 // GOARCH amd64.
+//
+// When the program is compiled with GOAMD64=v3 or higher,
+// FMA always returns true, allowing the compiler to remove
+// code paths that handle the absence of the feature.
 func (X86Features) FMA() bool {
-	return cpu.X86.HasFMA
+	return goamd64v3 || cpu.X86.HasFMA
 }
 
 // SHA returns whether the CPU supports the SHA feature.

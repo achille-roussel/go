@@ -858,12 +858,17 @@ func init() {
 	// TODO: In general, Intel doesn't make any guarantees about what flags are
 	// set, so this means our feature checks need to ensure these, just to be
 	// sure.
+	// The GOAMD64 fields record which GOAMD64 microarchitecture level
+	// guarantees each feature: v3 guarantees AVX, AVX2, and FMA, and v4
+	// additionally guarantees the AVX-512 features that make up the
+	// combined "AVX512" feature (F, BW, CD, DQ, and VL).
 	var features = map[string]featureInfo{
-		"AVX2":   {Implies: []string{"AVX"}},
-		"AVX512": {Implies: []string{"AVX2"}},
+		"AVX":    {GOAMD64: 3},
+		"AVX2":   {Implies: []string{"AVX"}, GOAMD64: 3},
+		"AVX512": {Implies: []string{"AVX2"}, GOAMD64: 4},
 
 		"AVXAES": {Virtual: true, Implies: []string{"AVX", "AES"}},
-		"FMA":    {Implies: []string{"AVX"}},
+		"FMA":    {Implies: []string{"AVX"}, GOAMD64: 3},
 		"VAES":   {Implies: []string{"AVX"}},
 
 		// AVX-512 subfeatures.

@@ -217,9 +217,17 @@ var X86 X86Features
 //
 // {{.Feature}} is defined on all GOARCHes, but will only return true on
 // GOARCH {{.GoArch}}.
+{{- if .GOAMD64}}
+//
+// When the program is compiled with GOAMD64=v{{.GOAMD64}} or higher,
+// {{.Feature}} always returns true, allowing the compiler to remove
+// code paths that handle the absence of the feature.
+{{- end}}
 func ({{.FeatureVar}}Features) {{.Feature}}() bool {
 {{- if .Virtual}}
-	return {{range $i, $dep := .Implies}}{{if $i}} && {{end}}cpu.{{$f.FeatureVar}}.Has{{$dep}}{{end}}
+	return {{range $i, $term := .VirtualTerms}}{{if $i}} && {{end}}{{$term}}{{end}}
+{{- else if .GOAMD64}}
+	return goamd64v{{.GOAMD64}} || cpu.{{.FeatureVar}}.Has{{.Feature}}
 {{- else}}
 	return cpu.{{.FeatureVar}}.Has{{.Feature}}
 {{- end}}
@@ -640,6 +648,12 @@ type featureInfo struct {
 	// Virtual means this feature is not represented directly in internal/cpu,
 	// but is instead the logical AND of the features in Implies.
 	Virtual bool
+
+	// GOAMD64 is the lowest GOAMD64 microarchitecture level that guarantees
+	// this feature, or 0 if no level does. When it is non-zero, the feature
+	// check returns true as a compile-time constant if the corresponding
+	// amd64.v<N> build tag is set. Only meaningful on GOARCH amd64.
+	GOAMD64 int
 }
 
 // goarchFeatureInfo maps from GOARCH to CPU feature to additional information
@@ -710,17 +724,35 @@ func writeSIMDFeatures(ops []Operation) *bytes.Buffer {
 		Virtual    bool
 		Implies    []string
 		ImpliesAll string
+		GOAMD64    int
+		// VirtualTerms is the list of expressions whose logical AND
+		// implements a virtual feature check. Terms for features that are
+		// guaranteed by a GOAMD64 microarchitecture level fold to a
+		// constant true when the corresponding build tag is set.
+		VirtualTerms []string
 	}
 	var features []feature
 	for _, k := range featureKeys {
 		featureVar := goarchFeatureInfo[k.GoArch].featureVar
 		fi := goarchFeatureInfo[k.GoArch].features[k.Feature]
+		var virtualTerms []string
+		if fi.Virtual {
+			for _, dep := range fi.Implies {
+				term := fmt.Sprintf("cpu.%s.Has%s", featureVar, dep)
+				if level := goarchFeatureInfo[k.GoArch].features[dep].GOAMD64; level != 0 {
+					term = fmt.Sprintf("(goamd64v%d || %s)", level, term)
+				}
+				virtualTerms = append(virtualTerms, term)
+			}
+		}
 		features = append(features, feature{
-			featureKey: k,
-			FeatureVar: featureVar,
-			Virtual:    fi.Virtual,
-			Implies:    fi.Implies,
-			ImpliesAll: featureImplies(k.GoArch, k.Feature),
+			featureKey:   k,
+			FeatureVar:   featureVar,
+			Virtual:      fi.Virtual,
+			Implies:      fi.Implies,
+			ImpliesAll:   featureImplies(k.GoArch, k.Feature),
+			GOAMD64:      fi.GOAMD64,
+			VirtualTerms: virtualTerms,
 		})
 	}
 

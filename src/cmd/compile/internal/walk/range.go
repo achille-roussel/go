@@ -103,6 +103,11 @@ func walkRange(nrange *ir.RangeStmt) ir.Node {
 			return nn
 		}
 
+		if nn := rangeMinMax(nrange, v1, v2, a); nn != nil {
+			base.Pos = lno
+			return nn
+		}
+
 		// Element type of the iteration
 		var elem *types.Type
 		switch t.Kind() {

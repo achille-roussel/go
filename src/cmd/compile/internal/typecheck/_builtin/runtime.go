@@ -215,6 +215,11 @@ func memmove(to *any, frm *any, length uintptr)
 func memclrNoHeapPointers(ptr unsafe.Pointer, n uintptr)
 func memclrHasPointers(ptr unsafe.Pointer, n uintptr)
 
+func minUint8(d []uint8, m uint8) uint8
+func maxUint8(d []uint8, m uint8) uint8
+func minInt16(d []int16, m int16) int16
+func maxInt16(d []int16, m int16) int16
+
 func memequal(x, y unsafe.Pointer, size uintptr) bool
 func memequal0(x, y unsafe.Pointer) bool
 func memequal8(x, y unsafe.Pointer) bool

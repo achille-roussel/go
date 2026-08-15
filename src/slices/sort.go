@@ -67,8 +67,8 @@ func Min[S ~[]E, E cmp.Ordered](x S) E {
 		panic("slices.Min: empty list")
 	}
 	m := x[0]
-	for i := 1; i < len(x); i++ {
-		m = min(m, x[i])
+	for _, v := range x[1:] {
+		m = min(m, v)
 	}
 	return m
 }
@@ -97,8 +97,8 @@ func Max[S ~[]E, E cmp.Ordered](x S) E {
 		panic("slices.Max: empty list")
 	}
 	m := x[0]
-	for i := 1; i < len(x); i++ {
-		m = max(m, x[i])
+	for _, v := range x[1:] {
+		m = max(m, v)
 	}
 	return m
 }

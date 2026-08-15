@@ -72,6 +72,10 @@ var runtimePkgs = []string{
 	"internal/profilerecord",
 	"internal/strconv",
 	"internal/stringslite",
+
+	// simd/archsimd backs the runtime's vectorized min/max reduction
+	// kernels (minmax_reduce_simd_amd64.go) under GOEXPERIMENT=simd.
+	"simd/archsimd",
 }
 
 // extraNoInstrumentPkgs is the set of packages in addition to runtimePkgs that

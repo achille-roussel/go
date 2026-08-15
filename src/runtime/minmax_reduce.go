@@ -69,3 +69,59 @@ func maxUint16(d []uint16, m uint16) uint16 {
 	}
 	return m
 }
+
+func minInt32(d []int32, m int32) int32 {
+	for _, v := range d {
+		m = min(m, v)
+	}
+	return m
+}
+
+func maxInt32(d []int32, m int32) int32 {
+	for _, v := range d {
+		m = max(m, v)
+	}
+	return m
+}
+
+func minUint32(d []uint32, m uint32) uint32 {
+	for _, v := range d {
+		m = min(m, v)
+	}
+	return m
+}
+
+func maxUint32(d []uint32, m uint32) uint32 {
+	for _, v := range d {
+		m = max(m, v)
+	}
+	return m
+}
+
+func minInt64(d []int64, m int64) int64 {
+	for _, v := range d {
+		m = min(m, v)
+	}
+	return m
+}
+
+func maxInt64(d []int64, m int64) int64 {
+	for _, v := range d {
+		m = max(m, v)
+	}
+	return m
+}
+
+func minUint64(d []uint64, m uint64) uint64 {
+	for _, v := range d {
+		m = min(m, v)
+	}
+	return m
+}
+
+func maxUint64(d []uint64, m uint64) uint64 {
+	for _, v := range d {
+		m = max(m, v)
+	}
+	return m
+}

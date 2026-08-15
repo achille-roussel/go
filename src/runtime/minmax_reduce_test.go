@@ -5,6 +5,7 @@
 package runtime_test
 
 import (
+	"math"
 	"math/rand"
 	"runtime"
 	"testing"
@@ -178,6 +179,173 @@ func TestMinMaxUint16Kernel(t *testing.T) {
 	}
 }
 
+func refMinInt32(d []int32, m int32) int32 {
+	for i := len(d) - 1; i >= 0; i-- {
+		if d[i] < m {
+			m = d[i]
+		}
+	}
+	return m
+}
+
+func refMaxInt32(d []int32, m int32) int32 {
+	for i := len(d) - 1; i >= 0; i-- {
+		if d[i] > m {
+			m = d[i]
+		}
+	}
+	return m
+}
+
+func refMinUint32(d []uint32, m uint32) uint32 {
+	for i := len(d) - 1; i >= 0; i-- {
+		if d[i] < m {
+			m = d[i]
+		}
+	}
+	return m
+}
+
+func refMaxUint32(d []uint32, m uint32) uint32 {
+	for i := len(d) - 1; i >= 0; i-- {
+		if d[i] > m {
+			m = d[i]
+		}
+	}
+	return m
+}
+
+func refMinInt64(d []int64, m int64) int64 {
+	for i := len(d) - 1; i >= 0; i-- {
+		if d[i] < m {
+			m = d[i]
+		}
+	}
+	return m
+}
+
+func refMaxInt64(d []int64, m int64) int64 {
+	for i := len(d) - 1; i >= 0; i-- {
+		if d[i] > m {
+			m = d[i]
+		}
+	}
+	return m
+}
+
+func refMinUint64(d []uint64, m uint64) uint64 {
+	for i := len(d) - 1; i >= 0; i-- {
+		if d[i] < m {
+			m = d[i]
+		}
+	}
+	return m
+}
+
+func refMaxUint64(d []uint64, m uint64) uint64 {
+	for i := len(d) - 1; i >= 0; i-- {
+		if d[i] > m {
+			m = d[i]
+		}
+	}
+	return m
+}
+
+func TestMinMaxInt32Kernel(t *testing.T) {
+	r := rand.New(rand.NewSource(7))
+	for _, n := range minmaxSizes {
+		d := make([]int32, n)
+		for i := range d {
+			d[i] = int32(r.Uint64())
+		}
+		if n > 0 {
+			d[n-1] = math.MinInt32
+			d[0] = math.MaxInt32
+		}
+		for _, seed := range []int32{math.MinInt32, -1, 0, 1, math.MaxInt32} {
+			if got, want := runtime.MinInt32Kernel(d, seed), refMinInt32(d, seed); got != want {
+				t.Errorf("minInt32(%d, len %d) = %d, want %d", seed, n, got, want)
+			}
+			if got, want := runtime.MaxInt32Kernel(d, seed), refMaxInt32(d, seed); got != want {
+				t.Errorf("maxInt32(%d, len %d) = %d, want %d", seed, n, got, want)
+			}
+		}
+	}
+}
+
+func TestMinMaxUint32Kernel(t *testing.T) {
+	r := rand.New(rand.NewSource(8))
+	for _, n := range minmaxSizes {
+		d := make([]uint32, n)
+		for i := range d {
+			d[i] = uint32(r.Uint64())
+		}
+		if n > 0 {
+			d[n-1] = 0
+			d[0] = math.MaxUint32
+		}
+		for _, seed := range []uint32{0, 1, 1 << 31, math.MaxUint32 - 1, math.MaxUint32} {
+			if got, want := runtime.MinUint32Kernel(d, seed), refMinUint32(d, seed); got != want {
+				t.Errorf("minUint32(%d, len %d) = %d, want %d", seed, n, got, want)
+			}
+			if got, want := runtime.MaxUint32Kernel(d, seed), refMaxUint32(d, seed); got != want {
+				t.Errorf("maxUint32(%d, len %d) = %d, want %d", seed, n, got, want)
+			}
+		}
+	}
+}
+
+func TestMinMaxInt64Kernel(t *testing.T) {
+	r := rand.New(rand.NewSource(9))
+	for _, n := range minmaxSizes {
+		d := make([]int64, n)
+		for i := range d {
+			d[i] = int64(r.Uint64())
+		}
+		if n > 0 {
+			d[n-1] = math.MinInt64
+			d[0] = math.MaxInt64
+		}
+		for _, seed := range []int64{math.MinInt64, -1, 0, 1, math.MaxInt64} {
+			if got, want := runtime.MinInt64Kernel(d, seed), refMinInt64(d, seed); got != want {
+				t.Errorf("minInt64(%d, len %d) = %d, want %d", seed, n, got, want)
+			}
+			if got, want := runtime.MaxInt64Kernel(d, seed), refMaxInt64(d, seed); got != want {
+				t.Errorf("maxInt64(%d, len %d) = %d, want %d", seed, n, got, want)
+			}
+		}
+	}
+}
+
+// TestMinMaxUint64Kernel is particularly interested in values on both
+// sides of 1<<63: the AVX2 tier has no unsigned 64-bit compare and
+// relies on archsimd's sign-bias emulation.
+func TestMinMaxUint64Kernel(t *testing.T) {
+	r := rand.New(rand.NewSource(10))
+	for _, n := range minmaxSizes {
+		d := make([]uint64, n)
+		for i := range d {
+			d[i] = r.Uint64()
+		}
+		if n > 0 {
+			d[n-1] = 0
+			d[0] = math.MaxUint64
+		}
+		if n > 2 {
+			d[n/2] = 1<<63 - 1
+			d[n/2+1] = 1 << 63
+		}
+		for _, seed := range []uint64{0, 1, 1<<63 - 1, 1 << 63, math.MaxUint64} {
+			if got, want := runtime.MinUint64Kernel(d, seed), refMinUint64(d, seed); got != want {
+				t.Errorf("minUint64(%d, len %d) = %d, want %d", seed, n, got, want)
+			}
+			if got, want := runtime.MaxUint64Kernel(d, seed), refMaxUint64(d, seed); got != want {
+				t.Errorf("maxUint64(%d, len %d) = %d, want %d", seed, n, got, want)
+			}
+		}
+	}
+}
+
 // TestMinMaxKernelExtremePositions sweeps the extreme element through
 // every position so overlapping tail loads and accumulator merging are
 // all exercised.
@@ -228,6 +396,22 @@ func BenchmarkMinInt16Kernel(b *testing.B) {
 			b.SetBytes(int64(2 * n))
 			for b.Loop() {
 				runtime.MinInt16Kernel(d, 32767)
+			}
+		})
+	}
+}
+
+func BenchmarkMinInt64Kernel(b *testing.B) {
+	for _, n := range []int{64, 1024, 65536} {
+		d := make([]int64, n)
+		r := rand.New(rand.NewSource(11))
+		for i := range d {
+			d[i] = int64(r.Uint64())
+		}
+		b.Run(sizeName(n), func(b *testing.B) {
+			b.SetBytes(int64(8 * n))
+			for b.Loop() {
+				runtime.MinInt64Kernel(d, math.MaxInt64)
 			}
 		})
 	}

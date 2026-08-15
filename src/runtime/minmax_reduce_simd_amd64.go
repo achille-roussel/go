@@ -15,7 +15,6 @@ import (
 // rewrites reduction loops of the form
 //
 //	for _, v := range x { m = min(m, v) }
-//	for _, v := range x { if v < m { m = v } }
 //
 // into calls to these functions when GOEXPERIMENT=simd is enabled; see
 // cmd/compile/internal/walk/minmax.go.
@@ -430,6 +429,415 @@ func maxUint16(d []uint16, m uint16) uint16 {
 		}
 		var buf [16]uint16
 		acc0.Max(acc1).StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m, d = buf[0], buf[1:]
+	}
+	for _, v := range d {
+		m = max(m, v)
+	}
+	return m
+}
+
+func minInt32(d []int32, m int32) int32 {
+	switch {
+	case archsimd.X86.AVX512() && len(d) >= 32:
+		acc0 := archsimd.BroadcastInt32x16(m)
+		acc1 := acc0
+		chunks := slicecast[[32]int32](d)
+		for j := range chunks {
+			c := &chunks[j]
+			acc0 = acc0.Min(archsimd.LoadInt32x16(c[0:16]))
+			acc1 = acc1.Min(archsimd.LoadInt32x16(c[16:32]))
+		}
+		if rem := len(d) - len(chunks)*32; rem > 0 {
+			acc0 = acc0.Min(archsimd.LoadInt32x16(d[len(d)-16:]))
+			if rem > 16 {
+				acc1 = acc1.Min(archsimd.LoadInt32x16(d[len(d)-32:]))
+			}
+		}
+		a := acc0.Min(acc1)
+		h := a.GetLo().Min(a.GetHi())
+		var buf [8]int32
+		h.StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m, d = buf[0], buf[1:]
+	case archsimd.X86.AVX2() && len(d) >= 16:
+		acc0 := archsimd.BroadcastInt32x8(m)
+		acc1 := acc0
+		chunks := slicecast[[16]int32](d)
+		for j := range chunks {
+			c := &chunks[j]
+			acc0 = acc0.Min(archsimd.LoadInt32x8(c[0:8]))
+			acc1 = acc1.Min(archsimd.LoadInt32x8(c[8:16]))
+		}
+		if rem := len(d) - len(chunks)*16; rem > 0 {
+			acc0 = acc0.Min(archsimd.LoadInt32x8(d[len(d)-8:]))
+			if rem > 8 {
+				acc1 = acc1.Min(archsimd.LoadInt32x8(d[len(d)-16:]))
+			}
+		}
+		var buf [8]int32
+		acc0.Min(acc1).StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m, d = buf[0], buf[1:]
+	}
+	for _, v := range d {
+		m = min(m, v)
+	}
+	return m
+}
+
+func maxInt32(d []int32, m int32) int32 {
+	switch {
+	case archsimd.X86.AVX512() && len(d) >= 32:
+		acc0 := archsimd.BroadcastInt32x16(m)
+		acc1 := acc0
+		chunks := slicecast[[32]int32](d)
+		for j := range chunks {
+			c := &chunks[j]
+			acc0 = acc0.Max(archsimd.LoadInt32x16(c[0:16]))
+			acc1 = acc1.Max(archsimd.LoadInt32x16(c[16:32]))
+		}
+		if rem := len(d) - len(chunks)*32; rem > 0 {
+			acc0 = acc0.Max(archsimd.LoadInt32x16(d[len(d)-16:]))
+			if rem > 16 {
+				acc1 = acc1.Max(archsimd.LoadInt32x16(d[len(d)-32:]))
+			}
+		}
+		a := acc0.Max(acc1)
+		h := a.GetLo().Max(a.GetHi())
+		var buf [8]int32
+		h.StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m, d = buf[0], buf[1:]
+	case archsimd.X86.AVX2() && len(d) >= 16:
+		acc0 := archsimd.BroadcastInt32x8(m)
+		acc1 := acc0
+		chunks := slicecast[[16]int32](d)
+		for j := range chunks {
+			c := &chunks[j]
+			acc0 = acc0.Max(archsimd.LoadInt32x8(c[0:8]))
+			acc1 = acc1.Max(archsimd.LoadInt32x8(c[8:16]))
+		}
+		if rem := len(d) - len(chunks)*16; rem > 0 {
+			acc0 = acc0.Max(archsimd.LoadInt32x8(d[len(d)-8:]))
+			if rem > 8 {
+				acc1 = acc1.Max(archsimd.LoadInt32x8(d[len(d)-16:]))
+			}
+		}
+		var buf [8]int32
+		acc0.Max(acc1).StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m, d = buf[0], buf[1:]
+	}
+	for _, v := range d {
+		m = max(m, v)
+	}
+	return m
+}
+
+func minUint32(d []uint32, m uint32) uint32 {
+	switch {
+	case archsimd.X86.AVX512() && len(d) >= 32:
+		acc0 := archsimd.BroadcastUint32x16(m)
+		acc1 := acc0
+		chunks := slicecast[[32]uint32](d)
+		for j := range chunks {
+			c := &chunks[j]
+			acc0 = acc0.Min(archsimd.LoadUint32x16(c[0:16]))
+			acc1 = acc1.Min(archsimd.LoadUint32x16(c[16:32]))
+		}
+		if rem := len(d) - len(chunks)*32; rem > 0 {
+			acc0 = acc0.Min(archsimd.LoadUint32x16(d[len(d)-16:]))
+			if rem > 16 {
+				acc1 = acc1.Min(archsimd.LoadUint32x16(d[len(d)-32:]))
+			}
+		}
+		a := acc0.Min(acc1)
+		h := a.GetLo().Min(a.GetHi())
+		var buf [8]uint32
+		h.StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m, d = buf[0], buf[1:]
+	case archsimd.X86.AVX2() && len(d) >= 16:
+		acc0 := archsimd.BroadcastUint32x8(m)
+		acc1 := acc0
+		chunks := slicecast[[16]uint32](d)
+		for j := range chunks {
+			c := &chunks[j]
+			acc0 = acc0.Min(archsimd.LoadUint32x8(c[0:8]))
+			acc1 = acc1.Min(archsimd.LoadUint32x8(c[8:16]))
+		}
+		if rem := len(d) - len(chunks)*16; rem > 0 {
+			acc0 = acc0.Min(archsimd.LoadUint32x8(d[len(d)-8:]))
+			if rem > 8 {
+				acc1 = acc1.Min(archsimd.LoadUint32x8(d[len(d)-16:]))
+			}
+		}
+		var buf [8]uint32
+		acc0.Min(acc1).StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m, d = buf[0], buf[1:]
+	}
+	for _, v := range d {
+		m = min(m, v)
+	}
+	return m
+}
+
+func maxUint32(d []uint32, m uint32) uint32 {
+	switch {
+	case archsimd.X86.AVX512() && len(d) >= 32:
+		acc0 := archsimd.BroadcastUint32x16(m)
+		acc1 := acc0
+		chunks := slicecast[[32]uint32](d)
+		for j := range chunks {
+			c := &chunks[j]
+			acc0 = acc0.Max(archsimd.LoadUint32x16(c[0:16]))
+			acc1 = acc1.Max(archsimd.LoadUint32x16(c[16:32]))
+		}
+		if rem := len(d) - len(chunks)*32; rem > 0 {
+			acc0 = acc0.Max(archsimd.LoadUint32x16(d[len(d)-16:]))
+			if rem > 16 {
+				acc1 = acc1.Max(archsimd.LoadUint32x16(d[len(d)-32:]))
+			}
+		}
+		a := acc0.Max(acc1)
+		h := a.GetLo().Max(a.GetHi())
+		var buf [8]uint32
+		h.StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m, d = buf[0], buf[1:]
+	case archsimd.X86.AVX2() && len(d) >= 16:
+		acc0 := archsimd.BroadcastUint32x8(m)
+		acc1 := acc0
+		chunks := slicecast[[16]uint32](d)
+		for j := range chunks {
+			c := &chunks[j]
+			acc0 = acc0.Max(archsimd.LoadUint32x8(c[0:8]))
+			acc1 = acc1.Max(archsimd.LoadUint32x8(c[8:16]))
+		}
+		if rem := len(d) - len(chunks)*16; rem > 0 {
+			acc0 = acc0.Max(archsimd.LoadUint32x8(d[len(d)-8:]))
+			if rem > 8 {
+				acc1 = acc1.Max(archsimd.LoadUint32x8(d[len(d)-16:]))
+			}
+		}
+		var buf [8]uint32
+		acc0.Max(acc1).StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m, d = buf[0], buf[1:]
+	}
+	for _, v := range d {
+		m = max(m, v)
+	}
+	return m
+}
+
+// The 64-bit AVX2 tiers below cannot use Min/Max: VPMINSQ, VPMAXSQ,
+// VPMINUQ and VPMAXUQ only exist in AVX-512. They select with a compare
+// and blend instead; the unsigned Greater is emulated by archsimd with
+// a sign-bias and signed compare, which is still AVX2-only.
+
+func minInt64(d []int64, m int64) int64 {
+	switch {
+	case archsimd.X86.AVX512() && len(d) >= 16:
+		acc0 := archsimd.BroadcastInt64x8(m)
+		acc1 := acc0
+		chunks := slicecast[[16]int64](d)
+		for j := range chunks {
+			c := &chunks[j]
+			acc0 = acc0.Min(archsimd.LoadInt64x8(c[0:8]))
+			acc1 = acc1.Min(archsimd.LoadInt64x8(c[8:16]))
+		}
+		if rem := len(d) - len(chunks)*16; rem > 0 {
+			acc0 = acc0.Min(archsimd.LoadInt64x8(d[len(d)-8:]))
+			if rem > 8 {
+				acc1 = acc1.Min(archsimd.LoadInt64x8(d[len(d)-16:]))
+			}
+		}
+		var buf [8]int64
+		acc0.Min(acc1).StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m, d = buf[0], buf[1:]
+	case archsimd.X86.AVX2() && len(d) >= 8:
+		acc0 := archsimd.BroadcastInt64x4(m)
+		acc1 := acc0
+		chunks := slicecast[[8]int64](d)
+		for j := range chunks {
+			c := &chunks[j]
+			v0 := archsimd.LoadInt64x4(c[0:4])
+			v1 := archsimd.LoadInt64x4(c[4:8])
+			acc0 = v0.IfElse(acc0.Greater(v0), acc0)
+			acc1 = v1.IfElse(acc1.Greater(v1), acc1)
+		}
+		if rem := len(d) - len(chunks)*8; rem > 0 {
+			t0 := archsimd.LoadInt64x4(d[len(d)-4:])
+			acc0 = t0.IfElse(acc0.Greater(t0), acc0)
+			if rem > 4 {
+				t1 := archsimd.LoadInt64x4(d[len(d)-8:])
+				acc1 = t1.IfElse(acc1.Greater(t1), acc1)
+			}
+		}
+		acc0 = acc1.IfElse(acc0.Greater(acc1), acc0)
+		var buf [4]int64
+		acc0.StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m, d = buf[0], buf[1:]
+	}
+	for _, v := range d {
+		m = min(m, v)
+	}
+	return m
+}
+
+func maxInt64(d []int64, m int64) int64 {
+	switch {
+	case archsimd.X86.AVX512() && len(d) >= 16:
+		acc0 := archsimd.BroadcastInt64x8(m)
+		acc1 := acc0
+		chunks := slicecast[[16]int64](d)
+		for j := range chunks {
+			c := &chunks[j]
+			acc0 = acc0.Max(archsimd.LoadInt64x8(c[0:8]))
+			acc1 = acc1.Max(archsimd.LoadInt64x8(c[8:16]))
+		}
+		if rem := len(d) - len(chunks)*16; rem > 0 {
+			acc0 = acc0.Max(archsimd.LoadInt64x8(d[len(d)-8:]))
+			if rem > 8 {
+				acc1 = acc1.Max(archsimd.LoadInt64x8(d[len(d)-16:]))
+			}
+		}
+		var buf [8]int64
+		acc0.Max(acc1).StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m, d = buf[0], buf[1:]
+	case archsimd.X86.AVX2() && len(d) >= 8:
+		acc0 := archsimd.BroadcastInt64x4(m)
+		acc1 := acc0
+		chunks := slicecast[[8]int64](d)
+		for j := range chunks {
+			c := &chunks[j]
+			v0 := archsimd.LoadInt64x4(c[0:4])
+			v1 := archsimd.LoadInt64x4(c[4:8])
+			acc0 = acc0.IfElse(acc0.Greater(v0), v0)
+			acc1 = acc1.IfElse(acc1.Greater(v1), v1)
+		}
+		if rem := len(d) - len(chunks)*8; rem > 0 {
+			t0 := archsimd.LoadInt64x4(d[len(d)-4:])
+			acc0 = acc0.IfElse(acc0.Greater(t0), t0)
+			if rem > 4 {
+				t1 := archsimd.LoadInt64x4(d[len(d)-8:])
+				acc1 = acc1.IfElse(acc1.Greater(t1), t1)
+			}
+		}
+		acc0 = acc0.IfElse(acc0.Greater(acc1), acc1)
+		var buf [4]int64
+		acc0.StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m, d = buf[0], buf[1:]
+	}
+	for _, v := range d {
+		m = max(m, v)
+	}
+	return m
+}
+
+func minUint64(d []uint64, m uint64) uint64 {
+	switch {
+	case archsimd.X86.AVX512() && len(d) >= 16:
+		acc0 := archsimd.BroadcastUint64x8(m)
+		acc1 := acc0
+		chunks := slicecast[[16]uint64](d)
+		for j := range chunks {
+			c := &chunks[j]
+			acc0 = acc0.Min(archsimd.LoadUint64x8(c[0:8]))
+			acc1 = acc1.Min(archsimd.LoadUint64x8(c[8:16]))
+		}
+		if rem := len(d) - len(chunks)*16; rem > 0 {
+			acc0 = acc0.Min(archsimd.LoadUint64x8(d[len(d)-8:]))
+			if rem > 8 {
+				acc1 = acc1.Min(archsimd.LoadUint64x8(d[len(d)-16:]))
+			}
+		}
+		var buf [8]uint64
+		acc0.Min(acc1).StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m, d = buf[0], buf[1:]
+	case archsimd.X86.AVX2() && len(d) >= 8:
+		acc0 := archsimd.BroadcastUint64x4(m)
+		acc1 := acc0
+		chunks := slicecast[[8]uint64](d)
+		for j := range chunks {
+			c := &chunks[j]
+			v0 := archsimd.LoadUint64x4(c[0:4])
+			v1 := archsimd.LoadUint64x4(c[4:8])
+			acc0 = v0.IfElse(acc0.Greater(v0), acc0)
+			acc1 = v1.IfElse(acc1.Greater(v1), acc1)
+		}
+		if rem := len(d) - len(chunks)*8; rem > 0 {
+			t0 := archsimd.LoadUint64x4(d[len(d)-4:])
+			acc0 = t0.IfElse(acc0.Greater(t0), acc0)
+			if rem > 4 {
+				t1 := archsimd.LoadUint64x4(d[len(d)-8:])
+				acc1 = t1.IfElse(acc1.Greater(t1), acc1)
+			}
+		}
+		acc0 = acc1.IfElse(acc0.Greater(acc1), acc0)
+		var buf [4]uint64
+		acc0.StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m, d = buf[0], buf[1:]
+	}
+	for _, v := range d {
+		m = min(m, v)
+	}
+	return m
+}
+
+func maxUint64(d []uint64, m uint64) uint64 {
+	switch {
+	case archsimd.X86.AVX512() && len(d) >= 16:
+		acc0 := archsimd.BroadcastUint64x8(m)
+		acc1 := acc0
+		chunks := slicecast[[16]uint64](d)
+		for j := range chunks {
+			c := &chunks[j]
+			acc0 = acc0.Max(archsimd.LoadUint64x8(c[0:8]))
+			acc1 = acc1.Max(archsimd.LoadUint64x8(c[8:16]))
+		}
+		if rem := len(d) - len(chunks)*16; rem > 0 {
+			acc0 = acc0.Max(archsimd.LoadUint64x8(d[len(d)-8:]))
+			if rem > 8 {
+				acc1 = acc1.Max(archsimd.LoadUint64x8(d[len(d)-16:]))
+			}
+		}
+		var buf [8]uint64
+		acc0.Max(acc1).StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m, d = buf[0], buf[1:]
+	case archsimd.X86.AVX2() && len(d) >= 8:
+		acc0 := archsimd.BroadcastUint64x4(m)
+		acc1 := acc0
+		chunks := slicecast[[8]uint64](d)
+		for j := range chunks {
+			c := &chunks[j]
+			v0 := archsimd.LoadUint64x4(c[0:4])
+			v1 := archsimd.LoadUint64x4(c[4:8])
+			acc0 = acc0.IfElse(acc0.Greater(v0), v0)
+			acc1 = acc1.IfElse(acc1.Greater(v1), v1)
+		}
+		if rem := len(d) - len(chunks)*8; rem > 0 {
+			t0 := archsimd.LoadUint64x4(d[len(d)-4:])
+			acc0 = acc0.IfElse(acc0.Greater(t0), t0)
+			if rem > 4 {
+				t1 := archsimd.LoadUint64x4(d[len(d)-8:])
+				acc1 = acc1.IfElse(acc1.Greater(t1), t1)
+			}
+		}
+		acc0 = acc0.IfElse(acc0.Greater(acc1), acc1)
+		var buf [4]uint64
+		acc0.StoreArray(&buf)
 		archsimd.ClearAVXUpperBits()
 		m, d = buf[0], buf[1:]
 	}

@@ -48,7 +48,10 @@ func minmaxEnabled() bool {
 
 // minmaxKernel returns the name and element type of the runtime kernel
 // that folds a slice with element type elem into an accumulator using
-// op (OMIN or OMAX), or "" if the element type has no kernel.
+// op (OMIN or OMAX), or "" if the element type has no kernel. The
+// sized integer types map directly; int, uint and uintptr map to the
+// 64-bit kernels, which is their size on amd64, the only target the
+// rewrite runs on.
 func minmaxKernel(op ir.Op, elem *types.Type) (string, *types.Type) {
 	var suffix string
 	var kind types.Kind
@@ -61,6 +64,14 @@ func minmaxKernel(op ir.Op, elem *types.Type) (string, *types.Type) {
 		suffix, kind = "Int16", types.TINT16
 	case types.TUINT16:
 		suffix, kind = "Uint16", types.TUINT16
+	case types.TINT32:
+		suffix, kind = "Int32", types.TINT32
+	case types.TUINT32:
+		suffix, kind = "Uint32", types.TUINT32
+	case types.TINT64, types.TINT:
+		suffix, kind = "Int64", types.TINT64
+	case types.TUINT64, types.TUINT, types.TUINTPTR:
+		suffix, kind = "Uint64", types.TUINT64
 	default:
 		return "", nil
 	}

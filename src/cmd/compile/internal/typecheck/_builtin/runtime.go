@@ -223,6 +223,14 @@ func minInt16(d []int16, m int16) int16
 func maxInt16(d []int16, m int16) int16
 func minUint16(d []uint16, m uint16) uint16
 func maxUint16(d []uint16, m uint16) uint16
+func minInt32(d []int32, m int32) int32
+func maxInt32(d []int32, m int32) int32
+func minUint32(d []uint32, m uint32) uint32
+func maxUint32(d []uint32, m uint32) uint32
+func minInt64(d []int64, m int64) int64
+func maxInt64(d []int64, m int64) int64
+func minUint64(d []uint64, m uint64) uint64
+func maxUint64(d []uint64, m uint64) uint64
 
 func memequal(x, y unsafe.Pointer, size uintptr) bool
 func memequal0(x, y unsafe.Pointer) bool

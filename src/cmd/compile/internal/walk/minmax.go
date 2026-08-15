@@ -55,8 +55,12 @@ func minmaxKernel(op ir.Op, elem *types.Type) (string, *types.Type) {
 	switch elem.Kind() {
 	case types.TUINT8:
 		suffix, kind = "Uint8", types.TUINT8
+	case types.TINT8:
+		suffix, kind = "Int8", types.TINT8
 	case types.TINT16:
 		suffix, kind = "Int16", types.TINT16
+	case types.TUINT16:
+		suffix, kind = "Uint16", types.TUINT16
 	default:
 		return "", nil
 	}

@@ -33,6 +33,24 @@ func refMaxUint8(d []uint8, m uint8) uint8 {
 	return m
 }
 
+func refMinInt8(d []int8, m int8) int8 {
+	for i := len(d) - 1; i >= 0; i-- {
+		if d[i] < m {
+			m = d[i]
+		}
+	}
+	return m
+}
+
+func refMaxInt8(d []int8, m int8) int8 {
+	for i := len(d) - 1; i >= 0; i-- {
+		if d[i] > m {
+			m = d[i]
+		}
+	}
+	return m
+}
+
 func refMinInt16(d []int16, m int16) int16 {
 	for i := len(d) - 1; i >= 0; i-- {
 		if d[i] < m {
@@ -43,6 +61,24 @@ func refMinInt16(d []int16, m int16) int16 {
 }
 
 func refMaxInt16(d []int16, m int16) int16 {
+	for i := len(d) - 1; i >= 0; i-- {
+		if d[i] > m {
+			m = d[i]
+		}
+	}
+	return m
+}
+
+func refMinUint16(d []uint16, m uint16) uint16 {
+	for i := len(d) - 1; i >= 0; i-- {
+		if d[i] < m {
+			m = d[i]
+		}
+	}
+	return m
+}
+
+func refMaxUint16(d []uint16, m uint16) uint16 {
 	for i := len(d) - 1; i >= 0; i-- {
 		if d[i] > m {
 			m = d[i]
@@ -93,6 +129,50 @@ func TestMinMaxInt16Kernel(t *testing.T) {
 			}
 			if got, want := runtime.MaxInt16Kernel(d, seed), refMaxInt16(d, seed); got != want {
 				t.Errorf("maxInt16(%d, len %d) = %d, want %d", seed, n, got, want)
+			}
+		}
+	}
+}
+
+func TestMinMaxInt8Kernel(t *testing.T) {
+	r := rand.New(rand.NewSource(5))
+	for _, n := range minmaxSizes {
+		d := make([]int8, n)
+		for i := range d {
+			d[i] = int8(r.Uint32())
+		}
+		if n > 0 {
+			d[n-1] = -128
+			d[0] = 127
+		}
+		for _, seed := range []int8{-128, -1, 0, 1, 127} {
+			if got, want := runtime.MinInt8Kernel(d, seed), refMinInt8(d, seed); got != want {
+				t.Errorf("minInt8(%d, len %d) = %d, want %d", seed, n, got, want)
+			}
+			if got, want := runtime.MaxInt8Kernel(d, seed), refMaxInt8(d, seed); got != want {
+				t.Errorf("maxInt8(%d, len %d) = %d, want %d", seed, n, got, want)
+			}
+		}
+	}
+}
+
+func TestMinMaxUint16Kernel(t *testing.T) {
+	r := rand.New(rand.NewSource(6))
+	for _, n := range minmaxSizes {
+		d := make([]uint16, n)
+		for i := range d {
+			d[i] = uint16(r.Uint32())
+		}
+		if n > 0 {
+			d[n-1] = 0
+			d[0] = 65535
+		}
+		for _, seed := range []uint16{0, 1, 32768, 65534, 65535} {
+			if got, want := runtime.MinUint16Kernel(d, seed), refMinUint16(d, seed); got != want {
+				t.Errorf("minUint16(%d, len %d) = %d, want %d", seed, n, got, want)
+			}
+			if got, want := runtime.MaxUint16Kernel(d, seed), refMaxUint16(d, seed); got != want {
+				t.Errorf("maxUint16(%d, len %d) = %d, want %d", seed, n, got, want)
 			}
 		}
 	}

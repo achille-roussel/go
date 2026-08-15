@@ -217,8 +217,12 @@ func memclrHasPointers(ptr unsafe.Pointer, n uintptr)
 
 func minUint8(d []uint8, m uint8) uint8
 func maxUint8(d []uint8, m uint8) uint8
+func minInt8(d []int8, m int8) int8
+func maxInt8(d []int8, m int8) int8
 func minInt16(d []int16, m int16) int16
 func maxInt16(d []int16, m int16) int16
+func minUint16(d []uint16, m uint16) uint16
+func maxUint16(d []uint16, m uint16) uint16
 
 func memequal(x, y unsafe.Pointer, size uintptr) bool
 func memequal0(x, y unsafe.Pointer) bool

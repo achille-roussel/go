@@ -101,6 +101,64 @@ func maxUint8(d []uint8, m uint8) uint8 {
 	return m
 }
 
+func minInt8(d []int8, m int8) int8 {
+	if archsimd.X86.AVX2() && len(d) >= 64 {
+		acc0 := archsimd.BroadcastInt8x32(m)
+		acc1 := acc0
+		chunks := slicecast[[64]int8](d)
+		for j := range chunks {
+			c := &chunks[j]
+			acc0 = acc0.Min(archsimd.LoadInt8x32(c[0:32]))
+			acc1 = acc1.Min(archsimd.LoadInt8x32(c[32:64]))
+		}
+		if rem := len(d) - len(chunks)*64; rem > 0 {
+			acc0 = acc0.Min(archsimd.LoadInt8x32(d[len(d)-32:]))
+			if rem > 32 {
+				acc1 = acc1.Min(archsimd.LoadInt8x32(d[len(d)-64:]))
+			}
+		}
+		acc0 = acc0.Min(acc1)
+		var buf [32]int8
+		acc0.StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m = buf[0]
+		d = buf[1:]
+	}
+	for _, v := range d {
+		m = min(m, v)
+	}
+	return m
+}
+
+func maxInt8(d []int8, m int8) int8 {
+	if archsimd.X86.AVX2() && len(d) >= 64 {
+		acc0 := archsimd.BroadcastInt8x32(m)
+		acc1 := acc0
+		chunks := slicecast[[64]int8](d)
+		for j := range chunks {
+			c := &chunks[j]
+			acc0 = acc0.Max(archsimd.LoadInt8x32(c[0:32]))
+			acc1 = acc1.Max(archsimd.LoadInt8x32(c[32:64]))
+		}
+		if rem := len(d) - len(chunks)*64; rem > 0 {
+			acc0 = acc0.Max(archsimd.LoadInt8x32(d[len(d)-32:]))
+			if rem > 32 {
+				acc1 = acc1.Max(archsimd.LoadInt8x32(d[len(d)-64:]))
+			}
+		}
+		acc0 = acc0.Max(acc1)
+		var buf [32]int8
+		acc0.StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m = buf[0]
+		d = buf[1:]
+	}
+	for _, v := range d {
+		m = max(m, v)
+	}
+	return m
+}
+
 func minInt16(d []int16, m int16) int16 {
 	if archsimd.X86.AVX2() && len(d) >= 32 {
 		acc0 := archsimd.BroadcastInt16x16(m)
@@ -148,6 +206,64 @@ func maxInt16(d []int16, m int16) int16 {
 		}
 		acc0 = acc0.Max(acc1)
 		var buf [16]int16
+		acc0.StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m = buf[0]
+		d = buf[1:]
+	}
+	for _, v := range d {
+		m = max(m, v)
+	}
+	return m
+}
+
+func minUint16(d []uint16, m uint16) uint16 {
+	if archsimd.X86.AVX2() && len(d) >= 32 {
+		acc0 := archsimd.BroadcastUint16x16(m)
+		acc1 := acc0
+		chunks := slicecast[[32]uint16](d)
+		for j := range chunks {
+			c := &chunks[j]
+			acc0 = acc0.Min(archsimd.LoadUint16x16(c[0:16]))
+			acc1 = acc1.Min(archsimd.LoadUint16x16(c[16:32]))
+		}
+		if rem := len(d) - len(chunks)*32; rem > 0 {
+			acc0 = acc0.Min(archsimd.LoadUint16x16(d[len(d)-16:]))
+			if rem > 16 {
+				acc1 = acc1.Min(archsimd.LoadUint16x16(d[len(d)-32:]))
+			}
+		}
+		acc0 = acc0.Min(acc1)
+		var buf [16]uint16
+		acc0.StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m = buf[0]
+		d = buf[1:]
+	}
+	for _, v := range d {
+		m = min(m, v)
+	}
+	return m
+}
+
+func maxUint16(d []uint16, m uint16) uint16 {
+	if archsimd.X86.AVX2() && len(d) >= 32 {
+		acc0 := archsimd.BroadcastUint16x16(m)
+		acc1 := acc0
+		chunks := slicecast[[32]uint16](d)
+		for j := range chunks {
+			c := &chunks[j]
+			acc0 = acc0.Max(archsimd.LoadUint16x16(c[0:16]))
+			acc1 = acc1.Max(archsimd.LoadUint16x16(c[16:32]))
+		}
+		if rem := len(d) - len(chunks)*32; rem > 0 {
+			acc0 = acc0.Max(archsimd.LoadUint16x16(d[len(d)-16:]))
+			if rem > 16 {
+				acc1 = acc1.Max(archsimd.LoadUint16x16(d[len(d)-32:]))
+			}
+		}
+		acc0 = acc0.Max(acc1)
+		var buf [16]uint16
 		acc0.StoreArray(&buf)
 		archsimd.ClearAVXUpperBits()
 		m = buf[0]

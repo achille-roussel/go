@@ -28,6 +28,20 @@ func maxUint8(d []uint8, m uint8) uint8 {
 	return m
 }
 
+func minInt8(d []int8, m int8) int8 {
+	for _, v := range d {
+		m = min(m, v)
+	}
+	return m
+}
+
+func maxInt8(d []int8, m int8) int8 {
+	for _, v := range d {
+		m = max(m, v)
+	}
+	return m
+}
+
 func minInt16(d []int16, m int16) int16 {
 	for _, v := range d {
 		m = min(m, v)
@@ -36,6 +50,20 @@ func minInt16(d []int16, m int16) int16 {
 }
 
 func maxInt16(d []int16, m int16) int16 {
+	for _, v := range d {
+		m = max(m, v)
+	}
+	return m
+}
+
+func minUint16(d []uint16, m uint16) uint16 {
+	for _, v := range d {
+		m = min(m, v)
+	}
+	return m
+}
+
+func maxUint16(d []uint16, m uint16) uint16 {
 	for _, v := range d {
 		m = max(m, v)
 	}

@@ -10,5 +10,9 @@ package runtime
 
 var MinUint8Kernel = minUint8
 var MaxUint8Kernel = maxUint8
+var MinInt8Kernel = minInt8
+var MaxInt8Kernel = maxInt8
 var MinInt16Kernel = minInt16
 var MaxInt16Kernel = maxInt16
+var MinUint16Kernel = minUint16
+var MaxUint16Kernel = maxUint16

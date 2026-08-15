@@ -846,3 +846,261 @@ func maxUint64(d []uint64, m uint64) uint64 {
 	}
 	return m
 }
+
+// Float reductions are only recognized in the m = min(m, v) builtin
+// form, whose semantics the kernels reproduce exactly: NaN propagates
+// (any NaN element forces a NaN result) and -0 is preferred over +0
+// for min, +0 over -0 for max.
+//
+// Per-lane Go min is built from two directed compare+blend selects
+// whose bit patterns are ORed (the OR fixes both the NaN and the
+// -0/+0 cases), mirroring the scalar lowering in AMD64.rules Min64F.
+// archsimd's float Min/Max are not used: their NaN semantics are
+// undocumented and the compiler may canonicalize the operands of
+// commutative operations, while the trick depends on operand order.
+// Go max is the min kernel run in the negated domain
+// (max(x, y) = -min(-x, -y)), again mirroring the scalar lowering.
+
+func goMinFloat32x8(a, b archsimd.Float32x8) archsimd.Float32x8 {
+	m1 := a.IfElse(a.Less(b), b)
+	m2 := b.IfElse(b.Less(a), a)
+	return m1.AsInt32x8().Or(m2.AsInt32x8()).AsFloat32x8()
+}
+
+func goMinFloat32x16(a, b archsimd.Float32x16) archsimd.Float32x16 {
+	m1 := a.IfElse(a.Less(b), b)
+	m2 := b.IfElse(b.Less(a), a)
+	return m1.AsInt32x16().Or(m2.AsInt32x16()).AsFloat32x16()
+}
+
+func goMinFloat64x4(a, b archsimd.Float64x4) archsimd.Float64x4 {
+	m1 := a.IfElse(a.Less(b), b)
+	m2 := b.IfElse(b.Less(a), a)
+	return m1.AsInt64x4().Or(m2.AsInt64x4()).AsFloat64x4()
+}
+
+func goMinFloat64x8(a, b archsimd.Float64x8) archsimd.Float64x8 {
+	m1 := a.IfElse(a.Less(b), b)
+	m2 := b.IfElse(b.Less(a), a)
+	return m1.AsInt64x8().Or(m2.AsInt64x8()).AsFloat64x8()
+}
+
+func minFloat32(d []float32, m float32) float32 {
+	switch {
+	case archsimd.X86.AVX512() && len(d) >= 32:
+		acc0 := archsimd.BroadcastFloat32x16(m)
+		acc1 := acc0
+		chunks := slicecast[[32]float32](d)
+		for j := range chunks {
+			c := &chunks[j]
+			acc0 = goMinFloat32x16(acc0, archsimd.LoadFloat32x16(c[0:16]))
+			acc1 = goMinFloat32x16(acc1, archsimd.LoadFloat32x16(c[16:32]))
+		}
+		if rem := len(d) - len(chunks)*32; rem > 0 {
+			acc0 = goMinFloat32x16(acc0, archsimd.LoadFloat32x16(d[len(d)-16:]))
+			if rem > 16 {
+				acc1 = goMinFloat32x16(acc1, archsimd.LoadFloat32x16(d[len(d)-32:]))
+			}
+		}
+		var buf [16]float32
+		goMinFloat32x16(acc0, acc1).StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m, d = buf[0], buf[1:]
+	case archsimd.X86.AVX2() && len(d) >= 16:
+		acc0 := archsimd.BroadcastFloat32x8(m)
+		acc1 := acc0
+		chunks := slicecast[[16]float32](d)
+		for j := range chunks {
+			c := &chunks[j]
+			acc0 = goMinFloat32x8(acc0, archsimd.LoadFloat32x8(c[0:8]))
+			acc1 = goMinFloat32x8(acc1, archsimd.LoadFloat32x8(c[8:16]))
+		}
+		if rem := len(d) - len(chunks)*16; rem > 0 {
+			acc0 = goMinFloat32x8(acc0, archsimd.LoadFloat32x8(d[len(d)-8:]))
+			if rem > 8 {
+				acc1 = goMinFloat32x8(acc1, archsimd.LoadFloat32x8(d[len(d)-16:]))
+			}
+		}
+		var buf [8]float32
+		goMinFloat32x8(acc0, acc1).StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m, d = buf[0], buf[1:]
+	}
+	for _, v := range d {
+		m = min(m, v)
+	}
+	return m
+}
+
+func maxFloat32(d []float32, m float32) float32 {
+	switch {
+	case archsimd.X86.AVX512() && len(d) >= 32:
+		sign := archsimd.BroadcastInt32x16(-1 << 31)
+		acc0 := archsimd.BroadcastFloat32x16(-m)
+		acc1 := acc0
+		chunks := slicecast[[32]float32](d)
+		for j := range chunks {
+			c := &chunks[j]
+			v0 := archsimd.LoadFloat32x16(c[0:16]).AsInt32x16().Xor(sign).AsFloat32x16()
+			v1 := archsimd.LoadFloat32x16(c[16:32]).AsInt32x16().Xor(sign).AsFloat32x16()
+			acc0 = goMinFloat32x16(acc0, v0)
+			acc1 = goMinFloat32x16(acc1, v1)
+		}
+		if rem := len(d) - len(chunks)*32; rem > 0 {
+			t0 := archsimd.LoadFloat32x16(d[len(d)-16:]).AsInt32x16().Xor(sign).AsFloat32x16()
+			acc0 = goMinFloat32x16(acc0, t0)
+			if rem > 16 {
+				t1 := archsimd.LoadFloat32x16(d[len(d)-32:]).AsInt32x16().Xor(sign).AsFloat32x16()
+				acc1 = goMinFloat32x16(acc1, t1)
+			}
+		}
+		var buf [16]float32
+		goMinFloat32x16(acc0, acc1).StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		for i := range buf {
+			buf[i] = -buf[i]
+		}
+		m, d = buf[0], buf[1:]
+	case archsimd.X86.AVX2() && len(d) >= 16:
+		sign := archsimd.BroadcastInt32x8(-1 << 31)
+		acc0 := archsimd.BroadcastFloat32x8(-m)
+		acc1 := acc0
+		chunks := slicecast[[16]float32](d)
+		for j := range chunks {
+			c := &chunks[j]
+			v0 := archsimd.LoadFloat32x8(c[0:8]).AsInt32x8().Xor(sign).AsFloat32x8()
+			v1 := archsimd.LoadFloat32x8(c[8:16]).AsInt32x8().Xor(sign).AsFloat32x8()
+			acc0 = goMinFloat32x8(acc0, v0)
+			acc1 = goMinFloat32x8(acc1, v1)
+		}
+		if rem := len(d) - len(chunks)*16; rem > 0 {
+			t0 := archsimd.LoadFloat32x8(d[len(d)-8:]).AsInt32x8().Xor(sign).AsFloat32x8()
+			acc0 = goMinFloat32x8(acc0, t0)
+			if rem > 8 {
+				t1 := archsimd.LoadFloat32x8(d[len(d)-16:]).AsInt32x8().Xor(sign).AsFloat32x8()
+				acc1 = goMinFloat32x8(acc1, t1)
+			}
+		}
+		var buf [8]float32
+		goMinFloat32x8(acc0, acc1).StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		for i := range buf {
+			buf[i] = -buf[i]
+		}
+		m, d = buf[0], buf[1:]
+	}
+	for _, v := range d {
+		m = max(m, v)
+	}
+	return m
+}
+
+func minFloat64(d []float64, m float64) float64 {
+	switch {
+	case archsimd.X86.AVX512() && len(d) >= 16:
+		acc0 := archsimd.BroadcastFloat64x8(m)
+		acc1 := acc0
+		chunks := slicecast[[16]float64](d)
+		for j := range chunks {
+			c := &chunks[j]
+			acc0 = goMinFloat64x8(acc0, archsimd.LoadFloat64x8(c[0:8]))
+			acc1 = goMinFloat64x8(acc1, archsimd.LoadFloat64x8(c[8:16]))
+		}
+		if rem := len(d) - len(chunks)*16; rem > 0 {
+			acc0 = goMinFloat64x8(acc0, archsimd.LoadFloat64x8(d[len(d)-8:]))
+			if rem > 8 {
+				acc1 = goMinFloat64x8(acc1, archsimd.LoadFloat64x8(d[len(d)-16:]))
+			}
+		}
+		var buf [8]float64
+		goMinFloat64x8(acc0, acc1).StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m, d = buf[0], buf[1:]
+	case archsimd.X86.AVX2() && len(d) >= 8:
+		acc0 := archsimd.BroadcastFloat64x4(m)
+		acc1 := acc0
+		chunks := slicecast[[8]float64](d)
+		for j := range chunks {
+			c := &chunks[j]
+			acc0 = goMinFloat64x4(acc0, archsimd.LoadFloat64x4(c[0:4]))
+			acc1 = goMinFloat64x4(acc1, archsimd.LoadFloat64x4(c[4:8]))
+		}
+		if rem := len(d) - len(chunks)*8; rem > 0 {
+			acc0 = goMinFloat64x4(acc0, archsimd.LoadFloat64x4(d[len(d)-4:]))
+			if rem > 4 {
+				acc1 = goMinFloat64x4(acc1, archsimd.LoadFloat64x4(d[len(d)-8:]))
+			}
+		}
+		var buf [4]float64
+		goMinFloat64x4(acc0, acc1).StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		m, d = buf[0], buf[1:]
+	}
+	for _, v := range d {
+		m = min(m, v)
+	}
+	return m
+}
+
+func maxFloat64(d []float64, m float64) float64 {
+	switch {
+	case archsimd.X86.AVX512() && len(d) >= 16:
+		sign := archsimd.BroadcastInt64x8(-1 << 63)
+		acc0 := archsimd.BroadcastFloat64x8(-m)
+		acc1 := acc0
+		chunks := slicecast[[16]float64](d)
+		for j := range chunks {
+			c := &chunks[j]
+			v0 := archsimd.LoadFloat64x8(c[0:8]).AsInt64x8().Xor(sign).AsFloat64x8()
+			v1 := archsimd.LoadFloat64x8(c[8:16]).AsInt64x8().Xor(sign).AsFloat64x8()
+			acc0 = goMinFloat64x8(acc0, v0)
+			acc1 = goMinFloat64x8(acc1, v1)
+		}
+		if rem := len(d) - len(chunks)*16; rem > 0 {
+			t0 := archsimd.LoadFloat64x8(d[len(d)-8:]).AsInt64x8().Xor(sign).AsFloat64x8()
+			acc0 = goMinFloat64x8(acc0, t0)
+			if rem > 8 {
+				t1 := archsimd.LoadFloat64x8(d[len(d)-16:]).AsInt64x8().Xor(sign).AsFloat64x8()
+				acc1 = goMinFloat64x8(acc1, t1)
+			}
+		}
+		var buf [8]float64
+		goMinFloat64x8(acc0, acc1).StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		for i := range buf {
+			buf[i] = -buf[i]
+		}
+		m, d = buf[0], buf[1:]
+	case archsimd.X86.AVX2() && len(d) >= 8:
+		sign := archsimd.BroadcastInt64x4(-1 << 63)
+		acc0 := archsimd.BroadcastFloat64x4(-m)
+		acc1 := acc0
+		chunks := slicecast[[8]float64](d)
+		for j := range chunks {
+			c := &chunks[j]
+			v0 := archsimd.LoadFloat64x4(c[0:4]).AsInt64x4().Xor(sign).AsFloat64x4()
+			v1 := archsimd.LoadFloat64x4(c[4:8]).AsInt64x4().Xor(sign).AsFloat64x4()
+			acc0 = goMinFloat64x4(acc0, v0)
+			acc1 = goMinFloat64x4(acc1, v1)
+		}
+		if rem := len(d) - len(chunks)*8; rem > 0 {
+			t0 := archsimd.LoadFloat64x4(d[len(d)-4:]).AsInt64x4().Xor(sign).AsFloat64x4()
+			acc0 = goMinFloat64x4(acc0, t0)
+			if rem > 4 {
+				t1 := archsimd.LoadFloat64x4(d[len(d)-8:]).AsInt64x4().Xor(sign).AsFloat64x4()
+				acc1 = goMinFloat64x4(acc1, t1)
+			}
+		}
+		var buf [4]float64
+		goMinFloat64x4(acc0, acc1).StoreArray(&buf)
+		archsimd.ClearAVXUpperBits()
+		for i := range buf {
+			buf[i] = -buf[i]
+		}
+		m, d = buf[0], buf[1:]
+	}
+	for _, v := range d {
+		m = max(m, v)
+	}
+	return m
+}

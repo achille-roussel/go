@@ -24,3 +24,7 @@ var MinInt64Kernel = minInt64
 var MaxInt64Kernel = maxInt64
 var MinUint64Kernel = minUint64
 var MaxUint64Kernel = maxUint64
+var MinFloat32Kernel = minFloat32
+var MaxFloat32Kernel = maxFloat32
+var MinFloat64Kernel = minFloat64
+var MaxFloat64Kernel = maxFloat64

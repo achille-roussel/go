@@ -231,6 +231,10 @@ func minInt64(d []int64, m int64) int64
 func maxInt64(d []int64, m int64) int64
 func minUint64(d []uint64, m uint64) uint64
 func maxUint64(d []uint64, m uint64) uint64
+func minFloat32(d []float32, m float32) float32
+func maxFloat32(d []float32, m float32) float32
+func minFloat64(d []float64, m float64) float64
+func maxFloat64(d []float64, m float64) float64
 
 func memequal(x, y unsafe.Pointer, size uintptr) bool
 func memequal0(x, y unsafe.Pointer) bool

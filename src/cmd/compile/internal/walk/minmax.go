@@ -72,6 +72,10 @@ func minmaxKernel(op ir.Op, elem *types.Type) (string, *types.Type) {
 		suffix, kind = "Int64", types.TINT64
 	case types.TUINT64, types.TUINT, types.TUINTPTR:
 		suffix, kind = "Uint64", types.TUINT64
+	case types.TFLOAT32:
+		suffix, kind = "Float32", types.TFLOAT32
+	case types.TFLOAT64:
+		suffix, kind = "Float64", types.TFLOAT64
 	default:
 		return "", nil
 	}

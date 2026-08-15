@@ -346,6 +346,142 @@ func TestMinMaxUint64Kernel(t *testing.T) {
 	}
 }
 
+// Float references use the min/max builtins; their semantics are
+// order-independent, so a backward loop computes the same value
+// bit-for-bit.
+
+func refMinFloat64(d []float64, m float64) float64 {
+	for i := len(d) - 1; i >= 0; i-- {
+		m = min(m, d[i])
+	}
+	return m
+}
+
+func refMaxFloat64(d []float64, m float64) float64 {
+	for i := len(d) - 1; i >= 0; i-- {
+		m = max(m, d[i])
+	}
+	return m
+}
+
+func refMinFloat32(d []float32, m float32) float32 {
+	for i := len(d) - 1; i >= 0; i-- {
+		m = min(m, d[i])
+	}
+	return m
+}
+
+func refMaxFloat32(d []float32, m float32) float32 {
+	for i := len(d) - 1; i >= 0; i-- {
+		m = max(m, d[i])
+	}
+	return m
+}
+
+// eqFloat64 compares float results treating all NaNs as equal and
+// distinguishing -0 from +0.
+func eqFloat64(a, b float64) bool {
+	if math.IsNaN(a) || math.IsNaN(b) {
+		return math.IsNaN(a) && math.IsNaN(b)
+	}
+	return math.Float64bits(a) == math.Float64bits(b)
+}
+
+func eqFloat32(a, b float32) bool {
+	if a != a || b != b {
+		return a != a && b != b
+	}
+	return math.Float32bits(a) == math.Float32bits(b)
+}
+
+func TestMinMaxFloat64Kernel(t *testing.T) {
+	r := rand.New(rand.NewSource(12))
+	for _, n := range minmaxSizes {
+		d := make([]float64, n)
+		for i := range d {
+			d[i] = r.NormFloat64()
+		}
+		if n > 0 {
+			d[n-1] = math.Inf(-1)
+			d[0] = math.Inf(1)
+		}
+		for _, seed := range []float64{math.Inf(-1), -1, 0, 1, math.Inf(1), math.NaN()} {
+			if got, want := runtime.MinFloat64Kernel(d, seed), refMinFloat64(d, seed); !eqFloat64(got, want) {
+				t.Errorf("minFloat64(%v, len %d) = %v, want %v", seed, n, got, want)
+			}
+			if got, want := runtime.MaxFloat64Kernel(d, seed), refMaxFloat64(d, seed); !eqFloat64(got, want) {
+				t.Errorf("maxFloat64(%v, len %d) = %v, want %v", seed, n, got, want)
+			}
+		}
+	}
+}
+
+func TestMinMaxFloat32Kernel(t *testing.T) {
+	r := rand.New(rand.NewSource(13))
+	for _, n := range minmaxSizes {
+		d := make([]float32, n)
+		for i := range d {
+			d[i] = float32(r.NormFloat64())
+		}
+		if n > 0 {
+			d[n-1] = float32(math.Inf(-1))
+			d[0] = float32(math.Inf(1))
+		}
+		for _, seed := range []float32{float32(math.Inf(-1)), -1, 0, 1, float32(math.Inf(1)), float32(math.NaN())} {
+			if got, want := runtime.MinFloat32Kernel(d, seed), refMinFloat32(d, seed); !eqFloat32(got, want) {
+				t.Errorf("minFloat32(%v, len %d) = %v, want %v", seed, n, got, want)
+			}
+			if got, want := runtime.MaxFloat32Kernel(d, seed), refMaxFloat32(d, seed); !eqFloat32(got, want) {
+				t.Errorf("maxFloat32(%v, len %d) = %v, want %v", seed, n, got, want)
+			}
+		}
+	}
+}
+
+// TestMinMaxFloatKernelNaNPositions plants a NaN at every position and
+// checks that the kernels return NaN through the vector paths'
+// overlapping tail loads.
+func TestMinMaxFloatKernelNaNPositions(t *testing.T) {
+	nan := math.NaN()
+	for _, n := range []int{8, 9, 15, 16, 17, 31, 32, 33, 63, 64} {
+		d := make([]float64, n)
+		for i := range d {
+			d[i] = float64(i)
+		}
+		for pos := range d {
+			old := d[pos]
+			d[pos] = nan
+			if got := runtime.MinFloat64Kernel(d, 1000); !math.IsNaN(got) {
+				t.Fatalf("minFloat64: NaN at %d of %d not propagated: got %v", pos, n, got)
+			}
+			if got := runtime.MaxFloat64Kernel(d, -1000); !math.IsNaN(got) {
+				t.Fatalf("maxFloat64: NaN at %d of %d not propagated: got %v", pos, n, got)
+			}
+			d[pos] = old
+		}
+	}
+}
+
+// TestMinMaxFloatKernelSignedZero checks the builtin-form signed-zero
+// preferences, which are order-independent: min prefers -0, max
+// prefers +0.
+func TestMinMaxFloatKernelSignedZero(t *testing.T) {
+	negZero := math.Copysign(0, -1)
+	for _, n := range []int{8, 16, 31, 32, 64} {
+		for pos := 0; pos < n; pos++ {
+			d := make([]float64, n) // all +0
+			d[pos] = negZero
+			if got := runtime.MinFloat64Kernel(d, 0); !math.Signbit(got) {
+				t.Fatalf("minFloat64: -0 at %d of %d: got +0, want -0", pos, n)
+			}
+			// All zeros with one -0: max must return +0.
+			if got := runtime.MaxFloat64Kernel(d, negZero); math.Signbit(got) {
+				t.Fatalf("maxFloat64: +0 elements with -0 seed: got -0, want +0 (n=%d)", n)
+			}
+		}
+	}
+}
+
 // TestMinMaxKernelExtremePositions sweeps the extreme element through
 // every position so overlapping tail loads and accumulator merging are
 // all exercised.
@@ -412,6 +548,38 @@ func BenchmarkMinInt64Kernel(b *testing.B) {
 			b.SetBytes(int64(8 * n))
 			for b.Loop() {
 				runtime.MinInt64Kernel(d, math.MaxInt64)
+			}
+		})
+	}
+}
+
+func BenchmarkMinFloat32Kernel(b *testing.B) {
+	for _, n := range []int{64, 1024, 65536} {
+		d := make([]float32, n)
+		r := rand.New(rand.NewSource(14))
+		for i := range d {
+			d[i] = float32(r.NormFloat64())
+		}
+		b.Run(sizeName(n), func(b *testing.B) {
+			b.SetBytes(int64(4 * n))
+			for b.Loop() {
+				runtime.MinFloat32Kernel(d, float32(math.Inf(1)))
+			}
+		})
+	}
+}
+
+func BenchmarkMinFloat64Kernel(b *testing.B) {
+	for _, n := range []int{64, 1024, 65536} {
+		d := make([]float64, n)
+		r := rand.New(rand.NewSource(15))
+		for i := range d {
+			d[i] = r.NormFloat64()
+		}
+		b.Run(sizeName(n), func(b *testing.B) {
+			b.SetBytes(int64(8 * n))
+			for b.Loop() {
+				runtime.MinFloat64Kernel(d, math.Inf(1))
 			}
 		})
 	}

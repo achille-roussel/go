@@ -125,3 +125,31 @@ func maxUint64(d []uint64, m uint64) uint64 {
 	}
 	return m
 }
+
+func minFloat32(d []float32, m float32) float32 {
+	for _, v := range d {
+		m = min(m, v)
+	}
+	return m
+}
+
+func maxFloat32(d []float32, m float32) float32 {
+	for _, v := range d {
+		m = max(m, v)
+	}
+	return m
+}
+
+func minFloat64(d []float64, m float64) float64 {
+	for _, v := range d {
+		m = min(m, v)
+	}
+	return m
+}
+
+func maxFloat64(d []float64, m float64) float64 {
+	for _, v := range d {
+		m = max(m, v)
+	}
+	return m
+}

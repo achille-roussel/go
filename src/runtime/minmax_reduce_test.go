@@ -87,7 +87,7 @@ func refMaxUint16(d []uint16, m uint16) uint16 {
 	return m
 }
 
-var minmaxSizes = []int{0, 1, 2, 15, 16, 31, 32, 33, 63, 64, 65, 96, 127, 128, 129, 255, 256, 1000, 4096}
+var minmaxSizes = []int{0, 1, 2, 15, 16, 31, 32, 33, 63, 64, 65, 96, 127, 128, 129, 191, 192, 255, 256, 1000, 4096}
 
 func TestMinMaxUint8Kernel(t *testing.T) {
 	r := rand.New(rand.NewSource(1))
@@ -182,7 +182,7 @@ func TestMinMaxUint16Kernel(t *testing.T) {
 // every position so overlapping tail loads and accumulator merging are
 // all exercised.
 func TestMinMaxKernelExtremePositions(t *testing.T) {
-	for _, n := range []int{64, 65, 96, 127, 128} {
+	for _, n := range []int{64, 65, 96, 127, 128, 129, 191, 192, 255, 256} {
 		d := make([]uint8, n)
 		for i := range d {
 			d[i] = 100
